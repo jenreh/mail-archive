@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "jenreh-terraform",
+  "description": "Terraform / infra skills (terraform-*).",
+  "version": "0.3.0",
+  "author": { "name": "Jens Rehpöhler" },
+  "homepage": "https://github.com/jenreh/agent-skills",
+  "repository": "https://github.com/jenreh/agent-skills",
+  "license": "MIT",
+  "keywords": ["agent-skills", "claude-code", "terraform", "azure", "iac"]
+}

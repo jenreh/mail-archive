@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "jenreh-core",
+  "description": "Cross-cutting agent skills (boost, commit-msg, create-readme, release, …).",
+  "version": "0.3.0",
+  "author": { "name": "Jens Rehpöhler" },
+  "homepage": "https://github.com/jenreh/agent-skills",
+  "repository": "https://github.com/jenreh/agent-skills",
+  "license": "MIT",
+  "keywords": ["agent-skills", "claude-code", "git", "release", "documentation"]
+}

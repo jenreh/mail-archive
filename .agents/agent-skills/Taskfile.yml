@@ -1,0 +1,33 @@
+version: "3"
+
+tasks:
+  validate:
+    desc: Validate skills are portable and plugins conform to Agent Plugins 1.0.0
+    cmds:
+      - task: validate:skills
+      - task: validate:plugins
+
+  validate:skills:
+    desc: Validate all skills are portable cross-agent SKILL.md folders
+    cmds:
+      - python3 scripts/validate_skills.py
+
+  validate:plugins:
+    desc: Validate plugins/ against the Agent Plugins 1.0.0 spec (agent-plugins.org)
+    cmds:
+      - python3 scripts/validate_plugins.py
+
+  list:
+    desc: List all skills with their description
+    cmds:
+      - |
+        for d in skills/*/; do
+          name=$(basename "$d")
+          desc=$(awk '/^description:/{sub(/^description:[ ]*/,"");print;exit}' "$d/SKILL.md")
+          printf "  %-34s %s\n" "$name" "$desc"
+        done
+
+  marketplace:link:
+    desc: (Re)create plugin skill symlinks from the marketplace plugins back to skills/
+    cmds:
+      - bash scripts/link-plugins.sh

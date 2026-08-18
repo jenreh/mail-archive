@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: "3"
+
+silent: true
+
+vars:
+  RUNNER: uv run
+
+tasks:
+  # ----------------------------------------------------------------------------
+  # Reflex Application Commands
+  # ----------------------------------------------------------------------------
+
+  run:
+    desc: Start the reflex web application
+    cmd: "{{.RUNNER}} reflex run"
+
+  run:debug:
+    desc: Start the reflex web application with debug logging
+    cmd: "{{.RUNNER}} reflex run --loglevel=debug"
+
+  run:prod:
+    desc: Start the reflex web application in prod mode
+    cmd: "{{.RUNNER}} reflex run --env prod --single-port"

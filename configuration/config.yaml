@@ -1,0 +1,42 @@
+profile: default
+
+reflex:
+  deploy_url: http://localhost
+  frontend_port: 8080
+  backend_port: 3030
+  workers: 1
+
+app:
+  version: 1.0.0
+  name: mail-archive
+  logging: logging.prod.yaml
+  environment: prod
+  backend_timeout: 180 # seconds
+
+  database:
+    username: secret:mn-db-user
+    password: secret:mn-db-password
+    host: secret:mn-db-host
+    port: 5432
+    name: secret:mn-db-name
+    encryption_key: secret:mn-db-encryption-key
+    pool_size: 10 # change only when needed
+    max_overflow: 30 # change only when needed
+    echo: False # Set to True to enable SQL logging
+
+  authentication:
+    session_timeout: 25 # minutes
+    auth_token_refresh_delta: 10 # minutes
+    server_url: https://localhost
+    server_port: 8080
+
+    #oauth_providers:
+    # - provider: "github"
+    #   client_id: secret:mn-oauth-github-client-id
+    #   client_secret: secret:mn-oauth-github-client-secret
+    #   redirect_url: http://localhost:8080/oauth/github/callback
+    # - provider: "azure"
+    #   client_id: secret:avui-oauth-azure-client-id
+    #   client_secret: secret:avui-oauth-azure-client-secret
+    #   tenant_id: secret:avui-oauth-azure-tenant-id
+    #   redirect_url: http://localhost:8080/oauth/azure/callback

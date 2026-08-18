@@ -1,0 +1,70 @@
+services:
+  mail-archive-app:
+    container_name: mail-archive-app
+    image: mail-archive-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Use the docker-specific env file (contains DB connection info for compose)
+    env_file:
+      - .env.docker
+    depends_on:
+      - db
+    # Put the app into the same network as the DB so it can reach the DB at host 'db'
+    networks:
+      - mail-archive-network
+    # Optional explicit DB defaults (overridden by .env.docker if present)
+    environment:
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=mail-archive-db
+    ports:
+      - "3030:3030"
+      - "8080:8080"
+      - "80:80"
+    develop:
+      watch:
+        - action: sync
+          path: ./app
+          target: /reflexapp/app
+        - action: sync
+          path: ./components
+          target: /reflexapp/components
+        - action: sync
+          path: ./assets
+          target: /reflexapp/assets
+        - action: sync
+          path: ./configuration
+          target: /reflexapp/configuration
+        - action: rebuild
+          path: ./pyproject.toml
+        - action: rebuild
+          path: ./uv.lock
+        - action: rebuild
+          path: ./Dockerfile
+        - action: rebuild
+          path: ./start.sh
+
+  db:
+    container_name: mail-archive-db
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: mail-archive-db
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 5433:5432
+    networks:
+      - mail-archive-network
+
+volumes:
+  postgres-data:
+    name: mail-archive-postgres-data
+networks:
+  mail-archive-network:
+    driver: bridge

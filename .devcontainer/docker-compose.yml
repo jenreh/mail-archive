@@ -1,0 +1,37 @@
+services:
+  app:
+    container_name: mail-archive-dev
+    image: mail-archive/ui-dev
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        VARIANT: 3.13-bookworm
+    volumes:
+      - ../..:/workspaces:rw,cached
+    command: sleep infinity
+    networks:
+      - mail-archive-network
+
+  db:
+    container_name: mail-archive-dev-db
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    volumes:
+      - dev-postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: mail-archive-db
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 5434:5432
+    networks:
+      - mail-archive-network
+
+networks:
+  mail-archive-network:
+    driver: bridge
+
+volumes:
+  dev-postgres-data:
+    name: mail-archive-dev-postgres-data

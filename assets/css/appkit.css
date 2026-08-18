@@ -1,0 +1,408 @@
+/* Tailwind directives — processed by PostCSS with tailwindcss plugin */
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer components {
+
+    /* Splash container styles for login screens */
+    .splash-container {
+        background: linear-gradient(99deg, var(--blue-4), var(--pink-3), var(--mauve-3));
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        height: 100vh;
+        min-height: 100vh;
+        width: 100%;
+    }
+
+    .logo {
+        position: fixed;
+        top: 40px;
+        left: 0px;
+        height: 87px;
+        width: 230px;
+        background-color: white;
+        box-shadow: 0.1em 0.1em 1em rgba(20, 20, 20, 0.3);
+    }
+
+    .logo img {
+        height: 87px;
+        width: 230px;
+        margin-bottom: -5px;
+        border-style: none;
+    }
+
+    /* Dialog styles */
+    .dialog {
+        max-width: 540px;
+        padding: 1.5em;
+        border: 2px solid var(--accent-9);
+        border-radius: 25px;
+    }
+
+    /* Form label styles */
+    .label {
+        text-align: center;
+        gap: 1em;
+        margin-bottom: 3px;
+    }
+
+    .mantine-Modal-content {
+        border-radius: 9px !important;
+        border: 3px solid var(--mantine-primary-color-4) !important;
+    }
+
+    .mantine-Modal-title {
+        font-weight: 800 !important;
+        font-size: 1.5rem !important;
+    }
+
+    .mantine-Modal-header {
+        border-bottom: 1px solid var(--gray-5) !important;
+        margin-bottom: 12px !important;
+    }
+
+    /* Allow recharts tooltips to overflow their container */
+    .recharts-wrapper,
+    .recharts-surface {
+        overflow: visible !important;
+    }
+
+    /* Allow Mantine cards containing charts to show tooltips outside their bounds */
+    .mantine-Card-root:has(.recharts-wrapper) {
+        overflow: visible !important;
+        position: relative;
+        z-index: 1;
+    }
+
+    /* Elevate the active chart card above its siblings while hovering */
+    .mantine-Card-root:has(.recharts-wrapper):hover {
+        z-index: 10;
+    }
+
+    /* Ensure the tooltip itself always paints on top */
+    .recharts-tooltip-wrapper {
+        z-index: 1000 !important;
+    }
+
+    /* Form label styles */
+    .label {
+        text-align: center;
+        gap: 1em;
+        margin-bottom: 3px;
+    }
+
+    /* Rainbow gradient bar styles */
+
+    .rainbow-gradient-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 4px;
+        overflow: hidden;
+        z-index: 1000;
+    }
+
+    .rainbow-gradient-bar::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg,
+                #da5965,
+                #e5aa57,
+                #95f0b2,
+                #4476af,
+                #da5965);
+        background-size: 200% 100%;
+        animation: rotate-gradient 2s linear infinite;
+    }
+
+
+    @keyframes rotate-gradient {
+        0% {
+            background-position: 200% 50%;
+        }
+
+        100% {
+            background-position: 0% 50%;
+        }
+    }
+
+    .default-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 18em;
+        height: 4px;
+        overflow: hidden;
+        z-index: 1000;
+    }
+
+    /* Cursor wait style */
+
+    .cursor-wait {
+        cursor: progress !important;
+    }
+
+    .wmde-markdown ul li {
+        list-style-type: disc;
+        margin-left: 1.5em;
+    }
+
+    .wmde-markdown ol li {
+        list-style-type: decimal;
+        margin-left: 1.5em;
+    }
+
+    /* Markdown table styles */
+    .wmde-markdown table,
+    .markdown table {
+        border-radius: 9px;
+        box-shadow: 0 0 8px var(--gray-3);
+        border-collapse: separate;
+        border-spacing: 0;
+        overflow: hidden;
+        border: 1px solid var(--gray-5);
+        background-color: var(--white-12);
+        width: calc(100% + 41px);
+        max-width: 921px;
+        margin-left: -15px;
+        margin-right: auto;
+        margin-top: 24px;
+        margin-bottom: 24px;
+        /* For horizontal scrolling on small screens */
+        display: block;
+        overflow-x: scroll;
+    }
+
+
+    .wmde-markdown th,
+    .wmde-markdown td,
+    .markdown th,
+    .markdown td {
+        padding: 12px 15px;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--gray-5);
+        font-size: 0.85em;
+    }
+
+    .wmde-markdown th,
+    .markdown th {
+        background-color: var(--gray-2);
+        font-weight: 600;
+        color: var(--gray-11);
+    }
+
+    .wmde-markdown tbody tr:last-child td,
+    .markdown tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .wmde-markdown tbody tr:hover,
+    .markdown tbody tr:hover {
+        background-color: var(--gray-2);
+    }
+
+    /* Loading animation styles */
+
+    .loading span {
+        display: inline-block;
+        vertical-align: middle;
+        width: .6em;
+        height: .6em;
+        margin: -2px;
+        background: var(--gray-6);
+        border-radius: .6em;
+        animation: loading 1s infinite alternate;
+        margin-top: 7px;
+    }
+
+    .loading span:nth-of-type(2) {
+        background: var(--gray-5);
+        animation-delay: 0.2s;
+    }
+
+    .loading span:nth-of-type(3) {
+        background: var(--gray-4);
+        animation-delay: 0.4s;
+    }
+
+    .loading span:nth-of-type(4) {
+        background: var(--gray-5);
+        animation-delay: 0.6s;
+    }
+
+
+    @keyframes loading {
+        0% {
+            opacity: 0;
+        }
+
+        100% {
+            opacity: 1;
+        }
+    }
+
+    /* Shimmer text animation: narrow spotlight sweeping across the text */
+
+    .shimmer-text,
+    .system-message-shimmer .rt-CalloutText {
+        background: linear-gradient(
+            90deg,
+            var(--gray-8) 0%,
+            var(--gray-8) 44%,
+            var(--gray-12) 50%,
+            var(--gray-8) 56%,
+            var(--gray-8) 100%
+        );
+        background-size: 300% 150%;
+/*        -webkit-background-clip: text;*/
+        background-clip: text;
+/*        -webkit-text-fill-color: transparent;*/
+        color: transparent;
+        animation: shimmer-slide 2.5s linear infinite;
+    }
+
+    /* Dark mode: same narrow spotlight with dark-appropriate colors */
+    .dark .shimmer-text,
+    .dark .system-message-shimmer .rt-CalloutText {
+        background: linear-gradient(
+            90deg,
+            var(--gray-9) 0%,
+            var(--gray-9) 44%,
+            var(--gray-12) 50%,
+            var(--gray-9) 56%,
+            var(--gray-9) 100%
+        );
+        background-size: 300% 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        color: transparent;
+    }
+
+    @keyframes shimmer-slide {
+        0% {
+            background-position: 120% center;
+        }
+        100% {
+            background-position: -20% center;
+        }
+    }
+
+    /* Markdown Image Zoom Styles */
+
+    /* Hover state for zoomable images and diagrams */
+    [data-mermaid-zoomable],
+    .wmde-markdown img,
+    .markdown img,
+    .wmde-markdown code[data-name="mermaid"] svg,
+    .markdown code[data-name="mermaid"] svg,
+    .wmde-markdown svg[id^="mermaid-"],
+    .markdown svg[id^="mermaid-"],
+    svg[id^="mermaid-"] {
+        cursor: zoom-in;
+        transition: opacity 0.2s;
+    }
+
+    [data-mermaid-zoomable]:hover,
+    .wmde-markdown img:hover,
+    .markdown img:hover,
+    .wmde-markdown code[data-name="mermaid"] svg:hover,
+    .markdown code[data-name="mermaid"] svg:hover,
+    .wmde-markdown svg[id^="mermaid-"]:hover,
+    .markdown svg[id^="mermaid-"]:hover,
+    svg[id^="mermaid-"]:hover {
+        opacity: 0.9;
+    }
+
+    /* Modal overlay for zoomed images and diagrams */
+    [data-mermaid-zoom-modal] {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        width: 100dvw;
+        height: 100vh;
+        height: 100dvh;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background-color: rgba(0, 0, 0, 0);
+        transition: background-color 0.3s;
+        cursor: zoom-out;
+        overflow: hidden;
+    }
+
+    [data-mermaid-zoom-modal="visible"] {
+        background-color: var(--gray-1);
+    }
+
+    @media (prefers-color-scheme: dark) {
+        [data-mermaid-zoom-modal="visible"] {
+            background-color: var(--gray-1);
+        }
+    }
+
+    /* Content wrapper inside modal */
+    [data-mermaid-zoom-content] {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        padding: 2rem;
+    }
+
+    /* Zoomed element styles (SVG and IMG) */
+    [data-mermaid-zoom-modal] svg,
+    [data-mermaid-zoom-modal] img {
+        max-width: 90vw;
+        max-height: 90vh;
+        width: auto;
+        height: auto;
+        cursor: zoom-out;
+        image-rendering: high-quality;
+        transition: transform 0.3s, opacity 0.3s;
+        opacity: 0;
+        transform: scale(0.95);
+    }
+
+    [data-mermaid-zoom-modal="visible"] svg,
+    [data-mermaid-zoom-modal="visible"] img {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    [data-mermaid-zoom-modal="closing"] {
+        background-color: rgba(0, 0, 0, 0);
+    }
+
+    [data-mermaid-zoom-modal="closing"] svg,
+    [data-mermaid-zoom-modal="closing"] img {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+
+    /* Reduced motion support */
+    @media (prefers-reduced-motion: reduce) {
+
+        .wmde-markdown code[data-name="mermaid"] svg,
+        .markdown code[data-name="mermaid"] svg,
+        [data-mermaid-zoom-modal],
+        [data-mermaid-zoom-modal] svg {
+            transition-duration: 0.01ms !important;
+        }
+    }
+}

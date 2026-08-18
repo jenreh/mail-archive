@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: "3"
+
+vars:
+  DOCS_DIR: docs
+
+tasks:
+  dev:
+    desc: Start the VitePress dev server with live reload
+    dir: "{{.DOCS_DIR}}"
+    cmds:
+      - npm run docs:dev
+
+  build:
+    desc: Build the VitePress documentation site
+    dir: "{{.DOCS_DIR}}"
+    cmds:
+      - npm run docs:build
+    generates:
+      - "{{.DOCS_DIR}}/.vitepress/dist/index.html"
+
+  preview:
+    desc: Preview the production build locally
+    dir: "{{.DOCS_DIR}}"
+    cmds:
+      - npm run docs:preview
+
+  install:
+    desc: Install docs dependencies
+    dir: "{{.DOCS_DIR}}"
+    cmds:
+      - npm install

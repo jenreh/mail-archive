@@ -1,0 +1,72 @@
+# ─── Version control / CI ─────────────────────────────────────────────────────
+.git
+.github
+.gitkeep
+.pre-commit-config.yaml
+gitleaks.toml
+
+# ─── Editors / agents / dev tooling ──────────────────────────────────────────
+.vscode
+.idea
+.devcontainer
+.agents
+.claude
+AGENTS.md
+CLAUDE.md
+BRANCHING.md
+spec
+
+# ─── Build / task meta (don't copy into the image) ───────────────────────────
+.dockerignore
+Dockerfile
+docker-compose.yml
+Makefile
+Taskfile.yml
+Taskfile.dist.yml
+taskfiles
+skills-lock.json
+.copier-answers.yml
+
+# ─── Python caches & build artifacts ─────────────────────────────────────────
+.Python
+.venv
+.venv.mac
+venv
+**/__pycache__/
+**/*.py[cod]
+*$py.class
+*.so
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.hypothesis
+build
+dist
+*.egg-info
+
+# ─── Test / coverage ──────────────────────────────────────────────────────────
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+nosetests.xml
+tests
+
+# ─── Local env, logs, scratch ────────────────────────────────────────────────
+.env
+.env.*
+*.log
+*.sql
+*.db
+.cache
+.DS_Store
+
+# ─── Docs & infra (not needed at runtime) ────────────────────────────────────
+docs
+terraform
+
+# ─── reflex.dev build artifacts ──────────────────────────────────────────────
+.web
+.states
+assets/external/*
+

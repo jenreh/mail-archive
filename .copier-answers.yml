@@ -1,0 +1,20 @@
+# This file is managed by Copier; do not edit by hand.
+# It records your answers so `copier update` can pull future template changes.
+_commit: v1.1.2
+_src_path: gh:jenreh/project-kit-template
+author_name: Jens Rehpöhler
+create_github_repo: true
+db_name: mail-archive-db
+github_owner: jenreh
+github_visibility: private
+include_docker: true
+include_docs: true
+include_graph: true
+include_skills: true
+include_terraform: false
+project_description: Email archive and analysis
+project_name: mail-archive
+project_type: reflex
+python_version: '3.14'
+use_devcontainer: true
+

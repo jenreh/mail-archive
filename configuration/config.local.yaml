@@ -1,0 +1,15 @@
+profile: local
+
+reflex:
+  deploy_url: http://localhost
+  frontend_port: 8080
+
+app:
+  environment: local
+  logging: logging.yaml
+
+  database:
+    echo: False
+
+  authentication:
+    server_url: http://localhost:8080

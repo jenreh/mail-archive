@@ -13,24 +13,40 @@
 mod backend;
 mod sidecar;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tauri::{Emitter, Manager, RunEvent};
+use tauri::{Manager, RunEvent};
 
 use backend::{
     install_signal_handlers, Backend, BackendError, BackendLauncher, ReflexEnv,
-    BACKEND_URL,
+    Vendored, BACKEND_URL,
 };
 
 /// Points the backend at the vendored redis-server and FalkorDB module.
 const FALKORDB_RESOURCE_PATH: &str = "resources/falkordb";
+
+/// The vendored `uv` the backend runs under.
+const UV_RESOURCE_PATH: &str = "resources/uv/uv";
 
 /// Set by `task tauri:dev` so a dev run finds the checkout.
 const REPO_ROOT_ENV_VAR: &str = "MAIL_ARCHIVE_ROOT";
 
 struct AppState {
     backend: Mutex<Option<Backend>>,
+    /// Why startup failed, once it has. The splash polls this instead of
+    /// listening for an event: a fast failure — a missing `uv`, say — is
+    /// reported within milliseconds, long before the webview has run the
+    /// script that would register the listener, and an emit with no listener
+    /// is simply dropped.
+    failure: Mutex<Option<String>>,
+}
+
+/// Polled by the splash. `None` means startup is still in progress, or
+/// succeeded — in which case the webview has already been navigated away.
+#[tauri::command]
+fn startup_failure(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.failure.lock().ok().and_then(|failure| failure.clone())
 }
 
 pub fn run() {
@@ -41,15 +57,17 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState {
             backend: Mutex::new(None),
+            failure: Mutex::new(None),
         })
+        .invoke_handler(tauri::generate_handler![startup_failure])
         .setup(|app| {
             let handle = app.handle().clone();
-            let falkordb_dir = resolve_falkordb_dir(app);
+            let vendored = resolve_vendored(app);
             let launcher = resolve_launcher();
 
             // Boot the backend off-thread so the splash window paints at once.
             std::thread::spawn(move || {
-                match start_backend(&launcher, falkordb_dir) {
+                match start_backend(&launcher, &vendored) {
                     Ok(ready) => {
                         if let Some(state) = handle.try_state::<AppState>() {
                             *state.backend.lock().unwrap() = Some(ready);
@@ -76,9 +94,9 @@ pub fn run() {
 
 fn start_backend(
     launcher: &BackendLauncher,
-    falkordb_dir: Option<PathBuf>,
+    vendored: &Vendored,
 ) -> Result<Backend, BackendError> {
-    let mut backend = Backend::start(launcher, falkordb_dir)?;
+    let mut backend = Backend::start(launcher, vendored)?;
     backend.wait_until_ready()?;
     Ok(backend)
 }
@@ -99,26 +117,41 @@ fn show_app(handle: &tauri::AppHandle) {
     }
 }
 
-/// Leave the splash up and tell it what went wrong.
+/// Leave the splash up and record what went wrong, for the splash to pick up.
 fn show_error(handle: &tauri::AppHandle, message: &str) {
     log::error!("{message}");
-    if let Err(error) = handle.emit("backend-failed", message) {
-        log::error!("could not report the failure to the splash: {error}");
+    if let Some(state) = handle.try_state::<AppState>() {
+        if let Ok(mut failure) = state.failure.lock() {
+            *failure = Some(message.to_owned());
+        }
     }
 }
 
-/// Where the vendored FalkorDB binaries live for this build.
-fn resolve_falkordb_dir(app: &tauri::App) -> Option<PathBuf> {
-    // In a bundled app they are Tauri resources; in a dev run they sit in the
-    // checkout, where `task tauri:vendor` wrote them.
+/// Where this build's vendored runtimes live.
+fn resolve_vendored(app: &tauri::App) -> Vendored {
+    Vendored {
+        uv: vendored_path(app, UV_RESOURCE_PATH, Path::is_file),
+        falkordb: vendored_path(app, FALKORDB_RESOURCE_PATH, Path::is_dir),
+    }
+}
+
+/// Resolve one vendored path, bundle first.
+///
+/// In a bundled app these are Tauri resources; in a dev run they sit in the
+/// checkout, where `task tauri:vendor` wrote them.
+fn vendored_path(
+    app: &tauri::App,
+    relative: &str,
+    exists: fn(&Path) -> bool,
+) -> Option<PathBuf> {
     if let Ok(resources) = app.path().resource_dir() {
-        let bundled = resources.join(FALKORDB_RESOURCE_PATH);
-        if bundled.is_dir() {
+        let bundled = resources.join(relative);
+        if exists(&bundled) {
             return Some(bundled);
         }
     }
-    let from_repo = repo_root()?.join("src-tauri").join(FALKORDB_RESOURCE_PATH);
-    from_repo.is_dir().then_some(from_repo)
+    let from_repo = repo_root()?.join("src-tauri").join(relative);
+    exists(&from_repo).then_some(from_repo)
 }
 
 fn resolve_launcher() -> BackendLauncher {

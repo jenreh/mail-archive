@@ -38,7 +38,8 @@
       "icons/icon.icns"
     ],
     "resources": [
-      "resources/falkordb/*"
+      "resources/falkordb/*",
+      "resources/uv/*"
     ],
     "macOS": {
       "minimumSystemVersion": "10.15"

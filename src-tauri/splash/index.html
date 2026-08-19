@@ -83,14 +83,19 @@
     </div>
 
     <script type="module">
-      // The Rust side emits `backend-failed` when the backend never answers.
-      const { listen } = window.__TAURI__.event;
-      listen("backend-failed", (event) => {
+      // Polled, not pushed: the backend can fail before this script has even
+      // run (a missing `uv` fails in milliseconds), and an event emitted then
+      // would be dropped with no listener attached.
+      const { invoke } = window.__TAURI__.core;
+
+      const poll = setInterval(async () => {
+        const failure = await invoke("startup_failure");
+        if (!failure) return;
+        clearInterval(poll);
         document.getElementById("loading").classList.add("hidden");
         document.getElementById("error").classList.remove("hidden");
-        document.getElementById("error-detail").textContent =
-          String(event.payload ?? "No output was captured.");
-      });
+        document.getElementById("error-detail").textContent = failure;
+      }, 300);
     </script>
   </body>
 </html>

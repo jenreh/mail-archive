@@ -4,8 +4,9 @@
 //! in turn owns FalkorDB, so taking down the whole process group on exit stops
 //! both without the shell needing to know about the database at all.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,14 @@ pub const BACKEND_URL: &str = "http://127.0.0.1:8080";
 /// `PROFILES` line in `.env` would beat this. The repo's `.env` deliberately
 /// leaves `PROFILES` unset for exactly that reason.
 const PROFILES: &str = "prod";
+
+/// Virtualenvs to hand `uv`, in preference order.
+///
+/// `uv` picks one from `UV_PROJECT_ENVIRONMENT`, which comes from the
+/// developer's shell and so is absent from a GUI launch. Without it `uv`
+/// ignores an existing `.venv.mac` and builds a second environment at `.venv`
+/// from scratch — minutes of silent work behind the splash screen.
+const VENV_CANDIDATES: [&str; 2] = [".venv", ".venv.mac"];
 
 /// Generous on purpose: Reflex compiles the frontend on first run.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(180);
@@ -82,6 +91,8 @@ extern "C" fn on_terminate(signal: libc::c_int) {
 pub enum BackendError {
     /// The frozen-Python sidecar is not implemented yet.
     SidecarNotImplemented,
+    /// `uv` is nowhere a GUI launch can see it.
+    UvNotFound,
     Spawn(String),
     /// The backend process died before it ever served a request.
     Exited { status: String, tail: String },
@@ -98,6 +109,17 @@ impl std::fmt::Display for BackendError {
                  repository with `task tauri:dev`, or implement the frozen \
                  sidecar (see `task tauri:bundle:sidecar`)."
             ),
+            Self::UvNotFound => write!(
+                f,
+                "Could not find `uv`, which the backend runs under. This build \
+                 ships none, and the host has none on PATH or in {}. Rebuild \
+                 with `task tauri:build`, which vendors it.",
+                toolchain_dirs()
+                    .iter()
+                    .map(|dir| dir.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Spawn(message) => write!(f, "Could not start the backend: {message}"),
             Self::Exited { status, tail } => write!(
                 f,
@@ -110,6 +132,18 @@ impl std::fmt::Display for BackendError {
             ),
         }
     }
+}
+
+/// The runtimes this bundle carries, as resolved by the shell.
+///
+/// A bundled app must assume the target Mac has none of them installed, so
+/// each is preferred over anything found on the host.
+#[derive(Default)]
+pub struct Vendored {
+    /// The `uv` vendored by `task tauri:vendor:uv`.
+    pub uv: Option<PathBuf>,
+    /// The FalkorDB runtime vendored by `task tauri:vendor:falkordb`.
+    pub falkordb: Option<PathBuf>,
 }
 
 /// How this build gets a backend.
@@ -147,14 +181,17 @@ pub struct Backend {
 impl Backend {
     pub fn start(
         launcher: &BackendLauncher,
-        falkordb_dir: Option<PathBuf>,
+        vendored: &Vendored,
     ) -> Result<Self, BackendError> {
         let (root, env) = match launcher {
             BackendLauncher::Sidecar => return Err(BackendError::SidecarNotImplemented),
             BackendLauncher::Repo { root, env } => (root, *env),
         };
 
-        let mut command = Command::new("uv");
+        let uv = resolve_uv(vendored.uv.as_deref()).ok_or(BackendError::UvNotFound)?;
+        log::info!("Starting backend with {}", uv.display());
+
+        let mut command = Command::new(&uv);
         command
             .arg("run")
             .arg("reflex")
@@ -163,10 +200,18 @@ impl Backend {
             .arg(env.as_str())
             .current_dir(root)
             .env("PROFILES", PROFILES)
+            // Reflex shells out to bun and node; the inherited GUI PATH has
+            // neither, and the vendored uv has to win over any host copy.
+            .env("PATH", child_path(&uv))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        if let Some(dir) = falkordb_dir {
+        if let Some(venv) = resolve_venv(root) {
+            log::info!("Using virtualenv {}", venv.display());
+            command.env("UV_PROJECT_ENVIRONMENT", venv);
+        }
+
+        if let Some(dir) = vendored.falkordb.as_ref() {
             // Tells the Python side where the vendored redis-server and
             // FalkorDB module live inside the bundle.
             command.env("MAIL_ARCHIVE_FALKORDB_DIR", dir);
@@ -272,6 +317,69 @@ fn signal_group(pid: u32, signal: i32) {
     unsafe {
         libc::killpg(pid as libc::pid_t, signal);
     }
+}
+
+/// Find `uv`, preferring the copy shipped inside the bundle.
+///
+/// The bundled one is what makes the app work on a Mac that has never heard of
+/// uv. The host fallbacks only matter for a dev run against a checkout that has
+/// not been vendored yet — and even there, an app launched from Finder inherits
+/// launchd's PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which contains no
+/// developer toolchain, so the usual install locations are searched by hand.
+fn resolve_uv(bundled: Option<&Path>) -> Option<PathBuf> {
+    if let Some(bundled) = bundled.filter(|path| path.is_file()) {
+        return Some(bundled.to_path_buf());
+    }
+    log::warn!("No vendored uv in this build; falling back to the host's");
+    find_on_path("uv").or_else(|| {
+        toolchain_dirs()
+            .into_iter()
+            .map(|dir| dir.join("uv"))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+/// The checkout's existing virtualenv, if it has one.
+///
+/// Returning `None` is fine: `uv` then creates one, which is slow but correct.
+fn resolve_venv(root: &Path) -> Option<PathBuf> {
+    VENV_CANDIDATES
+        .iter()
+        .map(|name| root.join(name))
+        .find(|candidate| candidate.join("pyvenv.cfg").is_file())
+}
+
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Where a macOS developer toolchain installs, most specific first.
+fn toolchain_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local").join("bin"));
+        dirs.push(home.join(".cargo").join("bin"));
+    }
+    dirs
+}
+
+/// The chosen `uv` and the toolchain directories, ahead of the inherited PATH.
+fn child_path(uv: &Path) -> OsString {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = uv
+        .parent()
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(toolchain_dirs())
+        .chain(std::env::split_paths(&inherited));
+    std::env::join_paths(dirs).unwrap_or(inherited)
 }
 
 /// Whether the backend answers an HTTP request yet.

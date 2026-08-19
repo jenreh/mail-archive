@@ -95,15 +95,24 @@ For a cloud deployment use `PROFILES=prod` plus `APP__GRAPH__MODE=remote` and
 ## Running as a desktop app (macOS)
 
 The desktop shell lives in [`src-tauri/`](src-tauri) and bundles its own
-FalkorDB, so **the built `.app` needs no Homebrew, no Docker and no Redis on the
-target Mac**.
+FalkorDB and `uv`, so **the built `.app` needs no Homebrew, no Docker, no Redis
+and no `uv` on the target Mac**. A GUI launch inherits launchd's PATH
+(`/usr/bin:/bin:/usr/sbin:/sbin`), which has no developer toolchain in it at
+all, so anything the app needs has to travel with it.
 
 ```sh
 task tauri:init     # check the toolchain, install tauri-cli, generate icons
-task tauri:vendor   # download + build the self-contained FalkorDB runtime
+task tauri:vendor   # download + build the vendored runtimes (FalkorDB, uv)
 task tauri:dev      # run the desktop app
-task tauri:build    # produce src-tauri/target/release/bundle/macos/mail-archive.app
+task tauri:build    # produce build/release/bundle/macos/mail-archive.app
 ```
+
+`task tauri:build` also runs `task tauri:frontend`, which compiles the Reflex
+frontend up front so the app's first launch does a few seconds of rebuild
+rather than a cold `reflex init`.
+
+Still **not** self-contained: the backend itself runs from this checkout. See
+`task tauri:bundle:sidecar` for what freezing it would take.
 
 Build-machine only requirements: Xcode command line tools, Rust, Node, and
 Homebrew `openssl@3` (its dylibs get copied into the bundle and repointed at
@@ -116,6 +125,7 @@ Homebrew `openssl@3` (its dylibs get copied into the bundle and repointed at
 | `redis-server` | built from the pinned Redis source with `BUILD_TLS=no`, so it links only system libraries |
 | `falkordb.so` | the pinned official FalkorDB release asset, SHA256-verified |
 | `libssl.3.dylib`, `libcrypto.3.dylib` | copied from Homebrew, because the FalkorDB module links them at absolute paths |
+| `uv` | the pinned official `uv` release binary, SHA256-verified |
 
 Every rewritten Mach-O is re-signed — editing a Mach-O invalidates its signature
 and arm64 macOS refuses to load unsigned code. The run ends by re-reading the

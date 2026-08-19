@@ -121,7 +121,7 @@ reflex.lock/
 # Tauri desktop shell
 src-tauri/target/
 src-tauri/gen/
-# Vendored FalkorDB runtime — rebuild with `task tauri:vendor`
+# Vendored runtimes (FalkorDB, uv) — rebuild with `task tauri:vendor`
 src-tauri/resources/
 src-tauri/icons/
 # Local FalkorDB data

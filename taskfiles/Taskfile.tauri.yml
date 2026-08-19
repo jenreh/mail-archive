@@ -8,6 +8,12 @@ vars:
   RUNNER: uv run
   # The FalkorDB runtime vendored by `task tauri:vendor`.
   FALKORDB_DIR: "{{.ROOT_DIR}}/src-tauri/resources/falkordb"
+  # The `uv` vendored by `task tauri:vendor`. The bundled app runs its Python
+  # backend through this one — the target Mac is assumed to have none.
+  UV_DIR: "{{.ROOT_DIR}}/src-tauri/resources/uv"
+  # Cargo/Tauri output. Overrides the global ~/.cargo/config.toml target-dir,
+  # which otherwise drops the bundles under /tmp.
+  BUILD_DIR: "{{.ROOT_DIR}}/build"
   # Selects configuration/config.prod.yaml, which aligns the frontend and
   # backend ports. Reflex refuses to start in prod mode when they differ.
   PROFILES: prod
@@ -61,19 +67,33 @@ tasks:
   # ----------------------------------------------------------------------------
 
   vendor:
+    desc: Download and prepare every runtime the bundle ships
+    deps: [vendor:falkordb, vendor:uv]
+
+  vendor:falkordb:
     desc: Download and prepare the self-contained FalkorDB runtime
     status:
       - test -f "{{.FALKORDB_DIR}}/falkordb.so"
       - test -f "{{.FALKORDB_DIR}}/redis-server"
     cmd: "{{.RUNNER}} python scripts/vendor_falkordb.py"
 
+  vendor:uv:
+    desc: Download the pinned `uv` the bundled backend runs under
+    status:
+      - test -f "{{.UV_DIR}}/uv"
+    cmd: "{{.RUNNER}} python scripts/vendor_uv.py"
+
   vendor:force:
-    desc: Re-download and rebuild the FalkorDB runtime from scratch
-    cmd: "{{.RUNNER}} python scripts/vendor_falkordb.py --force"
+    desc: Re-download and rebuild every vendored runtime from scratch
+    cmds:
+      - "{{.RUNNER}} python scripts/vendor_falkordb.py --force"
+      - "{{.RUNNER}} python scripts/vendor_uv.py --force"
 
   vendor:verify:
-    desc: Check the vendored runtime references no Homebrew paths
-    cmd: "{{.RUNNER}} python scripts/vendor_falkordb.py --verify-only"
+    desc: Check the vendored runtimes reference no Homebrew paths
+    cmds:
+      - "{{.RUNNER}} python scripts/vendor_falkordb.py --verify-only"
+      - "{{.RUNNER}} python scripts/vendor_uv.py --verify-only"
 
   # ----------------------------------------------------------------------------
   # Running
@@ -87,15 +107,25 @@ tasks:
       MAIL_ARCHIVE_FALKORDB_DIR: "{{.FALKORDB_DIR}}"
     cmd: cargo tauri dev
 
+  frontend:
+    desc: Compile the Reflex frontend ahead of the bundle
+    env:
+      PROFILES: "{{.PROFILES}}"
+      MAIL_ARCHIVE_FALKORDB_DIR: "{{.FALKORDB_DIR}}"
+    cmd: "{{.RUNNER}} reflex export --frontend-only --no-zip --env prod"
+
   build:
-    desc: Build the macOS .app and .dmg
-    deps: [vendor, icons]
+    desc: Build the macOS .app and .dmg into ./build
+    # `frontend` warms .web — bun, node_modules and the vite cache — so the
+    # app's first launch does a rebuild of a few seconds rather than a cold
+    # `reflex init` of several minutes.
+    deps: [vendor, icons, frontend]
     env:
       MAIL_ARCHIVE_ROOT: "{{.ROOT_DIR}}"
+      CARGO_TARGET_DIR: "{{.BUILD_DIR}}"
     cmds:
       - cargo tauri build --bundles app,dmg
-      # cargo tauri prints the bundle paths; CARGO_TARGET_DIR may relocate them.
-      - echo "📦 Bundle paths are printed above by cargo tauri."
+      - echo "📦 Bundles in {{.BUILD_DIR}}/release/bundle (app, dmg)."
 
   backend:
     desc: Run just the backend exactly as the desktop shell does
@@ -145,7 +175,9 @@ tasks:
   clean:
     desc: Remove Tauri build output and the vendored runtime
     ignore_error: true
+    env:
+      CARGO_TARGET_DIR: "{{.BUILD_DIR}}"
     cmds:
       - cargo clean --manifest-path src-tauri/Cargo.toml
-      - rm -rf src-tauri/gen src-tauri/resources
+      - rm -rf "{{.BUILD_DIR}}" src-tauri/gen src-tauri/resources
       - echo "🧹 Tauri artifacts removed (run `task tauri:vendor` to restore)"

@@ -1,5 +1,8 @@
-/* Tailwind directives — processed by PostCSS with tailwindcss plugin */
-@import "tailwindcss";
+/* Tailwind is imported once by the TailwindV4Plugin's own entry
+   (.web/styles/tailwind.css), which the global stylesheet pulls in before this
+   file. A second bare `@import "tailwindcss"` here is redundant AND breaks the
+   production build: Vite's postcss-import resolves it as a relative path and
+   fails with ENOENT on <project>/.web/tailwindcss. */
 
 @custom-variant dark (&:where(.dark, .dark *));
 

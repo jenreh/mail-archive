@@ -21,7 +21,7 @@ from app.roles import ALL_ROLES
     navbar=app_navbar(),
     admin_only=True,
     # ty cannot model reflex event-handler calls; suppress the false positives.
-    on_load=[UserState.set_available_roles(ALL_ROLES)],  # ty: ignore[invalid-argument-type, missing-argument]
+    on_load=[UserState.set_available_roles(ALL_ROLES)],  # ty: ignore[invalid-argument-type]
 )
 def users_page() -> rx.Component:
     additional_components = []

@@ -1,0 +1,21 @@
+profile: prod
+
+# Reflex serves the frontend and backend from a SINGLE port in prod/preview
+# mode and refuses to start when the two ports differ. The default profile uses
+# 8080/3030, so this profile aligns them; without it `reflex run --env prod`
+# exits with "frontend and backend must run on the same port".
+reflex:
+  frontend_port: 8080
+  backend_port: 8080
+
+app:
+  # The desktop app owns its FalkorDB: it starts the vendored redis-server with
+  # the FalkorDB module from src-tauri/resources/falkordb.
+  graph:
+    mode: local
+    host: 127.0.0.1
+    port: 6379
+
+# Deliberately does NOT set `environment` or `logging`, so this profile composes
+# with `local` (PROFILES=local,prod) without dragging production logging into a
+# development run.

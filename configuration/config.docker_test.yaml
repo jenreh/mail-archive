@@ -11,6 +11,3 @@ reflex:
 app:
   environment: container
 
-  database:
-    host: db
-    name: mail-archive-db

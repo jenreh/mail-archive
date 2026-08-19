@@ -9,12 +9,14 @@ Create Date: 2025-12-30 14:43:47.334328
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from appkit_commons.database.configuration import DatabaseConfig
+from appkit_commons.database.entities import ArrayType
 from sqlalchemy_utils import StringEncryptedType
 from sqlalchemy_utils.types.encrypted.encrypted_type import FernetEngine
 
 from alembic import op
 
-from app import configuration
+from app import settings
 
 # revision identifiers, used by Alembic.
 revision: str = "appkit_user"
@@ -25,7 +27,9 @@ depends_on: str | Sequence[str] | None = None
 
 def get_encryption_key() -> str:
     """Get encryption key from environment or config."""
-    config = configuration.app.database
+    config: DatabaseConfig | None = settings.app.database
+    if config is None:
+        raise RuntimeError("Database config is not set; cannot get encryption key")
     return str(config.encryption_key.get_secret_value())
 
 
@@ -43,11 +47,14 @@ def upgrade() -> None:
         sa.Column("is_admin", sa.Boolean(), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False),
         sa.Column("needs_password_reset", sa.Boolean(), nullable=False),
+        # ArrayType is what UserEntity maps: a native ARRAY on PostgreSQL, a
+        # JSON string everywhere else. On SQLite the empty value is therefore
+        # the JSON literal, not PostgreSQL's '{}'.
         sa.Column(
             "roles",
-            sa.ARRAY(sa.String()),
+            ArrayType(),
             nullable=False,
-            server_default="{}",
+            server_default=sa.text("'[]'"),
         ),
         sa.Column(
             "last_login",
@@ -165,9 +172,11 @@ def upgrade() -> None:
         sa.UniqueConstraint("session_id"),
     )
 
+    # Unqualified table name and a JSON roles literal: SQLite has neither a
+    # `public` schema nor PostgreSQL's array syntax.
     op.execute(
         """
-        INSERT INTO public.auth_users
+        INSERT INTO auth_users
         (email, name, avatar_url, is_active, is_admin, is_verified, _password, created, updated, last_login, needs_password_reset, roles)
         VALUES(
             'admin',
@@ -181,7 +190,7 @@ def upgrade() -> None:
             '2025-02-03 10:19:14.354',
             '2025-02-03 10:19:14.354',
             false,
-            '{"user"}'
+            '["user"]'
         );
         """
     )

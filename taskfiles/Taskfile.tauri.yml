@@ -1,0 +1,151 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: "3"
+
+silent: true
+
+vars:
+  RUNNER: uv run
+  # The FalkorDB runtime vendored by `task tauri:vendor`.
+  FALKORDB_DIR: "{{.ROOT_DIR}}/src-tauri/resources/falkordb"
+  # Selects configuration/config.prod.yaml, which aligns the frontend and
+  # backend ports. Reflex refuses to start in prod mode when they differ.
+  PROFILES: prod
+
+tasks:
+  default:
+    desc: Show available commands
+    cmd: task --list
+
+  # ----------------------------------------------------------------------------
+  # Setup
+  # ----------------------------------------------------------------------------
+
+  init:
+    desc: Check the toolchain and install the Tauri CLI
+    cmds:
+      - |
+        set -euo pipefail
+        missing=0
+        for tool in cargo rustc node; do
+          if ! command -v "$tool" >/dev/null; then
+            echo "❌ $tool is not installed"
+            missing=1
+          fi
+        done
+        if ! xcode-select -p >/dev/null 2>&1; then
+          echo "❌ Xcode command line tools missing: xcode-select --install"
+          missing=1
+        fi
+        if ! command -v brew >/dev/null || ! brew --prefix openssl@3 >/dev/null 2>&1; then
+          echo "❌ openssl@3 missing on the BUILD machine: brew install openssl@3"
+          echo "   (the built .app needs nothing installed on the target Mac)"
+          missing=1
+        fi
+        [ "$missing" -eq 0 ] || exit 1
+        if ! command -v cargo-tauri >/dev/null; then
+          echo "📦 Installing tauri-cli (one-time, takes several minutes)…"
+          cargo install tauri-cli --locked --version "^2"
+        fi
+        echo "✅ Toolchain ready"
+      - task: icons
+
+  icons:
+    desc: Generate placeholder app icons (replace via `cargo tauri icon logo.png`)
+    status:
+      - test -f src-tauri/icons/icon.icns
+    cmd: "{{.RUNNER}} python scripts/make_icons.py"
+
+  # ----------------------------------------------------------------------------
+  # Native FalkorDB runtime
+  # ----------------------------------------------------------------------------
+
+  vendor:
+    desc: Download and prepare the self-contained FalkorDB runtime
+    status:
+      - test -f "{{.FALKORDB_DIR}}/falkordb.so"
+      - test -f "{{.FALKORDB_DIR}}/redis-server"
+    cmd: "{{.RUNNER}} python scripts/vendor_falkordb.py"
+
+  vendor:force:
+    desc: Re-download and rebuild the FalkorDB runtime from scratch
+    cmd: "{{.RUNNER}} python scripts/vendor_falkordb.py --force"
+
+  vendor:verify:
+    desc: Check the vendored runtime references no Homebrew paths
+    cmd: "{{.RUNNER}} python scripts/vendor_falkordb.py --verify-only"
+
+  # ----------------------------------------------------------------------------
+  # Running
+  # ----------------------------------------------------------------------------
+
+  dev:
+    desc: Run the desktop app against the repo (backend hot-reloads)
+    deps: [vendor, icons]
+    env:
+      MAIL_ARCHIVE_ROOT: "{{.ROOT_DIR}}"
+      MAIL_ARCHIVE_FALKORDB_DIR: "{{.FALKORDB_DIR}}"
+    cmd: cargo tauri dev
+
+  build:
+    desc: Build the macOS .app and .dmg
+    deps: [vendor, icons]
+    env:
+      MAIL_ARCHIVE_ROOT: "{{.ROOT_DIR}}"
+    cmds:
+      - cargo tauri build --bundles app,dmg
+      # cargo tauri prints the bundle paths; CARGO_TARGET_DIR may relocate them.
+      - echo "📦 Bundle paths are printed above by cargo tauri."
+
+  backend:
+    desc: Run just the backend exactly as the desktop shell does
+    env:
+      PROFILES: "{{.PROFILES}}"
+      MAIL_ARCHIVE_FALKORDB_DIR: "{{.FALKORDB_DIR}}"
+    cmd: "{{.RUNNER}} reflex run --env prod"
+
+  falkor:
+    desc: Start only FalkorDB, for poking at it with redis-cli
+    deps: [vendor]
+    env:
+      MAIL_ARCHIVE_FALKORDB_DIR: "{{.FALKORDB_DIR}}"
+    cmd: "{{.RUNNER}} python -m mailarc_core"
+
+  # ----------------------------------------------------------------------------
+  # Not implemented yet
+  # ----------------------------------------------------------------------------
+
+  bundle:sidecar:
+    desc: "STUB: freeze the Python backend into the bundle"
+    cmds:
+      - |
+        cat <<'PLAN'
+        Not implemented — the bundled .app still runs the backend from this
+        checkout via `uv`. FalkorDB itself IS fully vendored.
+
+        To finish it (see src-tauri/src/sidecar.rs):
+          1. reflex export --frontend-only            # static frontend
+          2. freeze the backend (PyInstaller, or a relocatable CPython from
+             `uv python install`) to a single executable
+          3. place it at src-tauri/binaries/mail-archive-backend-<target-triple>
+          4. uncomment bundle.externalBin in src-tauri/tauri.conf.json
+          5. switch BackendLauncher::Repo to ::Sidecar in src-tauri/src/lib.rs
+
+        Obstacles already known:
+          - Reflex re-runs its compile step unless the export is present
+          - Reflex assumes a writable working directory
+          - every .so in the frozen site-packages needs signing on arm64
+        PLAN
+      - exit 1
+
+  # ----------------------------------------------------------------------------
+  # Cleanup
+  # ----------------------------------------------------------------------------
+
+  clean:
+    desc: Remove Tauri build output and the vendored runtime
+    ignore_error: true
+    cmds:
+      - cargo clean --manifest-path src-tauri/Cargo.toml
+      - rm -rf src-tauri/gen src-tauri/resources
+      - echo "🧹 Tauri artifacts removed (run `task tauri:vendor` to restore)"

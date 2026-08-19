@@ -10,19 +10,33 @@ app:
   version: 1.0.0
   name: mail-archive
   logging: logging.prod.yaml
-  environment: prod
+  environment: production
   backend_timeout: 180 # seconds
 
   database:
-    username: secret:mn-db-user
-    password: secret:mn-db-password
-    host: secret:mn-db-host
-    port: 5432
-    name: secret:mn-db-name
+    type: sqlite
+    # appkit_commons hands this ONE url to both the sync and the async engine.
+    # The application only ever opens async sessions (every appkit_user state
+    # does), so it has to name an async driver. The sync-only consumers —
+    # Alembic and Reflex's db_url — convert it back with
+    # mailarc_core.database.sqlite.sync_database_url().
+    url: sqlite+aiosqlite:///.state/mail-archive.db
     encryption_key: secret:mn-db-encryption-key
-    pool_size: 10 # change only when needed
-    max_overflow: 30 # change only when needed
     echo: False # Set to True to enable SQL logging
+
+  # Cloud/server deployments connect to a graph somebody else operates.
+  # The desktop app overrides this to `local` via the `prod` profile.
+  #
+  # `backend` picks the driver runic builds: falkordb | neo4j | memgraph |
+  # arcadedb | age. Only falkordb can run with `mode: local` — the vendored
+  # runtime is a redis-server. The others need `mode: remote` plus
+  # `database`, `username` and `password`.
+  graph:
+    mode: local
+    backend: falkordb
+    host: 127.0.0.1
+    port: 6379
+    graph_name: mail-archive
 
   authentication:
     session_timeout: 25 # minutes

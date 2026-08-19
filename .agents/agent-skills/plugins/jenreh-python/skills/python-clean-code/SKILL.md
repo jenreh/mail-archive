@@ -258,7 +258,7 @@ contract. Internal helpers that don't belong to the public contract are
 | Principle | Preferred Python tool |
 |-----------|----------------------|
 | Minimal interfaces | `typing.Protocol` |
-| Pure data containers | `@dataclass(frozen=True)` or Pydantic `BaseModel` |
+| Pure data containers | Pydantic `BaseModel` (frozen: `model_config = ConfigDict(frozen=True)`) |
 | Dependency injection | Constructor params typed as `Protocol` |
 | Strategy / OCP | `Protocol` + dict dispatch or `functools.singledispatch` |
 | Cross-cutting concerns | Decorators, context managers |

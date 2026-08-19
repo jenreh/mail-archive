@@ -9,7 +9,12 @@ app:
   logging: logging.yaml
 
   database:
-    echo: False
+    echo: False # Set to True to log every statement
+
+  graph:
+    mode: local
+    host: 127.0.0.1
+    port: 6379
 
   authentication:
     server_url: http://localhost:8080

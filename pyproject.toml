@@ -16,14 +16,22 @@ classifiers = [
 ]
 
 dependencies = [
+    "mailarc-core",
     "appkit-user>=1.10.2",
     "appkit-mantine>=1.10.2",
-    "psycopg[binary,pool]>=3.3.4",
     "reflex>=0.9.5",
     "sqlalchemy>=2.0.49",
     "alembic>=1.18.4",
-    "runic-py>=0.3.6",
+    "aiosqlite>=0.22.1",
 ]
+
+# `components/*` are first-party libraries built and versioned with the app.
+# The web application depends on them; none of them may depend back on it.
+[tool.uv.workspace]
+members = ["components/*"]
+
+[tool.uv.sources]
+mailarc-core = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -53,6 +61,7 @@ packages = ["app"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/app",
+    "/components",
     "README.md",
     "pyproject.toml",
 ]
@@ -205,14 +214,14 @@ docstring-code-line-length = "dynamic"
 exclude = ["*.pyi"]
 
 [tool.ruff.lint.isort]
-known-local-folder = ["app"]
+known-local-folder = ["app", "mailarc_core"]
 
 [tool.pytest.ini_options]
 cache_dir = ".cache/pytest"
-testpaths = ["tests"]
+testpaths = ["tests", "components/mailarc-core/tests"]
 asyncio_mode = "auto"
 markers = [
-    "sonos_live: requires real Sonos hardware on the network",
+    "graph_local: starts the vendored FalkorDB (needs `task tauri:vendor`)",
 ]
 
 # Type checking with `ty` (Astral). Run via `task typecheck` (uv run ty check).
@@ -236,7 +245,7 @@ unresolved-import = "warn"
 
 [tool.coverage.run]
 branch = true
-source = ["app"]
+source = ["app", "components/mailarc-core/src/mailarc_core"]
 omit = []
 
 [tool.coverage.report]

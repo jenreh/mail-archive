@@ -116,22 +116,44 @@ Full rules in **python-coding** skill. Key:
 - Files ≤ 1000 lines.
 - Coverage ≥ 80%.
 - Type annotations on all functions/methods.
-- **Architecture**: hexagonal (domain → application → ports ← adapters; interfaces deliver).
+- **Value objects are pydantic models, never `@dataclass`** — immutable ones get
+  `model_config = ConfigDict(frozen=True)`. This includes Reflex state var
+  types: Reflex serialises `BaseModel` and resolves `row.field` inside
+  `rx.foreach`.
+- **Architecture**: UI on top of components (see §6). Introduce an abstraction
+  when there is a second implementation, not in anticipation of one.
 
 ---
 
 ## 6) Architecture Layers
 
-```
+A uv workspace: a Reflex application on top of first-party components.
+
+```sh
 mail-archive/
-├── ...
+├── app/                       Reflex only — pages, states, styles, navbar
+│   ├── composition.py         builds the components from configuration
+│   └── configuration.py       AppConfig (composes each component's config)
+├── components/mailarc-core/   no browser, no Reflex
+│   └── src/mailarc_core/
+│       ├── graph/             model · config · runtime · admin · client · status · server
+│       │                     (graph data goes through runic's OGM; only
+│       │                      admin/runtime/server are FalkorDB-specific)
+│       └── database/          sqlite
+├── scripts/                   build-time tooling (never runs on a user machine)
+└── src-tauri/                 the macOS desktop shell
 ```
 
 Key rules:
 
-- Use-cases import `ports/` only (never `adapters/`).
-- Adapters import `domain/` and their external library only.
-- Composition root is the **only** place that knows both ports and adapters.
+- `app/` may import a component. A component **never** imports `app`, Reflex,
+  or any `appkit` UI package — `test_isolation.py` enforces it.
+- Inside a component: value objects (`model.py`) know nothing about I/O;
+  everything else may import them.
+- `app/composition.py` is the **only** module that builds a component from
+  configuration. States and pages ask it; they never construct anything.
+- A `Protocol` earns its place when a second implementation exists. One
+  implementation behind a port is indirection, not architecture.
 
 ---
 

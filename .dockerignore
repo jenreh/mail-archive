@@ -70,3 +70,8 @@ terraform
 .states
 assets/external/*
 
+# Desktop shell and its build tooling are irrelevant to the cloud image
+src-tauri/
+scripts/vendor_falkordb.py
+scripts/make_icons.py
+.state/

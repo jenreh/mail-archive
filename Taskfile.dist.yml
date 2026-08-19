@@ -27,6 +27,9 @@ includes:
     vars:
       IMAGE_NAME: "{{.PROJECT}}-image"
 
+  tauri:
+    taskfile: ./taskfiles/Taskfile.tauri.yml
+
   # dev:
   #   taskfile: ./taskfiles/Taskfile.terraform.yaml
   #   vars:

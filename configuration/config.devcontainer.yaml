@@ -11,10 +11,7 @@ app:
   logging: logging.yaml
 
   database:
-    host: db
-    port: 5432
     echo: True
-    name: mail-archive-db
 
   authentication:
     server_url: http://localhost

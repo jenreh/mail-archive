@@ -8,6 +8,10 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 from app import settings
+
+# Imported for its side effect: a table is only in Base.metadata once its
+# module has run, and Alembic compares against that metadata.
+from mailarc_core.database import entities  # noqa: F401
 from mailarc_core.database.sqlite import sync_database_url
 
 # this is the Alembic Config object, which provides

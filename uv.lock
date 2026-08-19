@@ -5,7 +5,11 @@ requires-python = ">=3.14"
 [manifest]
 members = [
     "mail-archive",
+    "mailarc-analytics",
     "mailarc-core",
+    "mailarc-google",
+    "mailarc-sync",
+    "mailarc-ui",
 ]
 
 [[package]]
@@ -752,6 +756,7 @@ dependencies = [
     { name = "appkit-mantine" },
     { name = "appkit-user" },
     { name = "mailarc-core" },
+    { name = "mailarc-sync" },
     { name = "reflex" },
     { name = "sqlalchemy" },
 ]
@@ -760,6 +765,9 @@ dependencies = [
 dev = [
     { name = "bump-my-version" },
     { name = "detect-secrets" },
+    { name = "mailarc-analytics" },
+    { name = "mailarc-google" },
+    { name = "mailarc-ui" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -777,6 +785,7 @@ requires-dist = [
     { name = "appkit-mantine", specifier = ">=1.10.2" },
     { name = "appkit-user", specifier = ">=1.10.2" },
     { name = "mailarc-core", editable = "components/mailarc-core" },
+    { name = "mailarc-sync", editable = "components/mailarc-sync" },
     { name = "reflex", specifier = ">=0.9.5" },
     { name = "sqlalchemy", specifier = ">=2.0.49" },
 ]
@@ -785,6 +794,9 @@ requires-dist = [
 dev = [
     { name = "bump-my-version", specifier = ">=1.3.0" },
     { name = "detect-secrets", specifier = ">=1.5.0" },
+    { name = "mailarc-analytics", editable = "components/mailarc-analytics" },
+    { name = "mailarc-google", editable = "components/mailarc-google" },
+    { name = "mailarc-ui", editable = "components/mailarc-ui" },
     { name = "pre-commit", specifier = ">=4.6.0" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
@@ -794,6 +806,17 @@ dev = [
     { name = "ty", specifier = ">=0.0.49" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260510" },
 ]
+
+[[package]]
+name = "mailarc-analytics"
+version = "1.0.0"
+source = { editable = "components/mailarc-analytics" }
+dependencies = [
+    { name = "mailarc-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "mailarc-core", editable = "components/mailarc-core" }]
 
 [[package]]
 name = "mailarc-core"
@@ -814,6 +837,51 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13" },
     { name = "runic-py", specifier = ">=0.4.6" },
     { name = "sqlalchemy", specifier = ">=2.0.49" },
+]
+
+[[package]]
+name = "mailarc-google"
+version = "1.0.0"
+source = { editable = "components/mailarc-google" }
+dependencies = [
+    { name = "mailarc-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "mailarc-core", editable = "components/mailarc-core" }]
+
+[[package]]
+name = "mailarc-sync"
+version = "1.0.0"
+source = { editable = "components/mailarc-sync" }
+dependencies = [
+    { name = "mailarc-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "mailarc-core", editable = "components/mailarc-core" }]
+
+[[package]]
+name = "mailarc-ui"
+version = "1.0.0"
+source = { editable = "components/mailarc-ui" }
+dependencies = [
+    { name = "appkit-mantine" },
+    { name = "appkit-user" },
+    { name = "mailarc-analytics" },
+    { name = "mailarc-core" },
+    { name = "mailarc-sync" },
+    { name = "reflex" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "appkit-mantine", specifier = ">=1.10.2" },
+    { name = "appkit-user", specifier = ">=1.10.2" },
+    { name = "mailarc-analytics", editable = "components/mailarc-analytics" },
+    { name = "mailarc-core", editable = "components/mailarc-core" },
+    { name = "mailarc-sync", editable = "components/mailarc-sync" },
+    { name = "reflex", specifier = ">=0.9.5" },
 ]
 
 [[package]]

@@ -15,7 +15,7 @@ from appkit_user.user_management.pages import (
 from starlette.types import ASGIApp
 
 from app.components.navbar import app_navbar
-from app.composition import graph_server_lifespan
+from app.composition import graph_server_lifespan, sync_worker_lifespan
 from app.pages.home import home_page  # noqa: F401
 from app.pages.users import users_page  # noqa: F401
 from app.styles import base_style, base_stylesheets
@@ -47,3 +47,8 @@ app = rx.App(
 # this starts the vendored server on boot and stops it on shutdown; in remote
 # mode both ends are no-ops.
 app.register_lifespan_task(graph_server_lifespan)
+
+# Run the import worker as a child process for as long as the app runs. Off
+# under Docker and systemd via `sync.supervise_worker`, where the worker is its
+# own unit and a second copy would claim the same jobs.
+app.register_lifespan_task(sync_worker_lifespan)

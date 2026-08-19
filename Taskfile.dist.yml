@@ -22,6 +22,12 @@ includes:
   db:
     taskfile: ./taskfiles/Taskfile.db.yml
 
+  graph:
+    taskfile: ./taskfiles/Taskfile.graph.yml
+
+  sync:
+    taskfile: ./taskfiles/Taskfile.sync.yml
+
   docker:
     taskfile: ./taskfiles/Taskfile.docker.yml
     vars:

@@ -1,0 +1,23 @@
+[project]
+name = "mailarc-analytics"
+version = "1.0.0"
+description = "Mail archive analytics: derived nodes, analysis queries and embeddings"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Jens Rehpöhler" }]
+
+# Reads the ground truth the core wrote and writes beside it, never into it.
+dependencies = ["mailarc-core"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mailarc_analytics"]
+
+[tool.pytest.ini_options]
+cache_dir = "../../.cache/pytest"
+testpaths = ["tests"]
+asyncio_mode = "auto"

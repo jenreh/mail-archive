@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: "3"
+
+silent: true
+
+vars:
+  RUNNER: uv run
+  # Not runic's default `runic/`: a directory of that name at the repo root
+  # shadows the installed runic package on sys.path.
+  CONFIG: graph_migrations/env.py
+
+tasks:
+  default:
+    desc: Show available commands
+    cmd: task --list
+
+  # ----------------------------------------------------------------------------
+  # Graph Migration Commands (Namespace: graph)
+  # ----------------------------------------------------------------------------
+
+  revision:
+    desc: |
+      Create new runic migration (Usage: task graph:revision -- "your message here")
+    cmds:
+      # CLI_ARGS arrives already shell-quoted; quoting it again puts the quotes
+      # into the migration's message and file name.
+      - "{{.RUNNER}} runic revision -m {{.CLI_ARGS}} --config {{.CONFIG}}"
+
+  current:
+    desc: Run runic current (check migration status)
+    cmd: "{{.RUNNER}} runic current --config {{.CONFIG}}"
+
+  history:
+    desc: Show runic migration history
+    cmd: "{{.RUNNER}} runic history --config {{.CONFIG}}"
+
+  upgrade:
+    desc: Run runic upgrade head
+    cmd: "{{.RUNNER}} runic upgrade head --config {{.CONFIG}}"
+
+  downgrade:
+    desc: Downgrade graph by one revision
+    cmd: "{{.RUNNER}} runic downgrade --config {{.CONFIG}}"

@@ -127,29 +127,56 @@ Full rules in **python-coding** skill. Key:
 
 ## 6) Architecture Layers
 
-A uv workspace: a Reflex application on top of first-party components.
+A uv workspace: a Reflex application on top of five first-party components.
 
 ```sh
 mail-archive/
-├── app/                       Reflex only — pages, states, styles, navbar
+├── app/                       pages, routes, composition root, worker, MCP server
 │   ├── composition.py         builds the components from configuration
 │   └── configuration.py       AppConfig (composes each component's config)
-├── components/mailarc-core/   no browser, no Reflex
-│   └── src/mailarc_core/
-│       ├── graph/             model · config · runtime · admin · client · status · server
-│       │                     (graph data goes through runic's OGM; only
-│       │                      admin/runtime/server are FalkorDB-specific)
-│       └── database/          sqlite
+├── components/
+│   ├── mailarc-core/          domain, mail source port, graph ground truth,
+│   │                          SQLite, blob store — no browser, no provider
+│   ├── mailarc-sync/          engine, job queue, worker loop, provider registry
+│   ├── mailarc-analytics/     derived nodes, analysis queries, embeddings
+│   ├── mailarc-google/        Gmail, behind the mail source port
+│   └── mailarc-ui/            Reflex states + components
 ├── scripts/                   build-time tooling (never runs on a user machine)
 └── src-tauri/                 the macOS desktop shell
 ```
 
+The hierarchy *is* the import table — read it as the layering:
+
+| Module | may import | may **not** import |
+| --- | --- | --- |
+| `mailarc-core` | appkit-commons, runic.ogm, pydantic, sqlalchemy | Reflex, any provider |
+| `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, Reflex |
+| `mailarc-sync` | `mailarc-core` | `mailarc_google`, Reflex |
+| `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex |
+| `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-user | `app` |
+| `app` | everything | — |
+
+**No module imports `runic.rag`, `app` included.** Email already carries an
+exact graph in its headers — senders, recipients, threads, labels — so an LLM
+extraction would only lay a probabilistic layer over ground truth. A model
+reads the archive at query time through the MCP server; it never writes to it.
+
 Key rules:
 
-- `app/` may import a component. A component **never** imports `app`, Reflex,
-  or any `appkit` UI package — `test_isolation.py` enforces it.
-- Inside a component: value objects (`model.py`) know nothing about I/O;
-  everything else may import them.
+- `app/` may import a component. A component **never** imports `app`.
+- **`mailarc-ui` is the only component allowed to see Reflex** or an `appkit`
+  UI package; every other one must stay usable from a CLI, a worker or a test.
+  `components/mailarc-core/tests/test_isolation.py` enforces that exemption and
+  the `runic.rag` ban from a subprocess.
+- `app` is the only place that knows concrete implementations:
+  `registry.register(GmailSource.DESCRIPTOR, …)` happens in
+  `app/composition.py`, and the worker entrypoint is `app/worker.py` — else
+  `mailarc-sync` would have to know the providers.
+- Inside a component: one package per capability, with fixed file roles.
+  `__init__.py` is the public surface, `model.py` holds value objects and knows
+  no I/O, `config.py` the `BaseConfig`, `ports.py` only once a second
+  implementation exists; every other module is one responsibility.
+  `mailarc_core.graph` is the worked example.
 - `app/composition.py` is the **only** module that builds a component from
   configuration. States and pages ask it; they never construct anything.
 - A `Protocol` earns its place when a second implementation exists. One

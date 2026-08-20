@@ -126,3 +126,5 @@ src-tauri/resources/
 src-tauri/icons/
 # Local FalkorDB data
 .state/
+.playwright-mcp/
+.task/

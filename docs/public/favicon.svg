@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="mail-archive">
+  <title>mail-archive</title>
+  <rect width="32" height="32" rx="7" fill="#3B5BA5" />
+  <!-- An envelope whose flap doubles as the two edges leaving a message node. -->
+  <path d="M6.5 10.5h19v11.5a1.5 1.5 0 0 1-1.5 1.5H8a1.5 1.5 0 0 1-1.5-1.5z"
+        fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" />
+  <path d="M6.5 11 16 18l9.5-7" fill="none" stroke="#FFFFFF" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="16" cy="18" r="2.6" fill="#E0F7FA" stroke="#3B5BA5" stroke-width="1.6" />
+</svg>

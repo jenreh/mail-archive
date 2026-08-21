@@ -70,21 +70,34 @@ put a capability on the consent screen that no code here can use.
 
 Pressing **Connect** on a Gmail account:
 
-1. Starts a throwaway HTTP server on `127.0.0.1`, on a port the OS picks.
-2. Opens your browser at Google's consent screen. You sign in as yourself —
-   this application never sees your password, which is the entire point of
-   OAuth.
+1. Starts a throwaway HTTP server on `localhost`, on a port the OS picks. It
+   waits at most `app.google.consent_timeout` seconds (default 300) and is
+   gone afterwards whatever happened.
+2. Opens your browser at Google's consent screen, preselecting the address you
+   typed (`login_hint`). You sign in as yourself — this application never sees
+   your password, which is the entire point of OAuth.
 3. Google redirects back to that loopback port with a one-time code.
 4. The code is exchanged for an access token **and a refresh token**
-   (`access_type=offline`, `prompt=consent`), and the refresh token is written
-   into `mail_credentials`.
-5. The account is asked whose mailbox it actually is. That answer is routinely
-   not what you typed — an alias, a shared mailbox, or a second account you were
-   still signed into.
+   (`access_type=offline`, `prompt=consent`). Google's consent page lets you
+   untick the Gmail permission; a grant without it is refused on the spot
+   rather than stored.
+5. The account is asked whose mailbox it actually is, and the answer has to
+   match the address you typed. If you consented as a different account — easy
+   with several Google sessions in one browser — the grant is discarded, the
+   account goes to `auth_error`, and the message names both addresses.
 
 The refresh token is what lets an import run unattended later. Without one, an
 access token dies within the hour and the account can never sync again on its
 own.
+
+::: warning While the Google project is in "Testing"
+Google shows a *"Google hasn't verified this app"* page first. If pressing
+**Continue** there ends on *"An error occurred"* (`/info/unknownerror`),
+switch the page's language once with the dropdown at the bottom left and press
+Continue again. The first render of that page is a known Google defect; the
+consent itself is fine. Grants made in Testing status expire after seven days
+and then ask for a reconnect.
+:::
 
 ## How the credential is stored
 

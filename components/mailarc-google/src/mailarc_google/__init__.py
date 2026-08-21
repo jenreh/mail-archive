@@ -6,5 +6,12 @@ shapes stop at this boundary. It hangs off the core alone: the engine that
 drives it never learns its name, because ``app/composition.py`` does the
 registering.
 
-Empty until phase 3 fills ``source/``.
+``source/`` is the whole of it. The two names below are what
+``app/composition.py`` registers — the descriptor the account form renders and
+the class that builds a mailbox from a decrypted secret — so the composition
+root never has to reach into a submodule.
 """
+
+from mailarc_google.source import GMAIL_DESCRIPTOR, GmailSource
+
+__all__ = ["GMAIL_DESCRIPTOR", "GmailSource"]

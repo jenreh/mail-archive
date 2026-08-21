@@ -38,6 +38,16 @@ app:
     port: 6379
     graph_name: mail-archive
 
+  # The OAuth client every Gmail mailbox on this installation connects
+  # through. It belongs to whoever deploys the application — the consent
+  # screen and the 250 units/user/s quota are theirs — so it is configured
+  # once here and no user is ever asked to make a Google Cloud project.
+  # Both come from the secret provider: neither belongs in a committed file.
+  # Leave them unset and the account page simply says Gmail is not set up.
+  google:
+    client_id: secret:mn-google-client-id
+    client_secret: secret:mn-google-client-secret
+
   authentication:
     session_timeout: 25 # minutes
     auth_token_refresh_delta: 10 # minutes

@@ -13,19 +13,27 @@ import os
 import signal
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Sequence
-from functools import lru_cache
+from collections.abc import AsyncIterator, Mapping, Sequence
+from functools import lru_cache, partial
 
 from appkit_commons.registry import service_registry
 
 from mailarc_core import (
     ArchiveConfig,
+    ArchiveReader,
+    BlobStore,
     FalkorDBServer,
     GraphConfig,
     GraphServerStatus,
     read_status_async,
 )
+from mailarc_core.graph.client import session as graph_session
 from mailarc_core.mail.config import MailConfig
+from mailarc_core.mail.errors import MailAuthError
+from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY
+from mailarc_google import GmailSource
+from mailarc_google.source.config import GmailConfig
+from mailarc_google.source.oauth import run_consent_async
 from mailarc_sync.engine import (
     FAKE_DESCRIPTOR,
     FakeMailSource,
@@ -61,6 +69,10 @@ def archive_config() -> ArchiveConfig:
 
 def mail_config() -> MailConfig:
     return _registered(MailConfig)
+
+
+def google_config() -> GmailConfig:
+    return _registered(GmailConfig)
 
 
 @lru_cache(maxsize=1)
@@ -113,8 +125,90 @@ def provider_registry() -> ProviderRegistry:
     """
     registry = ProviderRegistry()
     registry.register(FAKE_DESCRIPTOR, FakeMailSource.create)
-    # GmailSource is registered here in phase 3 — one line, and nothing below
-    # this module learns a provider's name.
+    registry.register(
+        GmailSource.DESCRIPTOR,
+        GmailSource.using(google_config()),
+        consent=gmail_consent,
+    )
+    return registry
+
+
+async def gmail_consent(values: Mapping[str, str]) -> str:
+    """Walk the user through Google's consent screen and return what to store.
+
+    The :data:`~mailarc_core.mail.ports.ConsentRunner` for Gmail, and the whole
+    reason that alias exists: opening a browser is not something a mailbox can
+    be asked to do through the port, and ``mailarc-ui`` may not import a
+    provider to reach one (§4.1). So the browser half is registered here, in
+    the one module allowed to name Gmail, and the account page only knows that
+    this provider has a second step.
+
+    ``values`` are whatever the descriptor asked the user for, and Gmail's
+    asks for nothing: the OAuth client is this installation's, configured once
+    under ``app.google``, so a person adding a mailbox types an address and
+    presses Connect. What the mapping does carry is that address, under
+    :data:`~mailarc_core.mail.ports.CONSENT_ADDRESS_KEY`, and it goes to Google
+    as the ``login_hint`` so the consent screen opens on the right account.
+    """
+    config = google_config()
+    if not config.configured():
+        raise MailAuthError(
+            "Gmail is not set up on this installation — set app.google.client_id "
+            "and app.google.client_secret in the configuration"
+        )
+    credentials = await run_consent_async(
+        config, login_hint=values.get(CONSENT_ADDRESS_KEY) or None
+    )
+    return credentials.to_secret()
+
+
+@lru_cache(maxsize=1)
+def archive_reader() -> ArchiveReader:
+    """The read side of the archive, wired to this installation's stores.
+
+    The same pair the worker writes with — the configured graph and the blob
+    store under ``archive.store_dir`` — so what the review page lists is what
+    the import wrote. Cached like the other handles: it holds no connection,
+    but it is one decision and two objects would be two answers to "where is
+    the archive".
+    """
+    return ArchiveReader(
+        graph_session=partial(graph_session, graph_config()),
+        blobs=BlobStore(archive_config()),
+    )
+
+
+def publish_archive_reader() -> ArchiveReader:
+    """Leave the reader where the review page can find it.
+
+    Same route and same reason as :func:`publish_provider_registry`:
+    ``mailarc-ui`` may not import ``app``, and this is the one module allowed
+    to build a component from configuration. Saying it twice is a no-op.
+    """
+    services = service_registry()
+    reader = archive_reader()
+    if services.has(ArchiveReader) and services.get(ArchiveReader) is reader:
+        return reader
+    services.register_as(ArchiveReader, reader)
+    return reader
+
+
+def publish_provider_registry() -> ProviderRegistry:
+    """Leave the provider list where the browser half can find it.
+
+    ``mailarc-ui`` is a component and may not import ``app`` (§4.1), so it
+    reads the registry out of the service registry — the same route every
+    configuration takes, and the reason this module stays the only one that
+    names a provider.
+
+    Saying it twice is a no-op rather than an overwrite: the application is
+    reloadable, and re-registering the same object would only log noise.
+    """
+    services = service_registry()
+    registry = provider_registry()
+    if services.has(ProviderRegistry) and services.get(ProviderRegistry) is registry:
+        return registry
+    services.register_as(ProviderRegistry, registry)
     return registry
 
 

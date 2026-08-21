@@ -15,7 +15,7 @@ line and no UI change.
 import logging
 
 from mailarc_core.mail.model import MailProvider, ProviderDescriptor
-from mailarc_core.mail.ports import MailSourceFactory
+from mailarc_core.mail.ports import ConsentRunner, MailSourceFactory
 
 logger = logging.getLogger(__name__)
 
@@ -39,22 +39,52 @@ class ProviderRegistry:
     def __init__(self) -> None:
         self._descriptors: dict[MailProvider, ProviderDescriptor] = {}
         self._factories: dict[MailProvider, MailSourceFactory] = {}
+        self._consents: dict[MailProvider, ConsentRunner] = {}
 
     def register(
-        self, descriptor: ProviderDescriptor, factory: MailSourceFactory
+        self,
+        descriptor: ProviderDescriptor,
+        factory: MailSourceFactory,
+        consent: ConsentRunner | None = None,
     ) -> None:
         """Make a provider available under the descriptor's own ``provider``.
 
         Registering twice replaces the entry rather than raising: a composition
         root that runs again after a reload has to be able to say the same
         thing twice.
+
+        ``consent`` is the optional second step between typing a credential and
+        owning a mailbox — OAuth needs a browser round trip, an app password
+        does not. A provider that omits it is complete as soon as its fields
+        are filled in, and the account page reads that off
+        :meth:`needs_consent` rather than off the provider's name.
         """
         provider = descriptor.provider
         if provider in self._factories:
             logger.debug("Replacing the registration for %s", provider)
         self._descriptors[provider] = descriptor
         self._factories[provider] = factory
-        logger.debug("Registered provider %s (%s)", provider, descriptor.label)
+        self._consents.pop(provider, None)
+        if consent is not None:
+            self._consents[provider] = consent
+        logger.debug(
+            "Registered provider %s (%s), consent=%s",
+            provider,
+            descriptor.label,
+            consent is not None,
+        )
+
+    def needs_consent(self, provider: MailProvider) -> bool:
+        """Whether this provider has a second step before it can be used."""
+        return provider in self._consents
+
+    def consent_for(self, provider: MailProvider) -> ConsentRunner | None:
+        """The provider's consent step, or ``None`` if it has none.
+
+        ``None`` rather than an exception: "this mailbox needs no browser" is
+        an ordinary answer, and the caller branches on it either way.
+        """
+        return self._consents.get(provider)
 
     def factory_for(self, provider: MailProvider) -> MailSourceFactory:
         """The callable that builds a source for this provider."""

@@ -13,6 +13,7 @@ from pydantic import Field
 from mailarc_core import ArchiveConfig, GraphConfig
 from mailarc_core.database import sqlite
 from mailarc_core.mail.config import MailConfig
+from mailarc_google.source.config import GmailConfig
 from mailarc_sync.engine.config import SyncConfig
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ class AppConfig(ApplicationConfig):
     sync: SyncConfig = Field(default_factory=SyncConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     mail: MailConfig = Field(default_factory=MailConfig)
+    google: GmailConfig = Field(default_factory=GmailConfig)
 
 
 @lru_cache(maxsize=1)

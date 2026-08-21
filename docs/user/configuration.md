@@ -145,6 +145,7 @@ own unit. Leave it on for the desktop app, where there is nobody else to do it.
 | `api_base_url` | `https://gmail.googleapis.com/gmail/v1` | Settings, not constants, so tests can point at a local server |
 | `token_uri` | `https://oauth2.googleapis.com/token` | |
 | `loopback_port` | `0` | `0` lets the OS pick — a fixed port is a collision waiting for the second window |
+| `consent_timeout` | `300` | Seconds the consent flow waits for the browser to come back before it gives up and frees the port |
 | `request_timeout` | `30.0` | Generous, because a raw message with attachments is a large body |
 | `page_size` | `100` | Gmail's own maximum is 500; a hundred keeps a cancel prompt |
 

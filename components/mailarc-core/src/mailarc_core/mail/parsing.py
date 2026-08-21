@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 
 SIMHASH_BITS = 64
 
+_BODY_TEXT_TYPES = frozenset({"text/plain", "text/html"})
+"""The subtypes ``get_body`` chooses between; a bare second one is still body."""
+
 _TOKEN = re.compile(r"\w+")
 _WHITESPACE = re.compile(r"\s+")
 
@@ -226,7 +229,7 @@ def parse_message(raw: bytes, *, config: MailConfig | None = None) -> ParsedMess
         ),
         refs=extract_refs(subject, body_text),
         size_bytes=len(raw),
-        has_attachments=bool(attachments),
+        has_attachments=any(not one.embedded for one in attachments),
         eml_sha256=hashlib.sha256(raw).hexdigest(),
         in_reply_to=in_reply_to,
         references=references,
@@ -512,7 +515,7 @@ def _part_text(part: MIMEPart) -> str:
 def _attachments(message: EmailMessage) -> tuple[ParsedAttachment, ...]:
     """Every non-body part, hashed so the same file lands on one node."""
     try:
-        parts = list(message.iter_attachments())
+        parts = list(_attachment_parts(message))
     except Exception:
         logger.debug("Attachments could not be enumerated", exc_info=True)
         return ()
@@ -533,6 +536,44 @@ def _attachments(message: EmailMessage) -> tuple[ParsedAttachment, ...]:
             )
         )
     return tuple(found)
+
+
+def _attachment_parts(container: MIMEPart) -> Iterator[MIMEPart]:
+    """The attachment parts of a multipart, however deep they are nested.
+
+    ``iter_attachments`` looks one level down only, and for
+    ``multipart/alternative`` it yields nothing at all. Apple Mail wraps every
+    rich-text mail in exactly that: the PDF sits in a ``multipart/mixed`` that
+    is itself one of the alternatives. So every ``multipart/*`` child is walked
+    the same way — including one the iterator hands back, because storing a
+    nested ``multipart/mixed`` as the envelope it is would leave the file
+    inside it without a node. A ``message/rfc822`` part is not a container in
+    that sense: the forward is the attachment, whatever the forwarded mail
+    carries.
+
+    Body fragments are dropped on the way: ``iter_attachments`` yields a second
+    ``text/html`` or ``text/plain`` because one of that subtype was already the
+    body, and Apple closes its HTML after the PDF with exactly such a tail.
+    """
+    for part in container.iter_attachments():
+        if not _is_container(part) and not _is_body_fragment(part):
+            yield part
+    for child in container.iter_parts():
+        if _is_container(child):
+            yield from _attachment_parts(child)
+
+
+def _is_container(part: MIMEPart) -> bool:
+    return part.get_content_maintype() == "multipart"
+
+
+def _is_body_fragment(part: MIMEPart) -> bool:
+    """A text part that is neither named nor marked as a file is body text."""
+    return (
+        part.get_content_type() in _BODY_TEXT_TYPES
+        and part.get_filename() is None
+        and not part.is_attachment()
+    )
 
 
 def _attachment_bytes(part: MIMEPart) -> bytes:

@@ -16,6 +16,7 @@ and a piece of infrastructure rather than a handful of values.
 
 from mailarc_core.archive import (
     ArchiveConfig,
+    ArchiveReader,
     ArchiveResult,
     ArchiveSource,
     BlobKind,
@@ -38,6 +39,7 @@ from mailarc_core.graph import (
 
 __all__ = [
     "ArchiveConfig",
+    "ArchiveReader",
     "ArchiveResult",
     "ArchiveSource",
     "BlobKind",

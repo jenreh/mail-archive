@@ -48,6 +48,11 @@ tasks:
           echo "   (the built .app needs nothing installed on the target Mac)"
           missing=1
         fi
+        if ! command -v rsvg-convert >/dev/null; then
+          echo "❌ librsvg missing on the BUILD machine: brew install librsvg"
+          echo "   (renders the app icons from docs/public/favicon.svg)"
+          missing=1
+        fi
         [ "$missing" -eq 0 ] || exit 1
         if ! command -v cargo-tauri >/dev/null; then
           echo "📦 Installing tauri-cli (one-time, takes several minutes)…"
@@ -57,9 +62,13 @@ tasks:
       - task: icons
 
   icons:
-    desc: Generate placeholder app icons (replace via `cargo tauri icon logo.png`)
-    status:
-      - test -f src-tauri/icons/icon.icns
+    desc: Render the macOS app icon set from docs/public/favicon.svg
+    sources:
+      - docs/public/favicon.svg
+      - scripts/make_icons.py
+    generates:
+      - src-tauri/icons/icon.icns
+      - src-tauri/icons/*.png
     cmd: "{{.RUNNER}} python scripts/make_icons.py"
 
   # ----------------------------------------------------------------------------

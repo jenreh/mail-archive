@@ -11,9 +11,10 @@ These are runic OGM models rather than pydantic ones, because declaring them is
 how the graph schema gets described. The ``index`` and ``index_type`` arguments
 are declarations only — ``runic.migrate`` is what creates the real indexes.
 
-Two plain value objects round it out: :class:`ArchiveSource`, the provenance of
-one write, which the message itself cannot know, and :class:`ArchiveResult`,
-what one write did.
+Four plain value objects round it out: :class:`ArchiveSource`, the provenance
+of one write, which the message itself cannot know, :class:`ArchiveResult`,
+what one write did, and :class:`MessageSummary` with :class:`MessageLabel`,
+what one read hands back.
 
 Class order in this file is load-bearing. runic resolves a node's annotations
 at declaration time, so every type an annotation names has to exist already.
@@ -90,6 +91,46 @@ class ArchiveResult(BaseModel):
     created: bool
 
 
+class MessageLabel(BaseModel):
+    """One label a listed message wears — the name and where it came from.
+
+    Not a :class:`~mailarc_core.mail.model.LabelInfo`: that is the provider's
+    description, with the provider's id on it, and the graph keeps neither.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    kind: LabelKind = LabelKind.USER
+
+
+class MessageSummary(BaseModel):
+    """One archived message the way a listing shows it.
+
+    A projection, not a node: what the reader hands out so nothing above the
+    archive has to hold a runic entity or a live session. Sender and preview
+    are already reduced to the one string a row prints.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    """The canonical id — the ``Message`` node's key."""
+
+    sender_name: str = ""
+    sender_address: str = ""
+    subject: str = ""
+    preview: str = ""
+    sent_at: datetime | None = None
+    has_attachments: bool = False
+    eml_sha256: str | None = None
+    """The blob the original bytes live under; ``None`` when none was kept."""
+
+    labels: tuple[MessageLabel, ...] = ()
+    """What the provider filed it under: a human's labels first, the
+    provider's own (INBOX, UNREAD) last, each group by name."""
+
+
 class Address(Node, labels=["Address"]):
     """One email address, keyed by the normalised form.
 
@@ -101,6 +142,15 @@ class Address(Node, labels=["Address"]):
     local_part: str | None = Field(default=None)
     domain: str | None = Field(default=None, index=True)
     display_names: list[str] = Field(default_factory=list)
+    remote_trusted: bool = Field(default=False)
+    """Whether the viewer may load this address's remote content without asking.
+
+    The one property on a ground-truth node that a human writes: "always show
+    pictures from this sender" is a standing decision about the address, so it
+    lives on the address instead of in a second store. The import never sets
+    or clears it — the writer leaves existing nodes alone — and an address
+    nobody ruled on reads ``False``.
+    """
 
 
 class Thread(Node, labels=["Thread"]):

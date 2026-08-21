@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "reflex-dev",
+      "url": "http://localhost:8080",
+      "port": 8080
+    },
+    {
+      "name": "layout-repro",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/private/tmp/claude-501/-Users-jens-Workspace-projekte-mail-archive/0586b287-147d-4c55-ae4d-b8680a10b348/scratchpad"],
+      "port": 8765
+    }
+  ]
+}

@@ -7,9 +7,14 @@ requires-python = ">=3.14"
 license = { text = "MIT" }
 authors = [{ name = "Jens Rehpöhler" }]
 
-# Hangs off the core alone. The HTTP and Google auth dependencies arrive in
-# phase 3, together with the code that needs them.
-dependencies = ["mailarc-core"]
+# Hangs off the core plus the two things the Gmail adapter needs itself: an
+# HTTP client and Google's OAuth flow. Never a sibling component.
+dependencies = [
+    "google-auth>=2.56.3",
+    "google-auth-oauthlib>=1.4.0",
+    "httpx>=0.28.1",
+    "mailarc-core",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -9,11 +9,28 @@
 [![Python](https://img.shields.io/badge/python-3.14%2B-orange)](https://www.python.org)
 [![Reflex](https://img.shields.io/badge/reflex-0.9.5-purple)](https://reflex.dev)
 
-[Getting Started](#project-initialization) • [Branching](#branching)
+[Getting Started](#project-initialization) • [Documentation](#documentation) • [Branching](#branching)
 
 </div>
 
 ---
+
+## Documentation
+
+The full user and developer documentation lives in [`docs/`](docs) as a
+VitePress site:
+
+```sh
+task docs:install     # once
+task docs:dev         # http://localhost:5173
+task docs:build       # docs/.vitepress/dist
+task docs:diagrams    # regenerate the .drawio + .svg sources
+```
+
+Start at [`docs/index.md`](docs/index.md). It covers connecting a mailbox,
+running an import, every setting, the component layering, the graph and
+relational models, the import pipeline, the job queue, and what implementing a
+new mail provider involves.
 
 ## Project Initialization
 
@@ -49,6 +66,12 @@ components/mailarc-core/        everything that works without a browser
       server.py                 starts/adopts/stops FalkorDB (a no-op in remote mode)
     database/                   the relational store
       sqlite.py                 async/sync URL split and the SQLite pragmas
+    archive/                    ground truth: what the import writes, and reads back
+      model.py                  the runic nodes and edges, plus MessageSummary
+      writer.py                 MessageArchiver — the idempotent upsert into the graph
+      blobs.py                  BlobStore — content-addressed originals on disk
+      repository.py             MessageRepository — the listing, via runic's query builder
+      reader.py                 ArchiveReader — summaries out of the graph, bytes off disk
 scripts/                        build-time tooling (vendoring FalkorDB, icons)
 src-tauri/                      the macOS desktop shell
 ```
@@ -114,9 +137,10 @@ rather than a cold `reflex init`.
 Still **not** self-contained: the backend itself runs from this checkout. See
 `task tauri:bundle:sidecar` for what freezing it would take.
 
-Build-machine only requirements: Xcode command line tools, Rust, Node, and
-Homebrew `openssl@3` (its dylibs get copied into the bundle and repointed at
-`@loader_path`).
+Build-machine only requirements: Xcode command line tools, Rust, Node, Homebrew
+`openssl@3` (its dylibs get copied into the bundle and repointed at
+`@loader_path`) and Homebrew `librsvg`, which renders the app icons from
+`docs/public/favicon.svg`.
 
 ### What `task tauri:vendor` produces
 

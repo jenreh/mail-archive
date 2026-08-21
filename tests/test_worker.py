@@ -19,6 +19,7 @@ from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.database.entities import Base
 from appkit_commons.registry import service_registry
 from cryptography.fernet import Fernet
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -322,3 +323,116 @@ def test_the_worker_process_carries_no_ui_framework() -> None:
         f"the worker process dragged in {sorted(offenders)} — it renders nothing "
         "and a second interpreter's worth of Reflex is pure overhead"
     )
+
+
+class RotatingCredentials:
+    """What a provider hands back after Google reissued its refresh token."""
+
+    def __init__(self, secret: str) -> None:
+        self._secret = secret
+
+    def to_secret(self) -> str:
+        return self._secret
+
+
+class RotatingSource(FakeSource):
+    """A mailbox whose credentials change while it is being read.
+
+    Gmail's do: a re-consent and the idle-expiry path both reissue the refresh
+    token mid-run, and the new one arrives silently. `GmailSource.credentials`
+    is where it surfaces, and this is the shape of that attribute.
+    """
+
+    rotated_to: str | None = None
+
+    @property
+    def credentials(self) -> RotatingCredentials | None:
+        if self.rotated_to is None:
+            return None
+        return RotatingCredentials(self.rotated_to)
+
+
+class TestARotatedCredential:
+    """Nothing re-reads the secret after a run, so this is the only chance.
+
+    Losing it costs nothing today and an `auth_error` on the next unattended
+    run — with no hint that a working credential was handed to us and dropped.
+    """
+
+    @staticmethod
+    def _registry(source: RotatingSource) -> ProviderRegistry:
+        built = ProviderRegistry()
+        built.register(
+            ProviderDescriptor(provider=MailProvider.FAKE, label="Folder"),
+            lambda account, secret: source,
+        )
+        return built
+
+    @staticmethod
+    async def _secrets(session_factory: SessionFactory) -> list[str]:
+        async with session_factory() as session:
+            result = await session.execute(select(MailCredentialEntity))
+            return [row.secret for row in result.scalars().all()]
+
+    async def _run(
+        self, session_factory: SessionFactory, source: RotatingSource
+    ) -> None:
+        async with session_factory() as session:
+            account_id = await stored_account(session)
+        handlers = worker.build_handlers(
+            RecordingEngine(), self._registry(source), session_factory
+        )
+        await handlers[JobKind.IMPORT](a_job(account_id), RecordingQueue())
+
+    async def test_it_is_written_back(self, session_factory, encryption_key) -> None:
+        rotated = '{"refresh_token": "1//rotated-mid-run"}'
+        source = RotatingSource.__new__(RotatingSource)
+        source.closed = False
+        source.rotated_to = rotated
+
+        await self._run(session_factory, source)
+
+        assert await self._secrets(session_factory) == [rotated]
+
+    async def test_a_credential_that_did_not_move_is_left_alone(
+        self, session_factory, encryption_key
+    ) -> None:
+        source = RotatingSource.__new__(RotatingSource)
+        source.closed = False
+        source.rotated_to = MAILBOX
+
+        await self._run(session_factory, source)
+
+        assert await self._secrets(session_factory) == [MAILBOX]
+
+    async def test_a_provider_with_nothing_to_say_is_not_asked(
+        self, session_factory, encryption_key, registry
+    ) -> None:
+        """FakeSource has no `credentials` at all; duck-typing must not raise."""
+        async with session_factory() as session:
+            account_id = await stored_account(session)
+        handlers = worker.build_handlers(RecordingEngine(), registry, session_factory)
+
+        await handlers[JobKind.IMPORT](a_job(account_id), RecordingQueue())
+
+        assert await self._secrets(session_factory) == [MAILBOX]
+
+    async def test_a_write_that_fails_does_not_fail_the_import(
+        self, session_factory, encryption_key, caplog
+    ) -> None:
+        """The mail is already archived; a lost token costs one re-consent."""
+
+        class Exploding(RotatingCredentials):
+            def to_secret(self) -> str:
+                raise RuntimeError("the credential could not be serialised")
+
+        source = RotatingSource.__new__(RotatingSource)
+        source.closed = False
+        source.rotated_to = "unused"
+        type(source).credentials = property(lambda self: Exploding("unused"))
+        try:
+            await self._run(session_factory, source)
+        finally:
+            del type(source).credentials
+
+        assert source.closed, "the mailbox is still closed"

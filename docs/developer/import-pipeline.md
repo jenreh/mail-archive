@@ -168,6 +168,26 @@ An existing `Message` is left **exactly** as it stands. Its properties are
 derived from the bytes and a re-parse computes the same values anyway, while the
 fields the semantic phase fills in later are not ours to blank out.
 
+### A parser fix does not reach what is already archived
+
+"The same values" holds for one parser version. When the parser learns to see
+more — as it did when attachments nested below the top-level multipart started
+to count, the Apple Mail `alternative → mixed → pdf` shape — nothing in the
+pipeline revisits the archive:
+
+- the engine drops every provider message id that `mail_archived_messages`
+  already knows before it fetches, so a re-sync never re-parses;
+- the writer, handed a re-parsed message by other means, would add the
+  `Attachment` node and the `HAS_ATTACHMENT` edge but leave `has_attachments`
+  on the existing node `False`, because it leaves the node as it stands.
+
+So a message archived before such a fix keeps its old `has_attachments` and
+has no attachment blobs. The originals are not lost — every `.eml` is in the
+blob store under the `eml_sha256` the node carries — so a backfill is a
+deliberate, separate step: read the `.eml` back, `parse_message` it, store
+the attachment payloads, write the edges, and set `has_attachments` on the
+node explicitly. That rewrite is not something the import does on its own.
+
 ### Nodes are resolved and flushed before any edge
 
 An edge is a `MERGE` over two `MATCH` clauses. Relate a node that has not reached

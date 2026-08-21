@@ -45,7 +45,7 @@ features:
 | --- | --- |
 | [Getting started](./user/getting-started.md) | Install the tools, create the database, get the app running |
 | [Connecting a mailbox](./user/connecting-a-mailbox.md) | Add an account, get through Google's consent screen |
-| [Importing mail](./user/importing-mail.md) | Start an import, read the progress, cancel, resume |
+| [Importing mail](./user/importing-mail.md) | Start an import, read the progress, cancel, resume, review what arrived |
 | [Configuration](./user/configuration.md) | Profiles, environment variables, every setting there is |
 | [The desktop app](./user/desktop-app.md) | Building the macOS `.app`, what it bundles, what it does not |
 | [Troubleshooting](./user/troubleshooting.md) | The failures that actually happen, and what each one means |

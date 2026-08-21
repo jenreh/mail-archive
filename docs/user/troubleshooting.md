@@ -108,6 +108,22 @@ It does. `task clean` removes `.state/` entirely: the SQLite database, the blob
 store and the graph's data directory. `task db:upgrade` recreates the schema
 and the default `admin` account, but the mail is gone.
 
+## Google says "An error occurred" after the unverified-app warning
+
+The consent opened, you pressed **Continue** on *"Google hasn't verified this
+app"*, and landed on `accounts.google.com/info/unknownerror`. Nothing on your
+side is wrong: the first render of that warning page is a known Google defect
+for projects in *Testing* status. Switch the page's language once (dropdown,
+bottom left) and press Continue again. The application's own consent times
+out after `app.google.consent_timeout` seconds with the same advice.
+
+## Connect says "Signed in as X, but this account is Y"
+
+You consented with a different Google account than the one the row names —
+typical with several Google sessions in one browser. The grant for the wrong
+mailbox was not kept. Press **Connect** again and pick the account the message
+asks for; the consent screen preselects it.
+
 ## The worker did not start
 
 The application logs it and carries on rather than failing to boot — the pages

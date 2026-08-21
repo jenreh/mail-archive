@@ -31,3 +31,16 @@ tasks:
     dir: "{{.DOCS_DIR}}"
     cmds:
       - npm install
+
+  diagrams:
+    desc: Regenerate every .drawio and .svg under docs/diagrams
+    # Deliberately not a dependency of `build`: the site builds with npm alone,
+    # and requiring uv for it would make the docs need the Python toolchain.
+    # Run this after editing docs/diagrams/diagrams.py, then build.
+    cmds:
+      - uv run python {{.DOCS_DIR}}/diagrams/build.py
+    sources:
+      - "{{.DOCS_DIR}}/diagrams/*.py"
+    generates:
+      - "{{.DOCS_DIR}}/diagrams/*.drawio"
+      - "{{.DOCS_DIR}}/diagrams/*.svg"

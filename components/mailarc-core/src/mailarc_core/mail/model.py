@@ -192,6 +192,47 @@ class ParsedAttachment(BaseModel):
     inline: bool = False
     payload: bytes = b""
 
+    @property
+    def embedded(self) -> bool:
+        """Content the HTML references by ``cid:``, not a file the sender named.
+
+        A newsletter's logo has a Content-ID and no filename; it is kept and
+        stored like any other part, but no mail client shows a paperclip for
+        it. A named file keeps counting even with a Content-ID — Gmail stamps
+        one on every attachment.
+        """
+        return self.content_id is not None and self.filename is None
+
+
+class RenderedMessage(BaseModel):
+    """One message the way a mail client shows it: headers, body, files.
+
+    A reading for a human, not a record for the graph — so, unlike
+    :class:`ParsedMessage`, it keeps the HTML body. ``body_html`` is the
+    sender's markup with ``cid:`` references already turned into data URIs, so
+    an inline image shows without a server to fetch it from; it is still
+    untrusted markup and belongs in a sandbox. ``body_text`` is what the
+    client falls back to when there is no HTML.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    subject: str = ""
+    sender: EmailAddress | None = None
+    to: tuple[EmailAddress, ...] = ()
+    cc: tuple[EmailAddress, ...] = ()
+    sent_at: datetime | None = None
+    body_html: str | None = None
+    body_text: str = ""
+    attachments: tuple[ParsedAttachment, ...] = ()
+    remote_references: int = 0
+    """How many fetches from elsewhere the HTML would make if rendered openly.
+
+    Zero for a mail that carries everything it shows. Anything above zero is
+    a question for the human — every such fetch tells a stranger's server the
+    mail was opened.
+    """
+
 
 class ParsedMessage(BaseModel):
     """A message reduced to every field the ``Message`` node carries.

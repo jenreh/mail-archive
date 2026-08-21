@@ -21,6 +21,9 @@ One module per concern, layered so nothing points back up:
     ``MailConfig`` — the parser's knobs, and only those.
 ``ports``
     ``MailSourcePort`` — the single seam a second implementation goes behind.
+``rendering``
+    The same bytes as a ``RenderedMessage`` — what a mail client shows,
+    HTML body included.
 """
 
 from mailarc_core.mail.config import MailConfig
@@ -42,6 +45,7 @@ from mailarc_core.mail.model import (
     MessageRef,
     ParsedAttachment,
     ParsedMessage,
+    RenderedMessage,
     ProviderDescriptor,
     RawMessage,
     SyncCursor,
@@ -57,6 +61,11 @@ from mailarc_core.mail.parsing import (
     simhash,
 )
 from mailarc_core.mail.ports import MailSourceFactory, MailSourcePort
+from mailarc_core.mail.rendering import (
+    count_remote_references,
+    inline_cid_images,
+    render_message,
+)
 
 __all__ = [
     "AccountIdentity",
@@ -78,15 +87,19 @@ __all__ = [
     "ParsedMessage",
     "ProviderDescriptor",
     "RawMessage",
+    "RenderedMessage",
     "SyncCursor",
     "SyncCursorKind",
     "canonical_id",
     "clean_body",
+    "count_remote_references",
     "extract_refs",
     "hamming_distance",
+    "inline_cid_images",
     "normalise_message_id",
     "normalise_subject",
     "parse_message",
     "participant_key",
+    "render_message",
     "simhash",
 ]

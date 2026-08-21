@@ -126,6 +126,39 @@ never lost, only unindexed past that point. A parser fix can be replayed over
 the entire archive from those bytes without asking the provider for anything
 twice.
 
+## Looking at what arrived
+
+**Review** in the navigation (`/mail/review`) lists the archive the way a mail
+client would: sender and date on the first line, subject and a paperclip on the
+second, two lines of preview under them, newest first. Under the preview sit
+the labels the provider filed the message under — your own labels in blue,
+folders in teal, the provider's housekeeping (Inbox, Updates, Unread) in grey
+and last. Pick a message and the right half shows it in two tabs:
+
+- **Message** — the way a mail client renders it: subject, From / To / Cc /
+  Date, the attached files with their sizes, and the body. An HTML mail keeps
+  its layout and its inline pictures; a plain-text mail shows as text.
+- **Source** — the **raw bytes** the provider handed over, headers and all,
+  read back from the blob store.
+
+A few things are on purpose:
+
+- The list is read from the graph, the original from disk; nothing is fetched
+  from the provider. What you see is what the import wrote.
+- The rendered body sits in a sandboxed frame that may load **nothing
+  remote** — no scripts, no tracking pixels, no fonts from a stranger's
+  server — the same default a mail client ships with. Only the pictures the
+  mail itself carries are shown.
+- The list brings in a hundred messages at a time; **Load more** at the bottom
+  appends the next hundred. The count in the header says how far you are.
+- A very large source is cut after the first 256 KB, with a note. The rest is
+  still on disk; the viewer just declines to render a PDF as base64.
+- A message archived without a stored original — or whose blob has since
+  gone missing — says so instead of erroring.
+
+Like the accounts page, the review is **admin-only**: the archive is every
+mailbox of the installation.
+
 ## Job kinds
 
 | Kind | State |

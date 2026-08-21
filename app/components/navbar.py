@@ -7,6 +7,8 @@ def app_navbar() -> rx.Component:
         mn.stack(
             mn.text("Project Kit Navbar", fw=700, size="md"),
             rx.link("Home", href="/"),
+            rx.link("Mail accounts", href="/mail/accounts"),
+            rx.link("Review", href="/mail/review"),
             rx.link("Users", href="/admin/users"),
         ),
         padding="2rem",

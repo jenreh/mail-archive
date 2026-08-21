@@ -118,3 +118,50 @@ class TestAProviderNobodyRegistered:
 
         assert registry.supports(MailProvider.GMAIL) is True
         assert registry.supports(MailProvider.FAKE) is False
+
+
+class TestTheConsentStep:
+    """Some mailboxes need a second step between typing and working.
+
+    Gmail's opens a browser; an IMAP app password is complete the moment it is
+    typed. The account page has to tell those apart without naming either, so
+    the registration carries the step and the page asks the registry.
+    """
+
+    @staticmethod
+    async def _grant(values):
+        return f"granted:{values['token']}"
+
+    async def test_a_provider_can_register_one(self, registry) -> None:
+        registry.register(GMAIL, StubSource, consent=self._grant)
+
+        runner = registry.consent_for(MailProvider.GMAIL)
+
+        assert runner is not None
+        assert await runner({"token": "abc"}) == "granted:abc"
+
+    def test_a_provider_without_one_says_so_rather_than_raising(self, registry) -> None:
+        """ "This mailbox needs no browser" is an ordinary answer."""
+        registry.register(IMAP, StubSource)
+
+        assert registry.consent_for(MailProvider.IMAP) is None
+        assert registry.needs_consent(MailProvider.IMAP) is False
+
+    def test_needs_consent_is_what_the_page_branches_on(self, registry) -> None:
+        registry.register(GMAIL, StubSource, consent=self._grant)
+        registry.register(IMAP, StubSource)
+
+        assert registry.needs_consent(MailProvider.GMAIL) is True
+        assert registry.needs_consent(MailProvider.IMAP) is False
+
+    def test_an_unregistered_provider_needs_nothing(self, registry) -> None:
+        assert registry.needs_consent(MailProvider.FAKE) is False
+        assert registry.consent_for(MailProvider.FAKE) is None
+
+    def test_re_registering_without_one_drops_it(self, registry) -> None:
+        """A reload has to be able to say something different, not add to it."""
+        registry.register(GMAIL, StubSource, consent=self._grant)
+
+        registry.register(GMAIL, StubSource)
+
+        assert registry.consent_for(MailProvider.GMAIL) is None

@@ -18,6 +18,8 @@ classifiers = [
 dependencies = [
     "mailarc-core",
     "mailarc-sync",
+    "mailarc-google",
+    "mailarc-ui",
     "appkit-user>=1.10.2",
     "appkit-mantine>=1.10.2",
     "reflex>=0.9.5",
@@ -41,12 +43,10 @@ mailarc-ui = { workspace = true }
 [dependency-groups]
 # `uv sync` installs the root's dependency closure and nothing else, so a
 # workspace member no one depends on yet would not be importable. The test
-# suite imports all five; these three move up to `[project] dependencies` in
-# the phase that first wires them into the application.
+# suite imports all five; `mailarc-analytics` moves up to `[project]
+# dependencies` in the phase that first wires it into the application.
 dev = [
     "mailarc-analytics",
-    "mailarc-google",
-    "mailarc-ui",
     "bump-my-version>=1.3.0",
     "detect-secrets>=1.5.0",
     "pre-commit>=4.6.0",
@@ -124,7 +124,12 @@ extend-exclude = [
     ".vscode",
     "build",
     "dist",
-    "docs",
+    # Not `docs` as a whole: `docs/diagrams/` holds the Python that generates
+    # every diagram in the documentation, and it belongs in the same gate as
+    # the rest of the project. Only what npm and VitePress produce is excluded.
+    "docs/.vitepress/cache",
+    "docs/.vitepress/dist",
+    "docs/node_modules",
 ]
 
 [tool.ruff.lint]

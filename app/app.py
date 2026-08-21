@@ -15,12 +15,23 @@ from appkit_user.user_management.pages import (
 from starlette.types import ASGIApp
 
 from app.components.navbar import app_navbar
-from app.composition import graph_server_lifespan, sync_worker_lifespan
+from app.composition import (
+    graph_server_lifespan,
+    publish_archive_reader,
+    publish_provider_registry,
+    sync_worker_lifespan,
+)
 from app.pages.home import home_page  # noqa: F401
+from app.pages.mail_accounts import mail_accounts_page  # noqa: F401
+from app.pages.mail_review import mail_review_page  # noqa: F401
 from app.pages.users import users_page  # noqa: F401
 from app.styles import base_style, base_stylesheets
 
 logging.basicConfig(level=logging.DEBUG)
+# oauthlib and requests-oauthlib log the complete token response — refresh
+# token included — at DEBUG. The root level above would put it in every log.
+for _noisy in ("oauthlib", "requests_oauthlib"):
+    logging.getLogger(_noisy).setLevel(logging.INFO)
 create_login_page()
 create_profile_page(
     app_navbar(),
@@ -36,6 +47,12 @@ def add_https_middleware(asgi_app: ASGIApp) -> ASGIApp:
     """Wrap the ASGI app with HTTPS redirect middleware."""
     return ForceHTTPSMiddleware(asgi_app)
 
+
+# The accounts page reads which providers exist, and the review page reads the
+# archive, from the service registry: `mailarc-ui` is a component and may not
+# import `app`, so the composition root leaves its decisions there for it.
+publish_provider_registry()
+publish_archive_reader()
 
 app = rx.App(
     stylesheets=base_stylesheets,

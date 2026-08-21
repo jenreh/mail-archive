@@ -13,7 +13,7 @@ side stays synchronous and is reached through ``asyncio.to_thread``: runic's
 blocking one simply works.
 """
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 from mailarc_core.mail.model import (
@@ -75,4 +75,33 @@ An alias, not a ``Protocol``: the registry needs a callable, and a one-method
 interface around a callable buys nothing. The first argument is the
 ``MailAccountEntity`` for the account, kept untyped here so the domain does
 not have to import the persistence layer for a signature.
+"""
+
+type ConsentRunner = Callable[[Mapping[str, str]], Awaitable[str]]
+"""Turns what a user typed into the secret that actually opens a mailbox.
+
+Deliberately *not* a sixth method on :class:`MailSourcePort`. A port method
+would have to exist on every provider, and consent is exactly what IMAP does
+not have: an app password is complete the moment it is typed, while OAuth
+needs a browser round trip before there is anything to store. So a provider
+either registers one of these or it does not, and the account page reads that
+as "this mailbox needs a second step" without knowing what the step is.
+
+Takes the credential values the provider's own
+:class:`~mailarc_core.mail.model.CredentialField` list asked for, keyed by
+field name, and returns the string to put in ``mail_credentials.secret``. It
+blocks on a human, so it is awaited and the implementation is expected to keep
+the blocking half in a thread.
+
+The mapping also carries the account's address under
+:data:`CONSENT_ADDRESS_KEY`. A runner that opens a browser uses it to tell the
+identity provider *which* account is meant, so a person signed in to three of
+them is not offered a chooser and its wrong answer.
+"""
+
+CONSENT_ADDRESS_KEY = "email_address"
+"""Key under which a :data:`ConsentRunner` receives the account's address.
+
+Named like the column it comes from; a provider's own
+:class:`~mailarc_core.mail.model.CredentialField` must not reuse the name.
 """

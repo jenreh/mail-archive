@@ -128,7 +128,7 @@ async def _import(
     re-consent prompt.
     """
     async with session_factory() as session:
-        source, target = await _open_mailbox(registry, session, job)
+        source, target, opened_with = await _open_mailbox(registry, session, job)
     try:
         await engine.run(
             source,
@@ -137,16 +137,66 @@ async def _import(
             cancelled=partial(queue.is_cancel_requested, job.id),
         )
     finally:
+        await _keep_refreshed_secret(
+            session_factory, target.account_id, source, opened_with
+        )
         await source.aclose()
+
+
+async def _keep_refreshed_secret(
+    session_factory: SessionFactory,
+    account_id: int,
+    source: MailSourcePort,
+    opened_with: str,
+) -> None:
+    """Store a credential the provider rotated while the run was going.
+
+    Google reissues a refresh token on a re-consent and around the idle-expiry
+    path, and the new one arrives silently in the middle of an import. Nothing
+    re-reads it afterwards, so without this the run finishes fine and the
+    *next* unattended one authenticates with a token that has been superseded
+    — an ``auth_error`` with no hint that a working credential was handed to us
+    and dropped.
+
+    Duck-typed rather than reached through a ``Protocol``: Gmail is the only
+    provider whose credentials rotate, and §3.1 is explicit that a Protocol
+    earns its place when a second implementation exists. A provider that has
+    nothing to say here says nothing.
+
+    Never allowed to fail the job: the mail is already archived by the time
+    this runs, and losing a rotated token costs one re-consent while raising
+    here would cost the whole import.
+    """
+    to_secret = getattr(getattr(source, "credentials", None), "to_secret", None)
+    if to_secret is None:
+        return
+    try:
+        current = to_secret()
+        if current == opened_with:
+            return
+        async with session_factory() as session:
+            for kind in CredentialKind:
+                credential = await _CREDENTIALS.find_by_account(
+                    session, account_id, kind
+                )
+                if credential is not None and credential.secret == opened_with:
+                    credential.secret = current
+        logger.info("Stored the credential account %d refreshed mid-run", account_id)
+    except Exception:
+        logger.exception(
+            "Could not store the refreshed credential of account %d", account_id
+        )
 
 
 async def _open_mailbox(
     registry: ProviderRegistry, session: AsyncSession, job: SyncJob
-) -> tuple[MailSourcePort, ImportTarget]:
-    """The source and the target for one job, built while the row is live.
+) -> tuple[MailSourcePort, ImportTarget, str]:
+    """The source, the target and the secret it was opened with.
 
-    Both inside the caller's session on purpose: a factory reads what it needs
-    off the account row, and a row whose session has closed hands back nothing.
+    All three inside the caller's session on purpose: a factory reads what it
+    needs off the account row, and a row whose session has closed hands back
+    nothing. The secret comes back too so the run can tell afterwards whether
+    the provider rotated it — see :func:`_keep_refreshed_secret`.
     """
     if job.account_id is None:
         raise LookupError(f"job {job.id} imports, but names no account")
@@ -155,14 +205,13 @@ async def _open_mailbox(
         raise LookupError(f"job {job.id} names account {job.account_id}, which is gone")
 
     provider = MailProvider(account.provider)
-    source = registry.factory_for(provider)(
-        account, await _secret_for(session, account.id)
-    )
+    secret = await _secret_for(session, account.id)
+    source = registry.factory_for(provider)(account, secret)
     target = ImportTarget(
         account_id=account.id, address=account.email_address, provider=provider
     )
     logger.info("Job %d imports %s (%s)", job.id, account.email_address, provider)
-    return source, target
+    return source, target, secret
 
 
 async def _secret_for(session: AsyncSession, account_id: int) -> str:

@@ -19,6 +19,10 @@ One module per concern, layered so nothing points back up:
     ``BlobStore`` — content-addressed, write-once files on disk.
 ``writer``
     ``MessageArchiver`` — the idempotent upsert into the graph.
+``repository``
+    ``MessageRepository`` — the graph listing, through runic's query builder.
+``reader``
+    ``ArchiveReader`` — the listing back out, and the bytes of one message.
 """
 
 from mailarc_core.archive.blobs import BlobStore
@@ -34,16 +38,22 @@ from mailarc_core.archive.model import (
     HasAttachment,
     Label,
     Message,
+    MessageLabel,
+    MessageSummary,
     Thread,
     to_signed_64,
     to_unsigned_64,
 )
+from mailarc_core.archive.reader import ArchiveReader, preview_of
+from mailarc_core.archive.repository import AddressRepository, MessageRepository
 from mailarc_core.archive.writer import MessageArchiver
 
 __all__ = [
     "Account",
     "Address",
+    "AddressRepository",
     "ArchiveConfig",
+    "ArchiveReader",
     "ArchiveResult",
     "ArchiveSource",
     "ArchivedFrom",
@@ -54,7 +64,11 @@ __all__ = [
     "Label",
     "Message",
     "MessageArchiver",
+    "MessageLabel",
+    "MessageRepository",
+    "MessageSummary",
     "Thread",
+    "preview_of",
     "to_signed_64",
     "to_unsigned_64",
 ]

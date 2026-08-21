@@ -91,7 +91,7 @@
       "**/taskfiles/Taskfile.*.yaml"
     ]
   },
-  "python-envs.defaultPackageManager": "ms-python.python:uv",
+  "python-envs.defaultPackageManager": "ms-python.python:pip",
   "chat.agent.maxRequests": 100,
   "[jsonc]": {
     "editor.defaultFormatter": "vscode.json-language-features"

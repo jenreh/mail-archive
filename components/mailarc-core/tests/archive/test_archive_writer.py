@@ -48,16 +48,16 @@ class FakeSession:
     """A `runic.ogm.Session` stand-in that writes nothing and remembers all."""
 
     def __init__(self) -> None:
-        self.nodes: dict[tuple[type, str], object] = {}
-        self.added: list[object] = []
+        self.nodes: dict[tuple[type, str], Any] = {}
+        self.added: list[Any] = []
         self.relate_calls: list[tuple[str, str, str, object | None]] = []
         self.events: list[str] = []
-        self._pending: list[object] = []
+        self._pending: list[Any] = []
 
     def get(self, cls: type, pk: str) -> object | None:
         return self.nodes.get((cls, pk))
 
-    def add(self, entity: object) -> None:
+    def add(self, entity: Any) -> None:
         self.added.append(entity)
         self._pending.append(entity)
         self.events.append(f"add:{type(entity).__name__}")
@@ -93,9 +93,9 @@ class FakeSession:
         return payloads[0]
 
 
-def mail(**overrides) -> ParsedMessage:
+def mail(**overrides: Any) -> ParsedMessage:
     """A parsed message with every analysis-bearing field already filled in."""
-    fields = {
+    fields: dict[str, Any] = {
         "canonical_id": "m1@example.com",
         "rfc_message_id": "m1@example.com",
         "subject": "Angebot Q3",
@@ -114,9 +114,9 @@ def mail(**overrides) -> ParsedMessage:
     return ParsedMessage(**{**fields, **overrides})
 
 
-def origin(**overrides) -> ArchiveSource:
+def origin(**overrides: Any) -> ArchiveSource:
     """Where a copy came from — one Gmail account, one message, one thread."""
-    fields = {
+    fields: dict[str, Any] = {
         "account_id": "7",
         "account_address": "anna@example.com",
         "provider": MailProvider.GMAIL,

@@ -18,7 +18,7 @@ async def _run_poll(state: GraphStatusState) -> None:
     Reflex refuses a direct `state.poll()` call on a background handler, so go
     through the EventHandler's wrapped function.
     """
-    await GraphStatusState.poll.fn(state)
+    await GraphStatusState.poll.fn(state)  # ty: ignore[unresolved-attribute]
 
 
 CHECKED_AT = datetime(2026, 8, 18, 14, 30, 5, tzinfo=UTC)

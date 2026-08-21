@@ -14,7 +14,7 @@ pass and strips the converters off every other field on the node.
 
 from datetime import datetime
 
-from runic.ogm import Vector
+from runic.ogm import Edge, Node, Vector
 
 from mailarc_core.archive.model import (
     Account,
@@ -34,7 +34,7 @@ from mailarc_core.mail.model import MailProvider
 NODES = (Message, Address, Thread, Label, Attachment, Account)
 
 
-def _field(node: type, name: str):
+def _field(node: type[Node | Edge], name: str):
     return next(fi.field for fi in node._fields if fi.name == name)
 
 

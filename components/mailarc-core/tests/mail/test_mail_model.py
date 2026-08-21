@@ -77,7 +77,7 @@ class TestEmailAddress:
         address = EmailAddress(address="bob@example.com")
 
         with pytest.raises(ValidationError):
-            address.address = "carol@example.com"
+            address.address = "carol@example.com"  # ty: ignore[invalid-assignment]
 
 
 class TestMessageValues:

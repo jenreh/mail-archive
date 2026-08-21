@@ -15,6 +15,7 @@ import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from appkit_commons.database.entities import Base
@@ -109,10 +110,10 @@ def worker_for(
     queue: JobQueue,
     session_factory: SessionFactory,
     handlers: dict[JobKind, JobHandler],
-    **overrides: object,
+    **overrides: Any,
 ) -> JobWorker:
     """A worker tuned for a test: fast polling, no global signal handlers."""
-    settings: dict[str, object] = {
+    settings: dict[str, Any] = {
         "worker_id": "worker-under-test",
         "session_factory": session_factory,
         "poll_seconds": 0.01,
@@ -122,7 +123,7 @@ def worker_for(
         "handle_signals": False,
     }
     settings.update(overrides)
-    return JobWorker(queue, handlers, **settings)  # type: ignore[arg-type]
+    return JobWorker(queue, handlers, **settings)
 
 
 def importing(session_factory: SessionFactory, processed: list[str]) -> JobHandler:

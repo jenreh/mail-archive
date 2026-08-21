@@ -93,7 +93,7 @@ class TestTheStructurelessColumn:
     def test_a_credential_cannot_be_edited_in_place(self) -> None:
         """Frozen, so a refresh hands back a new object the caller must store."""
         with pytest.raises(ValueError, match="frozen"):
-            stored().access_token = INTRUDER
+            stored().access_token = INTRUDER  # ty: ignore[invalid-assignment]
 
     def test_an_older_row_with_a_naive_expiry_is_read_as_utc(self) -> None:
         """google-auth writes naive UTC; comparing that to `now` would raise."""
@@ -182,14 +182,12 @@ class TestCarryingWhatWasIssued:
 
 class TestRefreshAgainstAFakeTokenEndpoint:
     def test_it_trades_the_refresh_token_for_an_access_token(self, httpserver) -> None:
-        httpserver.expect_request("/token", method="POST").respond_with_json(
-            {
-                "access_token": ISSUED,
-                "expires_in": 3599,
-                "scope": GMAIL_READONLY_SCOPE,
-                "token_type": "Bearer",
-            }
-        )
+        httpserver.expect_request("/token", method="POST").respond_with_json({
+            "access_token": ISSUED,
+            "expires_in": 3599,
+            "scope": GMAIL_READONLY_SCOPE,
+            "token_type": "Bearer",
+        })
 
         result = refreshed(stored(httpserver.url_for("/token")))
 
@@ -197,9 +195,10 @@ class TestRefreshAgainstAFakeTokenEndpoint:
         assert result.needs_refresh() is False
 
     def test_it_sends_the_grant_the_oauth_spec_names(self, httpserver) -> None:
-        httpserver.expect_request("/token", method="POST").respond_with_json(
-            {"access_token": ISSUED, "expires_in": 3599}
-        )
+        httpserver.expect_request("/token", method="POST").respond_with_json({
+            "access_token": ISSUED,
+            "expires_in": 3599,
+        })
 
         refreshed(stored(httpserver.url_for("/token")))
 
@@ -295,9 +294,10 @@ class TestRefreshAgainstAFakeTokenEndpoint:
 
 class TestTheAsyncWrapper:
     async def test_it_returns_what_the_blocking_call_returns(self, httpserver) -> None:
-        httpserver.expect_request("/token", method="POST").respond_with_json(
-            {"access_token": ISSUED, "expires_in": 3599}
-        )
+        httpserver.expect_request("/token", method="POST").respond_with_json({
+            "access_token": ISSUED,
+            "expires_in": 3599,
+        })
 
         result = await refresh_async(
             stored(httpserver.url_for("/token")),
@@ -373,9 +373,10 @@ class TestTheErrorMessageCarriesNoCredential:
     def test_a_token_endpoint_reply_is_not_quoted_back(self, httpserver) -> None:
         """The reply carries the access token, so the same rule applies."""
         leaked = "ya29.should-never-appear-in-a-message"
-        httpserver.expect_request("/token", method="POST").respond_with_json(
-            {"access_token": leaked, "expires_in": "not a number at all"}
-        )
+        httpserver.expect_request("/token", method="POST").respond_with_json({
+            "access_token": leaked,
+            "expires_in": "not a number at all",
+        })
 
         with pytest.raises(MailAuthError) as raised:
             refreshed(stored(httpserver.url_for("/token")))

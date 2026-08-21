@@ -16,6 +16,7 @@ from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.database.entities import Base
 from appkit_commons.registry import service_registry
 from cryptography.fernet import Fernet
+from sqlalchemy import String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from mailarc_core.database.entities import (
@@ -223,12 +224,10 @@ class TestSyncJobRepository:
         assert [job.id for job in found] == [jobs[0].id, jobs[2].id]
 
     async def test_finds_the_jobs_of_one_state(self, session) -> None:
-        session.add_all(
-            [
-                MailSyncJobEntity(kind=SyncJobKind.EMBED, state=SyncJobState.FAILED),
-                MailSyncJobEntity(kind=SyncJobKind.EMBED),
-            ]
-        )
+        session.add_all([
+            MailSyncJobEntity(kind=SyncJobKind.EMBED, state=SyncJobState.FAILED),
+            MailSyncJobEntity(kind=SyncJobKind.EMBED),
+        ])
         await session.flush()
         repository = SyncJobRepository()
 
@@ -242,17 +241,15 @@ class TestSyncJobRepository:
         running = MailSyncJobEntity(
             kind=SyncJobKind.IMPORT, account_id=mine.id, state=SyncJobState.RUNNING
         )
-        session.add_all(
-            [
-                running,
-                MailSyncJobEntity(kind=SyncJobKind.IMPORT, account_id=mine.id),
-                MailSyncJobEntity(
-                    kind=SyncJobKind.IMPORT,
-                    account_id=other.id,
-                    state=SyncJobState.RUNNING,
-                ),
-            ]
-        )
+        session.add_all([
+            running,
+            MailSyncJobEntity(kind=SyncJobKind.IMPORT, account_id=mine.id),
+            MailSyncJobEntity(
+                kind=SyncJobKind.IMPORT,
+                account_id=other.id,
+                state=SyncJobState.RUNNING,
+            ),
+        ])
         await session.flush()
         repository = SyncJobRepository()
 
@@ -374,6 +371,7 @@ class TestTheCanonicalIdColumn:
         """Stated once here so a later `String(n)` has to argue with a test."""
         column = MailArchivedMessageEntity.__table__.c.canonical_id
 
+        assert isinstance(column.type, String)
         assert column.type.length is None, (
             "a canonical id has no length the sender owes us"
         )

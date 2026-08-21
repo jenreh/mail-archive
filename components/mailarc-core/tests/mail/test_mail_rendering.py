@@ -7,10 +7,12 @@ that a broken body is an absent one rather than an exception.
 
 import base64
 from datetime import UTC, datetime
+from typing import Any
 
 from mailarc_core.mail.model import ParsedAttachment
 from mailarc_core.mail.rendering import (
     INLINE_LIMIT,
+    count_remote_references,
     inline_cid_images,
     render_message,
 )
@@ -113,8 +115,8 @@ class TestRendering:
 
 
 class TestInliningImages:
-    def _attachment(self, **overrides) -> ParsedAttachment:
-        fields = {
+    def _attachment(self, **overrides: Any) -> ParsedAttachment:
+        fields: dict[str, Any] = {
             "filename": "logo.png",
             "content_type": "image/png",
             "size": len(PNG),
@@ -144,3 +146,36 @@ class TestInliningImages:
         big = self._attachment(payload=b"x" * (INLINE_LIMIT + 1))
 
         assert inline_cid_images(html, (big,)) == html
+
+
+REMOTE_HTML = b"""\
+From: shop@example.com
+To: jens@example.com
+Subject: Angebote
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<img src="https://shop.example/banner.png">
+<style>body{background:url(//cdn.example/bg.jpg)}</style>
+<link rel="stylesheet" href="http://cdn.example/mail.css">
+<a href="https://shop.example/order">Bestellen</a>
+"""
+
+
+class TestRemoteReferences:
+    def test_every_fetching_reference_is_counted(self) -> None:
+        rendered = render_message(REMOTE_HTML)
+
+        # The img, the css url() and the stylesheet — not the clicked link.
+        assert rendered.remote_references == 3
+
+    def test_a_clicked_link_is_not_a_fetch(self) -> None:
+        assert count_remote_references('<a href="https://x.test">go</a>') == 0
+
+    def test_inlined_data_uris_are_not_remote(self) -> None:
+        rendered = render_message(HTML)
+
+        assert rendered.remote_references == 0
+
+    def test_a_plain_mail_has_none(self) -> None:
+        assert render_message(PLAIN).remote_references == 0

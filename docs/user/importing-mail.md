@@ -146,9 +146,14 @@ A few things are on purpose:
 - The list is read from the graph, the original from disk; nothing is fetched
   from the provider. What you see is what the import wrote.
 - The rendered body sits in a sandboxed frame that may load **nothing
-  remote** — no scripts, no tracking pixels, no fonts from a stranger's
-  server — the same default a mail client ships with. Only the pictures the
-  mail itself carries are shown.
+  remote** by default — no scripts, no tracking pixels, no fonts from a
+  stranger's server — the same default a mail client ships with. Only the
+  pictures the mail itself carries are shown. When a message wants remote
+  content, a bar above the body says so and offers two choices: **Allow
+  once** opens this one rendering, **Allow for this sender** records the
+  decision on the sender's address in the graph, so every later message from
+  that exact address opens with its pictures. Scripts stay blocked either
+  way — trust extends to being seen, never to being run.
 - The list brings in a hundred messages at a time; **Load more** at the bottom
   appends the next hundred. The count in the header says how far you are.
 - A very large source is cut after the first 256 KB, with a note. The rest is

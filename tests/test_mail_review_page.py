@@ -64,7 +64,7 @@ def _gate_of(page: Any) -> bool:
 
 def test_the_page_builds() -> None:
     """A prop appkit_mantine does not have only shows up when it is built."""
-    assert isinstance(mail_review_page(), rx.Component)
+    assert isinstance(mail_review_page(), rx.Component)  # ty: ignore[call-non-callable]
 
 
 def test_the_navbar_links_to_the_page() -> None:

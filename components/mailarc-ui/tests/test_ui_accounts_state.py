@@ -13,6 +13,7 @@ grows its fields without a line of UI changing.
 import contextlib
 import json
 from collections.abc import AsyncIterator, Callable, Iterator
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -37,7 +38,7 @@ from mailarc_core.mail.model import (
     MailProvider,
     ProviderDescriptor,
 )
-from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY
+from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY, MailSourceFactory
 from mailarc_sync.engine import FAKE_DESCRIPTOR, FakeMailSource, ProviderRegistry
 from mailarc_ui.accounts.components import accounts_panel
 from mailarc_ui.accounts.state import MailAccountState, provider_registry
@@ -122,16 +123,16 @@ def registered() -> Iterator[StubFactory]:
     factory = StubFactory()
     registry = ProviderRegistry()
     registry.register(FAKE_DESCRIPTOR, FakeMailSource.create)
-    registry.register(IMAP_DESCRIPTOR, factory)
+    registry.register(IMAP_DESCRIPTOR, cast(MailSourceFactory, factory))
 
     services = service_registry()
     saved = services.snapshot()
     services.register(registry)
     services.register_as(
         DatabaseConfig,
-        DatabaseConfig.model_validate(
-            {"encryption_key": Fernet.generate_key().decode()}
-        ),
+        DatabaseConfig.model_validate({
+            "encryption_key": Fernet.generate_key().decode()
+        }),
     )
     yield factory
     services.restore(saved)
@@ -181,7 +182,9 @@ async def _run_consent(state: MailAccountState, account_id: int) -> None:
         patch.object(MailAccountState, "__aenter__", AsyncMock()),
         patch.object(MailAccountState, "__aexit__", AsyncMock(return_value=False)),
     ):
-        await MailAccountState.start_consent.fn(state, account_id)
+        await MailAccountState.start_consent.fn(  # ty: ignore[unresolved-attribute]
+            state, account_id
+        )
 
 
 class TestTheGeneratedForm:
@@ -665,7 +668,7 @@ class TestAProviderThatAsksForNothing:
         registry = provider_registry()
         registry.register(
             self._silent(),
-            lambda account, secret: StubSource(secret, None),
+            cast(MailSourceFactory, lambda account, secret: StubSource(secret, None)),
             consent=consent,
         )
 
@@ -743,6 +746,7 @@ class TestTheIdentityCheck:
 
         account = (await _accounts(sessions))[0]
         assert account.status == AccountStatus.AUTH_ERROR
+        assert account.last_error is not None
         assert "jens@example.com" in account.last_error
         assert "other@example.com" in account.last_error
         assert state.error == account.last_error

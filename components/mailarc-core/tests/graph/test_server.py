@@ -6,6 +6,7 @@ The behaviour that only shows up against a live FalkorDB lives in
 
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,8 +15,8 @@ from mailarc_core.graph.model import GraphServerMode
 from mailarc_core.graph.server import FalkorDBServer
 
 
-def _config(mode: GraphServerMode, **overrides) -> GraphConfig:
-    defaults = {"mode": mode, "host": "graph.internal", "port": 6380}
+def _config(mode: GraphServerMode, **overrides: Any) -> GraphConfig:
+    defaults: dict[str, Any] = {"mode": mode, "host": "graph.internal", "port": 6380}
     return GraphConfig(**{**defaults, **overrides})
 
 

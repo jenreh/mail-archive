@@ -11,6 +11,7 @@ real FalkorDB.
 """
 
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 
@@ -24,7 +25,12 @@ from mailarc_core.archive.model import (
     MessageLabel,
     MessageSummary,
 )
-from mailarc_core.archive.reader import PREVIEW_LENGTH, ArchiveReader, preview_of
+from mailarc_core.archive.reader import (
+    PREVIEW_LENGTH,
+    ArchiveReader,
+    GraphSessionFactory,
+    preview_of,
+)
 from mailarc_core.mail.model import LabelKind
 
 SENT_AT = datetime(2026, 8, 19, 14, 28, tzinfo=UTC)
@@ -41,8 +47,8 @@ class FakeSession:
 
     def __init__(
         self,
-        rows: list[tuple[Message, Address | None]],
-        labels: list[tuple[Message, Label]] | None = None,
+        rows: list[tuple[Message, Address | Label | None]],
+        labels: list[tuple[Message, Address | Label | None]] | None = None,
     ) -> None:
         self.rows = rows
         self.labels = labels or []
@@ -68,8 +74,8 @@ class FakeSession:
         return len(self.rows)
 
 
-def message(**overrides) -> Message:
-    fields = {
+def message(**overrides: Any) -> Message:
+    fields: dict[str, Any] = {
         "id": "m1@example.com",
         "subject": "SwiftScan 19.08.2026 14.28.pdf",
         "sent_at": SENT_AT,
@@ -81,8 +87,8 @@ def message(**overrides) -> Message:
     return Message(**{**fields, **overrides})
 
 
-def sender(**overrides) -> Address:
-    fields = {
+def sender(**overrides: Any) -> Address:
+    fields: dict[str, Any] = {
         "id": "jens@example.com",
         "display_names": ["Jens Rehpöhler", "J. R."],
     }
@@ -99,7 +105,7 @@ def blobs(tmp_path) -> BlobStore:
 
 
 def reader(session: FakeSession, blobs: BlobStore) -> ArchiveReader:
-    return ArchiveReader(lambda: session, blobs)
+    return ArchiveReader(cast(GraphSessionFactory, lambda: session), blobs)
 
 
 class TestTheListing:
@@ -223,9 +229,9 @@ class TestTheListing:
         assert len(session.statements) == 1
 
     def test_nothing_is_none_where_a_row_prints_a_string(self, blobs) -> None:
-        session = FakeSession(
-            [(message(subject=None, body_text=None, eml_sha256=None), None)]
-        )
+        session = FakeSession([
+            (message(subject=None, body_text=None, eml_sha256=None), None)
+        ])
 
         [summary] = reader(session, blobs).list_messages()
 

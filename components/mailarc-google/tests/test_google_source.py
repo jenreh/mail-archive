@@ -17,6 +17,7 @@ import inspect
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from werkzeug import Request, Response
@@ -70,8 +71,6 @@ MAILBOX = {
 def credentials(httpserver, *, access_token: str | None = LIVE) -> GmailCredentials:
     """A stored credential whose token endpoint is the local server."""
     return GmailCredentials(
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
         refresh_token=REFRESH_TOKEN,
         token_uri=httpserver.url_for(TOKEN_PATH),
         access_token=access_token,
@@ -79,7 +78,7 @@ def credentials(httpserver, *, access_token: str | None = LIVE) -> GmailCredenti
     )
 
 
-def config_for(httpserver, **overrides: object) -> GmailConfig:
+def config_for(httpserver, **overrides: Any) -> GmailConfig:
     """A configuration pointing the adapter at the local server."""
     return GmailConfig(
         api_base_url=httpserver.url_for(API_ROOT),
@@ -118,17 +117,13 @@ def serve_mailbox(httpserver, *, page_size: int = 2) -> None:
                 {"error": {"code": 404, "message": "Requested entity was not found."}},
                 status=404,
             )
-        return json_response(
-            {
-                "id": identifier,
-                "threadId": f"t-{identifier}",
-                "labelIds": ["INBOX", "Label_12"],
-                "sizeEstimate": len(MAILBOX[identifier]),
-                "raw": base64.urlsafe_b64encode(MAILBOX[identifier])
-                .decode()
-                .rstrip("="),
-            }
-        )
+        return json_response({
+            "id": identifier,
+            "threadId": f"t-{identifier}",
+            "labelIds": ["INBOX", "Label_12"],
+            "sizeEstimate": len(MAILBOX[identifier]),
+            "raw": base64.urlsafe_b64encode(MAILBOX[identifier]).decode().rstrip("="),
+        })
 
     httpserver.expect_request(PROFILE).respond_with_json(PROFILE_BODY)
     httpserver.expect_request(LABELS).respond_with_json(LABEL_BODY)
@@ -283,9 +278,10 @@ class TestThePort:
         self, httpserver
     ) -> None:
         serve_mailbox(httpserver)
-        httpserver.expect_request(TOKEN_PATH, method="POST").respond_with_json(
-            {"access_token": MINTED, "expires_in": 3599}
-        )
+        httpserver.expect_request(TOKEN_PATH, method="POST").respond_with_json({
+            "access_token": MINTED,
+            "expires_in": 3599,
+        })
         source = GmailSource(
             credentials(httpserver, access_token=None), config_for(httpserver)
         )

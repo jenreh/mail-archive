@@ -20,7 +20,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any, Never
+from typing import Any, Never, cast
 
 import pytest
 from appkit_commons.database.entities import Base
@@ -51,7 +51,12 @@ from mailarc_core.mail.model import (
 )
 from mailarc_sync.engine import engine as engine_module
 from mailarc_sync.engine.config import SyncConfig
-from mailarc_sync.engine.engine import FULL_SCOPE, PERMANENT_REASON, ImportEngine
+from mailarc_sync.engine.engine import (
+    FULL_SCOPE,
+    PERMANENT_REASON,
+    GraphSessionFactory,
+    ImportEngine,
+)
 from mailarc_sync.engine.fake import FakeMailSource
 from mailarc_sync.engine.model import ImportCounts, ImportProgress, ImportTarget
 
@@ -294,7 +299,7 @@ def graph() -> FakeSession:
 def make_engine(tmp_path, database, graph) -> Callable[..., ImportEngine]:
     """The real engine over the fixtures, with the knobs a test wants to turn."""
 
-    def build(**overrides) -> ImportEngine:
+    def build(**overrides: Any) -> ImportEngine:
         return build_engine(
             tmp_path=tmp_path, database=database, graph=graph, **overrides
         )
@@ -309,15 +314,16 @@ def graph_factory(session: FakeSession) -> Iterator[FakeSession]:
 
 
 def build_engine(
-    *, tmp_path: Path, database, graph: FakeSession, **overrides
+    *, tmp_path: Path, database, graph: FakeSession, **overrides: Any
 ) -> ImportEngine:
     """The real engine, wired to the fixtures above."""
     archive = ArchiveConfig(store_dir=tmp_path / "blobs")
+    config: dict[str, Any] = {"batch_size": 2, **overrides}
     return ImportEngine(
-        config=SyncConfig(**{"batch_size": 2, **overrides}),
+        config=SyncConfig(**config),
         blobs=BlobStore(archive),
         archiver=MessageArchiver(archive),
-        graph_session=lambda: graph_factory(graph),
+        graph_session=cast(GraphSessionFactory, lambda: graph_factory(graph)),
         database_session=database,
     )
 
@@ -337,7 +343,7 @@ def blob_root(mailbox: Path) -> Path:
     return mailbox.parent / "blobs"
 
 
-async def rows(database, entity: type) -> list[Any]:
+async def rows(database, entity: type[Any]) -> list[Any]:
     """Everything in one table, oldest first — the ledger as a human reads it."""
     async with database() as session:
         result = await session.execute(select(entity).order_by(entity.id))
@@ -784,13 +790,15 @@ class TestBatching:
 
         return factory
 
-    def _engine(self, tmp_path, database, graph, opened, **overrides) -> ImportEngine:
+    def _engine(
+        self, tmp_path, database, graph, opened, **overrides: Any
+    ) -> ImportEngine:
         archive = ArchiveConfig(store_dir=tmp_path / "blobs")
         return ImportEngine(
             config=SyncConfig(**overrides),
             blobs=BlobStore(archive),
             archiver=MessageArchiver(archive),
-            graph_session=self._counting(graph, opened),
+            graph_session=cast(GraphSessionFactory, self._counting(graph, opened)),
             database_session=database,
         )
 

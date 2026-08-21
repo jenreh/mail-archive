@@ -62,7 +62,7 @@ def _handler_names(kwargs: dict[str, Any]) -> set[str]:
 
 def test_the_page_builds() -> None:
     """A prop appkit_mantine does not have only shows up when it is built."""
-    assert isinstance(mail_accounts_page(), rx.Component)
+    assert isinstance(mail_accounts_page(), rx.Component)  # ty: ignore[call-non-callable]
 
 
 def test_the_navbar_links_to_the_page() -> None:

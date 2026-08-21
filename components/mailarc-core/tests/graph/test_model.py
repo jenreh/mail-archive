@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -13,8 +14,8 @@ from mailarc_core.graph.model import (
 CHECKED_AT = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
 
-def _status(**overrides) -> GraphServerStatus:
-    defaults = {
+def _status(**overrides: Any) -> GraphServerStatus:
+    defaults: dict[str, Any] = {
         "mode": GraphServerMode.LOCAL,
         "endpoint": "127.0.0.1:6379",
         "reachable": True,
@@ -60,7 +61,7 @@ def test_unreachable_factory_records_the_error_and_clears_details() -> None:
 def test_status_is_immutable() -> None:
     status = _status()
     with pytest.raises(ValidationError):
-        status.reachable = False
+        status.reachable = False  # ty: ignore[invalid-assignment]
 
 
 def test_a_bad_field_value_is_rejected_on_construction() -> None:

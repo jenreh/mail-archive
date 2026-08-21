@@ -143,7 +143,7 @@ def install(
         browser.redirect_uri = recorder.redirect_uri
         return original_authorization_url(**kwargs)
 
-    recorder.authorization_url = authorization_url  # type: ignore[method-assign]
+    recorder.authorization_url = authorization_url  # ty: ignore[invalid-assignment]
     monkeypatch.setattr(oauth, "InstalledAppFlow", recorder)
     monkeypatch.setattr(oauth, "_open_browser", browser)
     return recorder, browser

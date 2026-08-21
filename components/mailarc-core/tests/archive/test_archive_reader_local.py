@@ -156,3 +156,28 @@ def test_a_message_node_without_an_id_is_not_listed_or_counted(
 
     assert [row.subject for row in reader.list_messages()] == ["Angebot 1"]
     assert reader.count_messages() == 1
+
+
+def test_trusting_a_sender_sticks_and_a_reimport_keeps_it(
+    config, blobs, reader
+) -> None:
+    """The decision lives on the Address node: it survives a new session, and
+    archiving the same sender again must not blank it — the writer leaves
+    existing nodes alone."""
+    archive(config, blobs, eml(1, day=4))
+
+    assert reader.remote_content_trusted("anna@example.com") is False
+    assert reader.trust_remote_content("anna@example.com") is True
+    assert reader.remote_content_trusted("anna@example.com") is True
+    # The key is the normalised form, however the caller writes it.
+    assert reader.remote_content_trusted(" Anna@Example.COM ") is True
+
+    archive(config, blobs, eml(2, day=5))
+
+    assert reader.remote_content_trusted("anna@example.com") is True
+
+
+def test_an_address_the_archive_never_saw_cannot_be_trusted(reader) -> None:
+    assert reader.trust_remote_content("stranger@example.com") is False
+    assert reader.remote_content_trusted("stranger@example.com") is False
+    assert reader.trust_remote_content("") is False

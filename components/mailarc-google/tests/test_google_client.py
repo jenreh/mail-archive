@@ -16,6 +16,7 @@ import socket
 import time
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from typing import Any
 
 import httpx
 import pytest
@@ -64,8 +65,6 @@ def credentials(
     this one field is a fixture that phones home.
     """
     return GmailCredentials(
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
         refresh_token=REFRESH_TOKEN,
         token_uri=httpserver.url_for(TOKEN_PATH),
         access_token=access_token,
@@ -108,7 +107,7 @@ class Script:
         return reply
 
 
-def serve_token(httpserver, **overrides: object) -> None:
+def serve_token(httpserver, **overrides: Any) -> None:
     """Let the token endpoint mint one, so a refresh can succeed."""
     body = {"access_token": MINTED, "expires_in": 3599} | overrides
     httpserver.expect_request(TOKEN_PATH, method="POST").respond_with_json(body)

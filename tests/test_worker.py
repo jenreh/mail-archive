@@ -13,6 +13,8 @@ worker stays free of it would prove nothing.
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 from appkit_commons.database.configuration import DatabaseConfig
@@ -35,13 +37,16 @@ from mailarc_core.database.entities import (
 )
 from mailarc_core.mail.errors import MailAuthError
 from mailarc_core.mail.model import MailProvider, ProviderDescriptor
+from mailarc_core.mail.ports import MailSourceFactory, MailSourcePort
 from mailarc_sync.engine import (
     ImportCounts,
     ImportEngine,
     ImportProgress,
+    ImportResult,
+    ImportTarget,
     ProviderRegistry,
 )
-from mailarc_sync.jobs import JobKind, JobState, SessionFactory, SyncJob
+from mailarc_sync.jobs import JobKind, JobQueue, JobState, SessionFactory, SyncJob
 
 ADDRESS = "jens@example.com"
 MAILBOX = "/mailboxes/exported"
@@ -72,17 +77,24 @@ class FakeSource:
         self.closed = True
 
 
-class RecordingEngine:
+class RecordingEngine(ImportEngine):
     """Stands in for the pipeline: it says what it was asked to import.
 
     The pipeline itself runs against real fixtures in the engine's own tests.
     """
 
     def __init__(self, explode: bool = False) -> None:
-        self.calls: list[tuple[FakeSource, object]] = []
+        self.calls: list[tuple[MailSourcePort, ImportTarget]] = []
         self._explode = explode
 
-    async def run(self, source, target, *, on_progress=None, cancelled=None) -> None:
+    async def run(
+        self,
+        source: MailSourcePort,
+        target: ImportTarget,
+        *,
+        on_progress=None,
+        cancelled=None,
+    ) -> ImportResult:
         self.calls.append((source, target))
         if on_progress is not None:
             await on_progress(
@@ -94,9 +106,16 @@ class RecordingEngine:
             )
         if self._explode:
             raise RuntimeError("the graph went away mid-run")
+        now = datetime.now(UTC)
+        return ImportResult(
+            account_id=target.account_id,
+            counts=ImportCounts(listed=4, skipped=1, archived=2, failed=1),
+            started_at=now,
+            finished_at=now,
+        )
 
 
-class RecordingQueue:
+class RecordingQueue(JobQueue):
     """The job row, as far as a handler can see it."""
 
     def __init__(self) -> None:
@@ -104,8 +123,9 @@ class RecordingQueue:
 
     async def progress(
         self, job_id: int, done: int, failed: int, total: int | None = None
-    ) -> None:
+    ) -> bool:
         self.reports.append((job_id, done, failed, total))
+        return True
 
     async def is_cancel_requested(self, job_id: int) -> bool:
         return False
@@ -146,7 +166,7 @@ def registry() -> ProviderRegistry:
     built = ProviderRegistry()
     built.register(
         ProviderDescriptor(provider=MailProvider.FAKE, label="Folder of .eml files"),
-        FakeSource,
+        cast(MailSourceFactory, FakeSource),
     )
     return built
 
@@ -232,6 +252,7 @@ async def test_the_handler_opens_the_mailbox_the_job_names(
     await handler(a_job(account_id), RecordingQueue())
 
     source, target = engine.calls[0]
+    assert isinstance(source, FakeSource)
     assert source.secret == MAILBOX, "the credential never reached the provider"
     assert source.closed, "the handler owns the source and has to close it"
     assert (target.account_id, target.address, target.provider) == (
@@ -268,6 +289,7 @@ async def test_the_mailbox_is_closed_even_when_the_import_blows_up(
     with pytest.raises(RuntimeError, match="graph went away"):
         await handler(a_job(account_id), RecordingQueue())
 
+    assert isinstance(engine.calls[0][0], FakeSource)
     assert engine.calls[0][0].closed
 
 
@@ -364,7 +386,7 @@ class TestARotatedCredential:
         built = ProviderRegistry()
         built.register(
             ProviderDescriptor(provider=MailProvider.FAKE, label="Folder"),
-            lambda account, secret: source,
+            cast(MailSourceFactory, lambda account, secret: source),
         )
         return built
 
@@ -429,7 +451,9 @@ class TestARotatedCredential:
         source = RotatingSource.__new__(RotatingSource)
         source.closed = False
         source.rotated_to = "unused"
-        type(source).credentials = property(lambda self: Exploding("unused"))
+        type(source).credentials = property(  # ty: ignore[invalid-assignment]
+            lambda self: Exploding("unused")
+        )
         try:
             await self._run(session_factory, source)
         finally:

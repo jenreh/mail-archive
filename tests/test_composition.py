@@ -1,5 +1,6 @@
 """The composition root: what the web application builds, and when."""
 
+import functools
 import importlib
 import logging
 import re
@@ -48,14 +49,18 @@ DIES = (sys.executable, "-c", "raise SystemExit(3)")
 """A child that is gone before the start returns."""
 
 
-def _getter(config: type):
-    return {
-        GraphConfig: composition.graph_config,
-        SyncConfig: composition.sync_config,
-        ArchiveConfig: composition.archive_config,
-        MailConfig: composition.mail_config,
-        GmailConfig: composition.google_config,
-    }[config]
+def _getter(
+    config: type[GraphConfig | SyncConfig | ArchiveConfig | MailConfig | GmailConfig],
+):
+    if config is GraphConfig:
+        return composition.graph_config
+    if config is SyncConfig:
+        return composition.sync_config
+    if config is ArchiveConfig:
+        return composition.archive_config
+    if config is MailConfig:
+        return composition.mail_config
+    return composition.google_config
 
 
 @pytest.fixture(autouse=True)
@@ -245,6 +250,7 @@ async def test_gmail_is_built_from_the_registered_configuration(monkeypatch) -> 
         None, GMAIL_SECRET
     )
     try:
+        assert isinstance(built, GmailSource)
         assert built._config is config
     finally:
         await built.aclose()
@@ -302,6 +308,7 @@ def test_the_reader_is_built_on_the_configured_stores(monkeypatch, tmp_path) -> 
 
     assert reader is composition.archive_reader()
     assert reader._blobs.root == archive.store_dir
+    assert isinstance(reader._graph_session, functools.partial)
     assert reader._graph_session.args == (graph,)
 
 

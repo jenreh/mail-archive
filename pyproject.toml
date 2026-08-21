@@ -256,8 +256,13 @@ markers = [
 ]
 
 # Type checking with `ty` (Astral). Run via `task typecheck` (uv run ty check).
+# `.venv` is never used on this machine (see `.env`'s UV_PROJECT_ENVIRONMENT); point ty
+# at the real interpreter explicitly instead of relying on its `.venv` auto-discovery.
 [tool.ty.environment]
 python-version = "3.14"
+python = ".venv.mac"
+# `scripts/` is never installed; its own tests add it to sys.path at import time.
+extra-paths = ["scripts"]
 
 [tool.ty.src]
 exclude = [

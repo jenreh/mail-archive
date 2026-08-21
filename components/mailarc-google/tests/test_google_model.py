@@ -57,17 +57,15 @@ class TestDescriptor:
         assert GMAIL_DESCRIPTOR.supports_incremental is False
 
 
-MAILBOX_MUTATING_SCOPES = frozenset(
-    {
-        "https://mail.google.com/",
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/gmail.compose",
-        "https://www.googleapis.com/auth/gmail.insert",
-        "https://www.googleapis.com/auth/gmail.send",
-        "https://www.googleapis.com/auth/gmail.settings.basic",
-        "https://www.googleapis.com/auth/gmail.settings.sharing",
-    }
-)
+MAILBOX_MUTATING_SCOPES = frozenset({
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.insert",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.settings.sharing",
+})
 """Every Gmail scope that can alter a message, a draft or a mail setting."""
 
 
@@ -88,27 +86,23 @@ class TestScopes:
 
 class TestGoogleTokenResponse:
     def test_it_reads_what_the_token_endpoint_actually_sends(self) -> None:
-        issued = GoogleTokenResponse.model_validate(
-            {
-                "access_token": SAMPLE_ACCESS,
-                "expires_in": 3599,
-                "scope": GMAIL_READONLY_SCOPE,
-                "token_type": "Bearer",
-            }
-        )
+        issued = GoogleTokenResponse.model_validate({
+            "access_token": SAMPLE_ACCESS,
+            "expires_in": 3599,
+            "scope": GMAIL_READONLY_SCOPE,
+            "token_type": "Bearer",
+        })
 
         assert issued.access_token == SAMPLE_ACCESS
         assert issued.expires_in == 3599
         assert issued.refresh_token is None, "a refresh usually reissues nothing"
 
     def test_it_ignores_fields_google_adds_later(self) -> None:
-        issued = GoogleTokenResponse.model_validate(
-            {
-                "access_token": ANY_ACCESS,
-                "id_token": "unused",
-                "some_new_field": 1,
-            }
-        )
+        issued = GoogleTokenResponse.model_validate({
+            "access_token": ANY_ACCESS,
+            "id_token": "unused",
+            "some_new_field": 1,
+        })
 
         assert issued.access_token == ANY_ACCESS
 
@@ -120,7 +114,7 @@ class TestGoogleTokenResponse:
         issued = GoogleTokenResponse(access_token=ANY_ACCESS)
 
         with pytest.raises(ValidationError):
-            issued.access_token = OTHER_ACCESS
+            issued.access_token = OTHER_ACCESS  # ty: ignore[invalid-assignment]
 
 
 class TestGoogleTokenError:

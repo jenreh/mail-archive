@@ -9,6 +9,7 @@ root left it, and that what a row shows is what the reader read.
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 import reflex as rx
@@ -18,6 +19,7 @@ from mailarc_core import ArchiveReader
 from mailarc_core.archive.blobs import BlobStore
 from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.archive.model import Address, BlobKind, Label, Message
+from mailarc_core.archive.reader import GraphSessionFactory
 from mailarc_core.mail.model import EmailAddress, LabelKind
 from mailarc_ui.review import (
     LabelChip,
@@ -69,7 +71,7 @@ HTML_RAW = (
     b"--B\r\n"
     b"Content-Type: text/html; charset=utf-8\r\n"
     b"\r\n"
-    b'<p>Lieber <b>Gast</b></p><script>alert(1)</script>'
+    b"<p>Lieber <b>Gast</b></p><script>alert(1)</script>"
     b'<img src="https://tracker.example/pixel.gif">\r\n'
     b"--B\r\n"
     b'Content-Type: application/pdf; name="Rechnung.pdf"\r\n'
@@ -91,12 +93,18 @@ class FakeSession:
 
     def __init__(
         self,
-        rows: list[tuple[Message, Address | None]],
-        labels: list[tuple[Message, Label]] | None = None,
+        rows: list[tuple[Message, Address | Label | None]],
+        labels: list[tuple[Message, Address | Label | None]] | None = None,
     ) -> None:
         self.rows = rows
         self.labels = labels or []
         self.listed: list[tuple[int, int]] = []
+        self.addresses: dict[str, Address] = {}
+
+    def get(self, cls: type, pk: str) -> Address | None:
+        """What the trust lookup calls: the node under this key, or nothing."""
+        assert cls is Address
+        return self.addresses.get(pk)
 
     def __enter__(self) -> FakeSession:
         return self
@@ -116,8 +124,8 @@ class FakeSession:
         return len(self.rows)
 
 
-def message(number: int, **overrides) -> Message:
-    fields = {
+def message(number: int, **overrides: Any) -> Message:
+    fields: dict[str, Any] = {
         "id": f"m{number}@example.com",
         "subject": f"SwiftScan {number}",
         "sent_at": NOW - timedelta(days=number),
@@ -172,7 +180,7 @@ def published(session: FakeSession, blobs: BlobStore) -> Iterator[ArchiveReader]
     """The reader, left where the composition root would leave it."""
     registry = service_registry()
     saved = registry.snapshot()
-    reader = ArchiveReader(lambda: session, blobs)
+    reader = ArchiveReader(cast(GraphSessionFactory, lambda: session), blobs)
     registry.register_as(ArchiveReader, reader)
     yield reader
     registry.restore(saved)
@@ -606,4 +614,4 @@ class TestTheComponents:
         row = MessageRow(id="m", sender="", subject="", preview="", date_label="")
 
         with pytest.raises(Exception, match="frozen"):
-            row.sender = "x"  # type: ignore[misc]
+            row.sender = "x"  # ty: ignore[invalid-assignment]

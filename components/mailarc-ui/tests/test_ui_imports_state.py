@@ -123,7 +123,7 @@ async def _run_poll(state: ImportJobState) -> None:
     Reflex refuses a direct `state.poll()` call on a background handler, so go
     through the EventHandler's wrapped function.
     """
-    await ImportJobState.poll.fn(state)
+    await ImportJobState.poll.fn(state)  # ty: ignore[unresolved-attribute]
 
 
 def _stopping_sleep(state: ImportJobState, after: int = 1) -> AsyncMock:
@@ -498,4 +498,4 @@ class TestProjection:
         row = ImportJobRow(job_id=1)
 
         with pytest.raises(ValidationError):
-            row.status = "tampered"
+            row.status = "tampered"  # ty: ignore[invalid-assignment]

@@ -30,6 +30,41 @@ LISTING = {
     "resultSizeEstimate": 201,
 }
 
+START_HISTORY_ID = "884411"
+"""The `historyId` a delta starts from — `getProfile`'s, or a page before."""
+
+NEXT_HISTORY_PAGE = "h-page-2"
+"""Gmail's `nextPageToken` for a history walk, which is not a `startHistoryId`."""
+
+HISTORY = {
+    "history": [
+        {
+            "id": "884412",
+            "messages": [{"id": "18c4", "threadId": "18c0"}],
+            "messagesAdded": [
+                {
+                    "message": {
+                        "id": "18c4",
+                        "threadId": "18c0",
+                        "labelIds": ["INBOX", "UNREAD"],
+                    }
+                }
+            ],
+        },
+        {
+            "id": "884413",
+            "messagesAdded": [{"message": {"id": "18c5", "threadId": "18c5"}}],
+        },
+    ],
+    "historyId": "884414",
+}
+"""A `users.history.list` reply for `historyTypes=messageAdded`.
+
+Two new messages in two records, and the reply's own `historyId` beside them —
+present because Gmail sends it, unused because the watermark does not come from
+here.
+"""
+
 FETCHED = {
     "id": "18c1",
     "threadId": "18c0",
@@ -136,6 +171,137 @@ class TestTheListing:
         assert (
             mapping.message_page({"resultSizeEstimate": "many"}).estimated_total is None
         )
+
+
+class TestTheWatermark:
+    def test_the_profiles_history_id_is_where_a_delta_starts(self) -> None:
+        watermark = mapping.account_watermark(
+            {"emailAddress": "jens@example.com", "historyId": START_HISTORY_ID}
+        )
+
+        assert watermark.token == START_HISTORY_ID
+        assert watermark.kind is SyncCursorKind.INCREMENTAL
+        assert watermark.provider is MailProvider.GMAIL
+
+    def test_a_profile_without_one_is_malformed_and_not_a_mailbox_without_a_delta(
+        self,
+    ) -> None:
+        """`None` here would contradict the descriptor and sync nothing forever."""
+        with pytest.raises(MailPermanentError, match="historyId"):
+            mapping.account_watermark({"emailAddress": "jens@example.com"})
+
+
+class TestTheHistoryCursor:
+    def test_both_halves_survive_one_opaque_token(self) -> None:
+        """`history.list` needs a start *and* a page; `SyncCursor` has one field."""
+        cursor = mapping.history_cursor(START_HISTORY_ID, NEXT_HISTORY_PAGE)
+
+        assert mapping.read_history_cursor(cursor) == (
+            START_HISTORY_ID,
+            NEXT_HISTORY_PAGE,
+        )
+
+    def test_a_watermark_is_a_start_with_no_page_yet(self) -> None:
+        cursor = mapping.history_cursor(START_HISTORY_ID)
+
+        assert cursor.token == START_HISTORY_ID
+        assert mapping.read_history_cursor(cursor) == (START_HISTORY_ID, None)
+
+    def test_an_empty_page_token_is_no_page_token(self) -> None:
+        """`history_page` passes what Gmail sent, and Gmail may send nothing."""
+        assert mapping.history_cursor(START_HISTORY_ID, "").token == START_HISTORY_ID
+
+
+class TestTheHistoryPage:
+    def test_the_added_messages_become_the_page(self) -> None:
+        page = mapping.history_page(HISTORY, start_history_id=START_HISTORY_ID)
+
+        assert [one.provider_message_id for one in page.refs] == ["18c4", "18c5"]
+        assert page.refs[0].provider_thread_id == "18c0"
+        assert page.refs[0].labels == ("INBOX", "UNREAD")
+
+    def test_one_message_in_several_records_is_still_one_message(self) -> None:
+        """Gmail lists an id again for every change it took part in."""
+        twice = {
+            "history": [
+                {"id": "884412", "messagesAdded": [{"message": {"id": "18c4"}}]},
+                {"id": "884413", "messagesAdded": [{"message": {"id": "18c4"}}]},
+            ]
+        }
+
+        page = mapping.history_page(twice, start_history_id=START_HISTORY_ID)
+
+        assert [one.provider_message_id for one in page.refs] == ["18c4"]
+
+    def test_the_next_page_carries_the_same_start_and_gmails_token(self) -> None:
+        """`startHistoryId` is required on *every* call, not only the first."""
+        page = mapping.history_page(
+            HISTORY | {"nextPageToken": NEXT_HISTORY_PAGE},
+            start_history_id=START_HISTORY_ID,
+        )
+
+        assert page.next_cursor is not None
+        assert mapping.read_history_cursor(page.next_cursor) == (
+            START_HISTORY_ID,
+            NEXT_HISTORY_PAGE,
+        )
+        assert page.next_cursor.kind is SyncCursorKind.INCREMENTAL
+
+    def test_the_last_page_ends_the_walk_rather_than_naming_the_new_history_id(
+        self,
+    ) -> None:
+        """A cursor that is never `None` is an engine loop that never breaks.
+
+        The reply's own `historyId` is right there and deliberately unused: the
+        point a later delta resumes from is `watermark()`, read before the walk
+        and therefore behind everything it fetched.
+        """
+        page = mapping.history_page(HISTORY, start_history_id=START_HISTORY_ID)
+
+        assert page.next_cursor is None
+
+    def test_a_quiet_mailbox_reports_nothing_new_rather_than_failing(self) -> None:
+        page = mapping.history_page(
+            {"historyId": "884411"}, start_history_id=START_HISTORY_ID
+        )
+
+        assert page.refs == ()
+        assert page.next_cursor is None
+        assert page.estimated_total == 0
+
+    def test_the_estimate_is_the_pages_own_size(self) -> None:
+        """History sends no `resultSizeEstimate`, and `None` would leave the
+        progress row showing the total of the last full import."""
+        assert mapping.history_page(
+            HISTORY, start_history_id=START_HISTORY_ID
+        ).estimated_total
+
+    def test_a_record_that_is_not_an_object_is_a_page_worth_failing(self) -> None:
+        """No silent skip: a dropped record is new mail nothing would fetch."""
+        with pytest.raises(MailPermanentError, match="history record"):
+            mapping.history_page(
+                {"history": ["884412"]}, start_history_id=START_HISTORY_ID
+            )
+
+    def test_a_change_without_a_message_is_the_same_kind_of_broken(self) -> None:
+        with pytest.raises(MailPermanentError, match="message"):
+            mapping.history_page(
+                {"history": [{"id": "884412", "messagesAdded": [{}]}]},
+                start_history_id=START_HISTORY_ID,
+            )
+
+    def test_a_record_with_only_changes_we_did_not_ask_for_adds_nothing(self) -> None:
+        """`labelsAdded` arrives on records that also carry a `messagesAdded`."""
+        page = mapping.history_page(
+            {
+                "history": [
+                    {"id": "884412", "labelsAdded": [{"message": {"id": "18c4"}}]}
+                ]
+            },
+            start_history_id=START_HISTORY_ID,
+        )
+
+        assert page.refs == ()
 
 
 class TestTheFetchedMessage:

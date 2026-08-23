@@ -24,6 +24,7 @@ from werkzeug import Request, Response
 
 from mailarc_core.mail.errors import (
     MailAuthError,
+    MailCursorExpired,
     MailPermanentError,
     MailTransientError,
 )
@@ -33,7 +34,8 @@ from mailarc_google.source.credentials import GmailCredentials
 
 API_ROOT = "/gmail/v1"
 TOKEN_PATH = "/token"  # noqa: S105 - a URL path
-PROFILE = f"{API_ROOT}/users/me/profile"
+PROFILE_CALL = "/users/me/profile"
+PROFILE = f"{API_ROOT}{PROFILE_CALL}"
 
 CLIENT_ID = "123456789-example.apps.googleusercontent.com"
 CLIENT_SECRET = "the-users-own-client-secret"  # noqa: S105 - a fixture
@@ -128,7 +130,7 @@ def closed_port() -> int:
 async def profile(client: GmailClient) -> dict[str, object]:
     """The one call every test in this module makes."""
     try:
-        return await client.get("/users/me/profile")
+        return await client.get(PROFILE_CALL)
     finally:
         await client.aclose()
 
@@ -322,6 +324,54 @@ class TestTheStatusMapping:
             await profile(GmailClient(credentials(httpserver), config_for(httpserver)))
 
 
+class TestWhatA404Means:
+    """One status, two answers, and only the caller knows which it asked for.
+
+    Gmail says 404 both for a message that is gone — skip it, record it, go on —
+    and for a `startHistoryId` it no longer keeps, which is "throw the cursor
+    away and walk the whole mailbox". Reading the second as the first would file
+    a dead cursor as a skipped message and leave the account reporting healthy
+    runs that fetch nothing ever again.
+    """
+
+    async def test_the_default_is_still_one_resource_gone(self, httpserver) -> None:
+        httpserver.expect_request(PROFILE).respond_with_data("gone", status=404)
+        client = GmailClient(credentials(httpserver), config_for(httpserver))
+
+        with pytest.raises(MailPermanentError):
+            await profile(client)
+
+    async def test_a_caller_may_say_what_it_asked_for(self, httpserver) -> None:
+        httpserver.expect_request(PROFILE).respond_with_data("gone", status=404)
+        client = GmailClient(credentials(httpserver), config_for(httpserver))
+
+        try:
+            with pytest.raises(MailCursorExpired, match="404"):
+                await client.get(PROFILE_CALL, not_found=MailCursorExpired)
+        finally:
+            await client.aclose()
+
+    async def test_only_404_takes_the_callers_meaning(self, httpserver) -> None:
+        """A misspelled parameter is a 400, and it must not read as a dead cursor.
+
+        This is why the meaning is a status-code branch here rather than an
+        `except MailPermanentError` at the call site: that would have swept up
+        the 400, the 410 and a proxy's 451 as "expired" and re-walked somebody's
+        whole mailbox over a typo.
+        """
+        httpserver.expect_request(PROFILE).respond_with_data("bad request", status=400)
+        client = GmailClient(credentials(httpserver), config_for(httpserver))
+
+        try:
+            with pytest.raises(MailPermanentError, match="400"):
+                await client.get(PROFILE_CALL, not_found=MailCursorExpired)
+            assert not issubclass(MailCursorExpired, MailPermanentError), (
+                "a sibling, so the engine's per-message handler cannot claim it"
+            )
+        finally:
+            await client.aclose()
+
+
 class TestNoHttpxErrorEscapes:
     async def test_a_dropped_connection_is_transient(self, httpserver) -> None:
         config = GmailConfig(
@@ -389,7 +439,7 @@ class TestClosing:
         httpserver.expect_request(PROFILE).respond_with_json(PROFILE_BODY)
         client = GmailClient(credentials(httpserver), config_for(httpserver))
 
-        await client.get("/users/me/profile")
+        await client.get(PROFILE_CALL)
         await client.aclose()
         await client.aclose()
 

@@ -9,6 +9,10 @@ Note how `fetch_raw` is called below. Section 7.1 spells it ``async def ... ->
 AsyncIterator[RawMessage]``, so it is a coroutine that *returns* a stream:
 ``async for raw in await source.fetch_raw(refs)``. An adapter therefore hands
 back an async generator rather than being one.
+
+`watermark` is the sixth method and the one an adapter is most likely to leave
+out, because nothing else calls it: it exists so a delta has a starting point
+before it has ever run. A source that cannot do deltas answers `None`.
 """
 
 from collections.abc import AsyncIterator, Sequence
@@ -76,6 +80,14 @@ class FakeMailSource:
     async def fetch_raw(self, refs: Sequence[MessageRef]) -> AsyncIterator[RawMessage]:
         return self._stream(refs)
 
+    async def watermark(self) -> SyncCursor | None:
+        """Everything up to the last id is accounted for; a delta starts after it."""
+        return SyncCursor(
+            provider=self.provider,
+            token=list(MESSAGES)[-1],
+            kind=SyncCursorKind.INCREMENTAL,
+        )
+
     async def aclose(self) -> None:
         self.closed = True
 
@@ -121,6 +133,29 @@ async def test_paging_ends_when_there_is_no_next_cursor() -> None:
     assert len(page.refs) == 2
     assert page.next_cursor is None
     assert page.estimated_total == 2
+
+
+async def test_a_watermark_says_where_a_delta_would_start() -> None:
+    """Read before the first listing, stored after the last one."""
+    source: MailSourcePort = FakeMailSource()
+
+    watermark = await source.watermark()
+
+    assert watermark is not None
+    assert watermark.kind is SyncCursorKind.INCREMENTAL
+    assert watermark.token == "m2"  # noqa: S105 - a message id, not a secret
+
+
+async def test_a_source_without_deltas_answers_none() -> None:
+    """The honest answer, and the one the descriptor has to agree with."""
+
+    class WithoutDeltas(FakeMailSource):
+        async def watermark(self) -> SyncCursor | None:
+            return None
+
+    source: MailSourcePort = WithoutDeltas()
+
+    assert await source.watermark() is None
 
 
 async def test_closing_is_part_of_the_port() -> None:

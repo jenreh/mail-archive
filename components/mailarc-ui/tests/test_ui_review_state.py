@@ -7,6 +7,7 @@ are about the seams: that the state finds its reader where the composition
 root left it, and that what a row shows is what the reader read.
 """
 
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -548,6 +549,35 @@ class TestTheHeaderLabels:
 
         assert long_date_label(sent) == sent.astimezone().strftime("%a, %d.%m.%Y %H:%M")
         assert long_date_label(None) == ""
+
+    def test_a_date_this_zone_cannot_print_costs_one_cell(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same forgeable header that took the insights page down.
+
+        ``Date: Fri, 31 Dec 9999 23:59:59 +0000`` parses, ``_sent_at``
+        range-checks nothing, and ``astimezone()`` then raises ``OverflowError``
+        in every zone east of UTC — which is the developer's own, and a routine
+        spam trick besides. In a list row that has to be one empty cell, not a
+        message list that will not render.
+        """
+        monkeypatch.setenv("TZ", "Europe/Berlin")
+        time.tzset()
+        far_future = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+        assert date_label(far_future, NOW) == ""
+        assert long_date_label(far_future) == ""
+
+    def test_the_other_end_of_the_range_costs_one_cell_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Year 0001 overflows west of UTC, so the guard is two-sided."""
+        monkeypatch.setenv("TZ", "America/New_York")
+        time.tzset()
+        long_ago = datetime(1, 1, 1, tzinfo=UTC)
+
+        assert date_label(long_ago, NOW) == ""
+        assert long_date_label(long_ago) == ""
 
     @pytest.mark.parametrize(
         ("size", "label"),

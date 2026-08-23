@@ -1,0 +1,172 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+#
+# Everything an automated agent is allowed to run against this project.
+#
+# A developer machine holds one live archive and it is real mail: accounts and
+# encrypted credentials in `.state/mail-archive.db`, the original bytes of every
+# imported message in `.state/mailstore`, the graph in `.state/falkordb`. The
+# blob store is content-addressed and write-once, so anything written into it
+# can never afterwards be told apart from a genuinely archived message.
+#
+# `PROFILES=agent_test` alone is NOT enough to prevent that, and this file
+# exists because of exactly that gap. The profile lives in
+# `configuration/config.agent_test.yaml`, which nests its settings under
+# `app.archive`, `app.graph` and so on. Those reach a component only through the
+# composition root, which reads the nested block and passes it down. A module
+# that builds its own bare config — `MessageArchiver(ArchiveConfig())`, which is
+# what `components/mailarc-analytics/tests/planted_graph.py` does — gets its own
+# settings source, finds nothing at the YAML top level, and falls back to the
+# field default, which is the REAL store. Observed, not theorised:
+#
+#     PROFILES=agent_test → bare ArchiveConfig().store_dir == .state/mailstore
+#
+# The `app_*` environment variables below close that: every `BaseConfig` reads
+# its own `env_prefix` regardless of how it was constructed, so a bare config
+# lands in the sandbox too. This is the same belt-and-braces the root
+# `conftest.py` puts around the test suite, for the same reason.
+#
+# Note `app_database_url_override`, not `app_database_url`. `DatabaseConfig.url`
+# is a computed field over a stored `url_override`; the obvious name is accepted
+# and silently ignored, and the config then falls through to the real archive.
+#
+# Everything here writes under `.state-agent/`, which is gitignored and
+# disposable: delete the directory and the next run rebuilds it empty.
+
+version: "3"
+
+silent: true
+
+# There is deliberately NO file-level `env:` block here.
+#
+# go-task merges an included taskfile's file-level `env:` into ONE global
+# environment shared by every task in the project — so a block here does not
+# scope to this namespace, it leaks outwards. An earlier version of this file
+# had one, and it pointed `task run`, `task tauri:dev` and `task tauri:falkor`
+# at `app_archive_store_dir=.state-agent/mailstore` and
+# `app_graph_data_dir=.state-agent/falkordb`. That is the sandbox contaminating
+# the REAL application: the app would have booted FalkorDB out of the sandbox's
+# data directory and written original message bytes into a directory
+# `task agent:clean` removes with `rm -rf`, while the real SQLite ledger went on
+# recording them as archived. Measured, not theorised — `task run` printed
+# `store=[.state-agent/mailstore] gdir=[.state-agent/falkordb]`.
+#
+# The same mistake in the other direction is what put a schema migration on the
+# real graph earlier in this project: `Taskfile.{db,graph}.yml` templated
+# `{{.PROFILES}}`, which resolved against `Taskfile.tauri.yml`'s global var
+# `prod` and leaked it everywhere.
+#
+# So the sandbox is stated INLINE on each command, via `{{.SANDBOX}}`. An
+# inline assignment in the command string cannot be overridden by another
+# taskfile — and, being inline, cannot override one either. It is the only form
+# that is safe in both directions.
+
+vars:
+  RUNNER: uv run
+  # Stated inline on every command — see the note above for why there is no
+  # `env:` block. An inline assignment in the command string wins over any
+  # inherited environment and leaks into none, which is the only form that is
+  # safe in both directions.
+  SANDBOX: >-
+    PROFILES=agent_test
+    app_database_url_override=sqlite+aiosqlite:///.state-agent/mail-archive.db
+    app_archive_store_dir=.state-agent/mailstore
+    app_graph_data_dir=.state-agent/falkordb
+    app_graph_graph_name=mail-archive-agent
+    app_graph_port=6399
+
+tasks:
+  default:
+    desc: Show available commands
+    cmd: task --list
+
+  # ----------------------------------------------------------------------------
+  # Agent Sandbox (Namespace: agent)
+  # ----------------------------------------------------------------------------
+
+  app:
+    desc: Run the application against the agent sandbox on 8081/3031
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} reflex run"
+
+  worker:
+    desc: Run the import worker against the agent sandbox
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} python -m app.worker"
+
+  derive:
+    desc: Rebuild the derived analysis nodes in the agent sandbox
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} python -m app.derive"
+
+  embed:
+    desc: Compute the missing message embeddings in the agent sandbox
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} python -m app.embedding"
+
+  reindex:
+    desc: Rebuild the agent sandbox's vector index at the configured length
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} python -m app.reindex"
+
+  db:upgrade:
+    desc: Apply the SQLite migrations to the agent sandbox database
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} alembic upgrade head"
+
+  graph:upgrade:
+    desc: Apply the graph migrations to the agent sandbox graph
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} runic upgrade head --config graph_migrations/env.py"
+
+  exec:
+    desc: |
+      Run any command inside the agent sandbox
+      (Usage: task agent:exec -- uv run python -m app.derive)
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.CLI_ARGS}}"
+
+  check:
+    desc: |
+      Assert the sandbox really is the sandbox. Exits non-zero if ANY resolved
+      path points at the real archive — run it before anything destructive
+    cmd: |
+      {{.SANDBOX}} {{.RUNNER}} python -c "
+      import sys
+      from mailarc_core.archive.config import ArchiveConfig
+      from mailarc_core.graph.config import GraphConfig
+      from appkit_commons.database.configuration import DatabaseConfig
+      from app import settings
+
+      bad = []
+      # Bare configs: what a module building its own config sees.
+      if not str(ArchiveConfig().store_dir).startswith('.state-agent'):
+          bad.append('bare ArchiveConfig().store_dir = %s' % ArchiveConfig().store_dir)
+      if GraphConfig().port != 6399 or GraphConfig().graph_name != 'mail-archive-agent':
+          bad.append('bare GraphConfig() = %s:%s' % (GraphConfig().graph_name, GraphConfig().port))
+      if '.state-agent' not in str(DatabaseConfig().url):
+          bad.append('bare DatabaseConfig().url = %s' % DatabaseConfig().url)
+      # Composed config: what the application itself sees. This is the one that
+      # went wrong — the nested YAML block arrives as init kwargs and outranks
+      # the environment, so it has to be checked separately from the bare form.
+      g = settings.app.graph
+      if g.port != 6399 or g.graph_name != 'mail-archive-agent':
+          bad.append('settings.app.graph = %s:%s' % (g.graph_name, g.port))
+      if '.state-agent' not in str(settings.app.database.url):
+          bad.append('settings.app.database.url = %s' % settings.app.database.url)
+      if not str(settings.app.archive.store_dir).startswith('.state-agent'):
+          bad.append('settings.app.archive.store_dir = %s' % settings.app.archive.store_dir)
+
+      if bad:
+          print('SANDBOX BROKEN — these resolve outside .state-agent/:')
+          for one in bad:
+              print('  ' + one)
+          print()
+          print('Refusing to run. Anything written now would land in real mail.')
+          sys.exit(1)
+      print('sandbox ok: graph=%s:%s db=%s store=%s' % (
+          g.graph_name, g.port, settings.app.database.url, settings.app.archive.store_dir))
+      "
+
+  clean:
+    desc: Delete the agent sandbox; the next run rebuilds it empty
+    cmd: rm -rf .state-agent

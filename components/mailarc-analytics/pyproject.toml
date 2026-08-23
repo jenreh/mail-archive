@@ -8,7 +8,13 @@ license = { text = "MIT" }
 authors = [{ name = "Jens Rehpöhler" }]
 
 # Reads the ground truth the core wrote and writes beside it, never into it.
-dependencies = ["mailarc-core"]
+# Plus an HTTP client: the embedder in `semantic/` is two POSTs of our own,
+# because `runic.rag` is banned repository-wide (§3.2) and would have brought a
+# whole GraphRAG pipeline along for them. Never a sibling component.
+dependencies = [
+    "httpx>=0.28.1",
+    "mailarc-core",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -21,3 +27,6 @@ packages = ["src/mailarc_analytics"]
 cache_dir = "../../.cache/pytest"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "graph_local: starts the vendored FalkorDB (needs `task tauri:vendor`)",
+]

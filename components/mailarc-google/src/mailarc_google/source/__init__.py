@@ -25,9 +25,10 @@ One module per concern, layered so nothing points back up:
     The HTTP client against the API — the only reader of a status code, and
     the place the error taxonomy is decided.
 ``mapping``
-    Google's JSON turned into domain value objects, and no dictionary out.
+    Google's JSON turned into domain value objects, and no dictionary out —
+    the history walk's two-part cursor included, minted and read in one place.
 ``source``
-    ``GmailSource`` — the five methods of the port, made of the four above.
+    ``GmailSource`` — the six methods of the port, made of the four above.
 """
 
 from mailarc_google.source.client import GmailApiError, GmailClient

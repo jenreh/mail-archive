@@ -4,6 +4,25 @@ version: "3"
 
 silent: true
 
+# `graph_migrations/env.py` reads the composed `AppConfig`, so these commands
+# migrate whichever graph the application would read under the same profile —
+# `PROFILES=agent_test task graph:upgrade` reaches `.state-agent`, not the real
+# archive. That is true because env.py goes through `app.settings`; a bare
+# `GraphConfig()` reads nothing out of the profile files and always answered
+# 127.0.0.1:6379/mail-archive. Set per task and not in `.env`: appkit loads that
+# file with override=True, which would pin every entry point to one profile.
+#
+# A LITERAL value, never a template. `{{.PROFILES}}` resolves against the global
+# var scope, where Taskfile.tauri.yml declares `PROFILES: prod` — so templating it
+# here silently ran migrations under the prod profile.
+#
+# And in each task's own `env:`, never a file-level one. go-task merges a
+# file-level block into ONE environment shared by every task in the PROJECT, so
+# a header block here does not scope to this namespace — it hands `PROFILES` to
+# `task run`, to the agent sandbox, and to namespaces this file has never heard
+# of. `tests/test_taskfile_isolation.py` runs `task env-probe` and reads what
+# arrives, which is the only place the difference is visible.
+
 vars:
   RUNNER: uv run
   # Not runic's default `runic/`: a directory of that name at the repo root
@@ -22,6 +41,8 @@ tasks:
   revision:
     desc: |
       Create new runic migration (Usage: task graph:revision -- "your message here")
+    env:
+      PROFILES: local
     cmds:
       # CLI_ARGS arrives already shell-quoted; quoting it again puts the quotes
       # into the migration's message and file name.
@@ -29,16 +50,55 @@ tasks:
 
   current:
     desc: Run runic current (check migration status)
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} runic current --config {{.CONFIG}}"
 
   history:
     desc: Show runic migration history
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} runic history --config {{.CONFIG}}"
 
   upgrade:
     desc: Run runic upgrade head
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} runic upgrade head --config {{.CONFIG}}"
 
   downgrade:
     desc: Downgrade graph by one revision
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} runic downgrade --config {{.CONFIG}}"
+
+  # ----------------------------------------------------------------------------
+  # Derived Layer (Namespace: graph)
+  # ----------------------------------------------------------------------------
+
+  rebuild-derived:
+    desc: |
+      Delete the derived nodes (Group, Topic, Template) and compute them again
+    env:
+      PROFILES: local
+    cmd: "{{.RUNNER}} python -m app.derive"
+
+  embed:
+    desc: |
+      Compute the embedding for every message that has no vector under the
+      configured model (needs app.semantic.provider set to ollama or openai)
+    env:
+      PROFILES: local
+    cmd: "{{.RUNNER}} python -m app.embedding"
+
+  reindex-vectors:
+    desc: |
+      Rebuild the vector index at the configured length, forgetting every
+      stored vector (run graph:embed afterwards to recompute them)
+    # Its own PROFILES, like every task here that reaches the archive. Not the
+    # file header: go-task merges a file-level `env:` into one environment
+    # shared by every task in the project, so a block here would configure
+    # `task run` too.
+    env:
+      PROFILES: local
+    cmd: "{{.RUNNER}} python -m app.reindex"

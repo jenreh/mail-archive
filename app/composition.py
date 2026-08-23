@@ -15,9 +15,21 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator, Mapping, Sequence
 from functools import lru_cache, partial
+from typing import Any
 
+from appkit_commons.database.session import get_asyncdb_session
 from appkit_commons.registry import service_registry
+from pydantic import ValidationError
 
+from mailarc_analytics import AnalyticsConfig, AnalyticsReader
+from mailarc_analytics.semantic import (
+    EmbedderPort,
+    SemanticConfig,
+    SemanticControl,
+    SemanticOverrides,
+    SemanticSearch,
+    build_embedder,
+)
 from mailarc_core import (
     ArchiveConfig,
     ArchiveReader,
@@ -27,6 +39,7 @@ from mailarc_core import (
     GraphServerStatus,
     read_status_async,
 )
+from mailarc_core.database.repositories import SemanticSettingsRepository
 from mailarc_core.graph.client import session as graph_session
 from mailarc_core.mail.config import MailConfig
 from mailarc_core.mail.errors import MailAuthError
@@ -40,19 +53,39 @@ from mailarc_sync.engine import (
     ProviderRegistry,
     SyncConfig,
 )
+from mailarc_sync.jobs import SessionFactory
 
 logger = logging.getLogger(__name__)
 
+_SEMANTIC_SETTINGS = SemanticSettingsRepository()
+"""The one row a human's embedder choice is stored in."""
+
+_semantic_override: SemanticConfig | None = None
+"""The merge of the stored settings over the file, once it has been read.
+
+``None`` until :func:`load_semantic_config` has run, and that is not a
+degraded state: it is the configuration this application had before any of
+this existed, and the one a process that never reaches a database keeps.
+"""
+
 
 def _registered[T](config: type[T]) -> T:
-    """One configuration object, or the sentence that says what is missing."""
-    instance = service_registry().get(config)
-    if instance is None:
+    """One configuration object, or the sentence that says what is missing.
+
+    ``ServiceRegistry.get`` raises ``KeyError``; it never returns ``None``, so
+    the ``is None`` branch this used to carry could not run and the explanation
+    written for it never reached anybody. An un-configured process got a bare
+    ``KeyError: 'Instance of type GraphConfig not found in registry'`` instead.
+    Same shape as :func:`mailarc_ui.insights.state.analytics_reader`, which had
+    it right.
+    """
+    try:
+        return service_registry().get(config)
+    except KeyError as error:
         raise RuntimeError(
             f"{config.__name__} is not registered — "
             "was app.configuration.configure() called?"
-        )
-    return instance
+        ) from error
 
 
 def graph_config() -> GraphConfig:
@@ -65,6 +98,228 @@ def sync_config() -> SyncConfig:
 
 def archive_config() -> ArchiveConfig:
     return _registered(ArchiveConfig)
+
+
+def analytics_config() -> AnalyticsConfig:
+    return _registered(AnalyticsConfig)
+
+
+def semantic_config() -> SemanticConfig:
+    """The embedder this installation is actually configured with.
+
+    The file and the environment, with whatever a human stored in
+    ``semantic_settings`` laid over it — and, until
+    :func:`load_semantic_config` has run, exactly the file and the environment.
+    That ordering is the guarantee rather than a fallback: a process that never
+    opens the database, an installation whose table is empty, and a checkout
+    whose migration has not been applied yet all resolve to the same
+    configuration this function returned before the settings row existed, which
+    on a default installation is ``provider: none``.
+
+    Deliberately still a plain synchronous read. Three callers reach it —
+    :func:`semantic_embedder`, :func:`semantic_search` and
+    :func:`app.derive.rebuild`, the last from inside a worker thread — and
+    making it ``async`` to hide a database read would put an ``await`` in a
+    thread that has no loop. The read happens once, in
+    :func:`load_semantic_config`, where there is one.
+    """
+    if _semantic_override is not None:
+        return _semantic_override
+    return _registered(SemanticConfig)
+
+
+async def load_semantic_config(
+    session_factory: SessionFactory = get_asyncdb_session,
+) -> SemanticConfig:
+    """Read the stored embedder settings and adopt the merge as effective.
+
+    The merge itself is one line — stored over configured, unset falls through
+    — and it lives here because §4.1 puts building a component from
+    configuration in this module alone: ``mailarc-analytics`` describes what an
+    embedder is and must not learn that a database holds one setting of it.
+
+    Idempotent, and cheap when nothing changed: a settings row that resolves to
+    the configuration already in force returns without clearing a cache,
+    without closing a client and without re-registering anything. That is what
+    makes "a fresh installation behaves exactly as today" a property of the
+    code rather than a claim about it — with no row stored,
+    :meth:`SemanticOverrides.applied_to` hands back the configured object
+    itself and this function is a no-op.
+
+    When something *did* change, the two cached objects built from the old
+    configuration are dropped and the old embedder is closed — it holds an
+    ``httpx`` pool, and a cache cleared without an ``aclose`` leaks a
+    connection per save. The search is then published again so the page that
+    reads it out of the service registry sees the new one; ``mailarc-ui`` may
+    not import ``app``, so a stale object there would be a stale object
+    forever.
+    """
+    merged = (await _stored_semantic_overrides(session_factory)).applied_to(
+        _registered(SemanticConfig)
+    )
+    if merged == semantic_config():
+        logger.debug("The stored embedder settings change nothing")
+        return merged
+    await _adopt_semantic_config(merged)
+    # All three identifying values, not just the provider: a partial merge (see
+    # `_validated_overrides`) resolves to neither the file nor the row, so this
+    # is the only place "which embedder is this process actually running" can
+    # be answered afterwards. Never the key — nothing in this module logs it.
+    logger.info(
+        "Embedder settings adopted: provider=%s model=%s dimension=%d",
+        merged.provider,
+        merged.model or "<the provider's default>",
+        merged.dimension,
+    )
+    return merged
+
+
+async def _stored_semantic_overrides(
+    session_factory: SessionFactory,
+) -> SemanticOverrides:
+    """The stored row as overrides, or nothing at all."""
+    async with session_factory() as session:
+        stored = await _SEMANTIC_SETTINGS.load(session)
+    if stored is None:
+        return SemanticOverrides()
+    return _validated_overrides(
+        {
+            "provider": stored.provider,
+            "model": stored.model,
+            "dimension": stored.dimension,
+            "base_url": stored.base_url,
+            "api_key": stored.api_key,
+        }
+    )
+
+
+def _validated_overrides(stored: dict[str, Any]) -> SemanticOverrides:
+    """The stored columns that validate, without the ones that do not.
+
+    A row that does not validate — a provider name no release of this
+    application ever wrote, a dimension a hand edit set to zero — must not stop
+    the archive starting. But dropping the *whole row* over one bad column was
+    too blunt: a good provider, a good model and a hand-edited ``dimension`` of
+    zero left the archive running the configuration file's embedder, which on a
+    default installation is ``provider: none``, while the settings page went on
+    redisplaying the stored provider. Four decisions lost to one bad value, and
+    the only trace a single warning naming ``dimension``.
+
+    So each refusal costs its own field and the rest are kept. The offenders
+    are found by asking pydantic which fields it blamed and building the model
+    again without them, rather than by validating field by field — the model is
+    the authority on what is valid, and a second implementation of that here
+    would be a second answer to drift from it.
+
+    Only the *names* are logged, never pydantic's own message:
+    ``ValidationError`` quotes the input that failed, and one of these five
+    fields is an API key. A refusal that names no field at all — what a model
+    validator produces — cannot be narrowed to a column, so the whole row goes;
+    that branch also exists because indexing into an empty ``loc`` used to
+    raise ``IndexError`` out of the handler and chain the ``ValidationError``,
+    quoted inputs and all, into somebody's ``logger.exception``.
+    """
+    candidates = dict(stored)
+    refused: list[str] = []
+    while True:
+        try:
+            overrides = SemanticOverrides(**candidates)
+        except ValidationError as error:
+            named = [name for name in _refused_fields(error) if name in candidates]
+            if not named:
+                logger.warning(
+                    "Ignoring every stored embedder setting: the row does not "
+                    "validate and no single field was blamed. The "
+                    "configuration file answers for all of them."
+                )
+                return SemanticOverrides()
+            refused.extend(named)
+            for name in named:
+                del candidates[name]
+            continue
+        break
+    if refused:
+        logger.warning(
+            "Ignoring these stored embedder settings; these do not validate: "
+            "%s. The configuration file answers for them.",
+            ", ".join(sorted(refused)),
+        )
+    return overrides
+
+
+def _refused_fields(error: ValidationError) -> list[str]:
+    """Which fields pydantic blamed — the names alone, never the values.
+
+    Joined over the whole ``loc`` rather than indexed at ``[0]``, which cannot
+    run off the end of an empty one. An entry with no ``loc`` is left out
+    rather than named ``<model>``: the caller's question is "which key do I
+    remove", and a root-level refusal has no answer to it.
+    """
+    return [
+        ".".join(str(part) for part in one["loc"])
+        for one in error.errors()
+        if one["loc"]
+    ]
+
+
+async def _adopt_semantic_config(merged: SemanticConfig) -> None:
+    """Make *merged* the effective configuration and rebuild what came before."""
+    global _semantic_override
+    # Read before the swap, and only if one was ever built: asking for the
+    # embedder here would otherwise construct one from the configuration being
+    # replaced, just to close it again.
+    stale = semantic_embedder() if semantic_embedder.cache_info().currsize else None
+    _semantic_override = merged
+    semantic_embedder.cache_clear()
+    semantic_search.cache_clear()
+    if stale is not None:
+        await stale.aclose()
+    if service_registry().has(SemanticSearch):
+        publish_semantic_search()
+
+
+async def adopt_semantic_settings() -> None:
+    """Adopt the stored embedder settings for this process, whatever happens.
+
+    Every entry point that reads or writes a vector has to run this, and each
+    of the four has its own composition root: the web application, the import
+    worker, ``python -m app.embedding`` and ``python -m app.derive`` are four
+    processes and :data:`_semantic_override` starts out ``None`` in all of
+    them. A command that skipped it would embed with the *file's* embedder
+    while the pages searched with the stored one — and that failure is silent
+    at both ends, because ``SEMANTIC_NEIGHBOURS`` filters on
+    ``embedding_model`` and simply returns fewer rows. So this exists as one
+    named step the next entry point can be pointed at, rather than as four
+    copies of two lines, one of which will be forgotten.
+
+    A failure is logged and swallowed, and that is policy rather than
+    sloppiness. The two real ones are a database whose migration has not been
+    applied, so ``semantic_settings`` does not exist yet, and a stored row
+    somebody edited by hand; neither is a reason to refuse to start or to
+    refuse to embed. Both leave :func:`semantic_config` answering with the file
+    and the environment, which is a complete state (§7.4) and not a broken one.
+    """
+    try:
+        await load_semantic_config()
+    except Exception:
+        logger.exception("Could not read the stored embedder settings")
+
+
+@contextlib.asynccontextmanager
+async def semantic_settings_lifespan() -> AsyncIterator[None]:
+    """ASGI lifespan hook: adopt the stored embedder settings before serving.
+
+    Policy only, and the same policy the other two hooks get — see
+    :func:`adopt_semantic_settings`, which is where the swallow lives so that
+    the worker and the two commands get exactly this one.
+
+    At startup rather than at import, because ``app/app.py`` publishes the
+    search while it is being imported and there is no event loop yet to read a
+    database with. A lifespan runs before the first request, so nothing a
+    person can reach ever sees the un-merged configuration.
+    """
+    await adopt_semantic_settings()
+    yield
 
 
 def mail_config() -> MailConfig:
@@ -191,6 +446,134 @@ def publish_archive_reader() -> ArchiveReader:
         return reader
     services.register_as(ArchiveReader, reader)
     return reader
+
+
+@lru_cache(maxsize=1)
+def analytics_reader() -> AnalyticsReader:
+    """The read side of the derived layer, on the graph the rebuild wrote to.
+
+    One session factory and no second store, unlike :func:`archive_reader`:
+    everything a rebuild leaves behind is a node or an edge, so there is no
+    blob half to wire. The graph is deliberately the one the archive reader
+    reads as well — the insights page holds a derived edge against the messages
+    it was derived from, and two different graphs would make that comparison
+    meaningless rather than merely wrong. Cached for the reason the archive
+    reader is: one decision, and two objects would be two answers to "which
+    graph is being analysed".
+    """
+    return AnalyticsReader(graph_session=partial(graph_session, graph_config()))
+
+
+def publish_analytics_reader() -> AnalyticsReader:
+    """Leave the reader where the insights page can find it.
+
+    Same route and same reason as :func:`publish_archive_reader`, down to the
+    second call being a no-op: ``mailarc-ui`` may not import ``app``, and this
+    is the one module allowed to build a component from configuration.
+    """
+    services = service_registry()
+    reader = analytics_reader()
+    if services.has(AnalyticsReader) and services.get(AnalyticsReader) is reader:
+        return reader
+    services.register_as(AnalyticsReader, reader)
+    return reader
+
+
+@lru_cache(maxsize=1)
+def semantic_embedder() -> EmbedderPort | None:
+    """This installation's embedder, or ``None`` because none is configured.
+
+    The only place in the running application that turns a
+    :class:`~mailarc_analytics.semantic.config.SemanticConfig` into a client —
+    so "which model is this archive embedded with" has exactly one answer per
+    process, and the embed job and the search cannot disagree about it.
+
+    ``None`` is the default and a complete state rather than a broken one
+    (§7.4): everything deterministic keeps working and the two surfaces that
+    need a vector say so in a sentence naming the setting. Cached because the
+    adapters hold an ``httpx`` connection pool — a second one would pay a fresh
+    handshake per query and never be closed.
+    """
+    return build_embedder(semantic_config())
+
+
+@lru_cache(maxsize=1)
+def semantic_search() -> SemanticSearch:
+    """Both search paths, on the graph the import wrote to.
+
+    The same graph as :func:`archive_reader` and :func:`analytics_reader`, for
+    the same reason: a search result is a list of messages the review page is
+    expected to be able to open, and a second graph would make that a broken
+    link rather than a visible mistake.
+
+    Built even when there is no embedder. The full-text half needs none — it
+    reads the index the baseline migration created — and it is exactly the half
+    that has to keep working on a default installation, so an application that
+    only published a search when one was configured would take the working path
+    down with the unconfigured one.
+    """
+    return SemanticSearch(
+        graph_session=partial(graph_session, graph_config()),
+        config=semantic_config(),
+        embedder=semantic_embedder(),
+    )
+
+
+def publish_semantic_search() -> SemanticSearch:
+    """Leave the search where the insights page can find it.
+
+    Same route and same reason as :func:`publish_analytics_reader`:
+    ``mailarc-ui`` may not import ``app``, and building an embedder from
+    configuration is this module's alone. Without this call the panel meets its
+    own developer error — both paths, full text included.
+    """
+    services = service_registry()
+    search = semantic_search()
+    if services.has(SemanticSearch) and services.get(SemanticSearch) is search:
+        return search
+    services.register_as(SemanticSearch, search)
+    return search
+
+
+async def _reindex() -> int:
+    """Rebuild the vector index at the configured length. See :mod:`app.reindex`."""
+    from app.reindex import reindex
+
+    return await reindex()
+
+
+def publish_semantic_control() -> SemanticControl:
+    """Leave the embedder's two verbs where the settings page can find them.
+
+    The settings form is the one page that changes what
+    :func:`semantic_config` answers, so it needs to read that answer back and
+    to make a save take effect — and both are this module's work: reading the
+    stored row and rebuilding the embedder from it is building a component from
+    configuration, which §4.1 leaves here alone.
+
+    Registered rather than imported, for the reason everything else on this
+    page is: ``mailarc-ui`` may not import ``app``. What goes in is the two
+    functions themselves and not their results — the configuration in force
+    changes every time somebody saves, and a registry entry holding the object
+    it was handed at startup would report the embedder it replaced.
+
+    Registered once and never replaced: the entry is two references to
+    module-level functions, so a second call has nothing new to say and
+    overwriting it would only log noise.
+    """
+    services = service_registry()
+    if services.has(SemanticControl):
+        return services.get(SemanticControl)
+    control = SemanticControl(
+        current=semantic_config,
+        reload=load_semantic_config,
+        # Imported here rather than at module scope: `app.reindex` imports this
+        # module for the graph configuration, and naming it at the top would
+        # close that circle at import time.
+        reindex=_reindex,
+    )
+    services.register_as(SemanticControl, control)
+    return control
 
 
 def publish_provider_registry() -> ProviderRegistry:

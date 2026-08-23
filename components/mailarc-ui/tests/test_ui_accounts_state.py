@@ -12,6 +12,7 @@ grows its fields without a line of UI changing.
 
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import cast
 from unittest.mock import AsyncMock, patch
@@ -44,6 +45,15 @@ from mailarc_ui.accounts.components import accounts_panel
 from mailarc_ui.accounts.state import MailAccountState, provider_registry
 
 STATE_MODULE = "mailarc_ui.accounts.state"
+
+TYPED_PASSWORD = "hunter2"  # noqa: S105 - a fixture
+"""What the human typed into the form.
+
+Named rather than repeated at each call so that
+``test_a_failed_credential_write_reaches_neither_the_log_nor_the_page`` cannot
+quietly go vacuous: it asserts this string is absent, which proves nothing if
+the form has meanwhile been filled with another one.
+"""
 
 IMAP_DESCRIPTOR = ProviderDescriptor(
     provider=MailProvider.IMAP,
@@ -130,9 +140,9 @@ def registered() -> Iterator[StubFactory]:
     services.register(registry)
     services.register_as(
         DatabaseConfig,
-        DatabaseConfig.model_validate({
-            "encryption_key": Fernet.generate_key().decode()
-        }),
+        DatabaseConfig.model_validate(
+            {"encryption_key": Fernet.generate_key().decode()}
+        ),
     )
     yield factory
     services.restore(saved)
@@ -161,7 +171,7 @@ async def _filled(state: MailAccountState) -> None:
     state.set_email_address("jens@example.com")
     state.set_display_name("Work")
     state.set_credential("host", "imap.example.com")
-    state.set_credential("password", "hunter2")
+    state.set_credential("password", TYPED_PASSWORD)
 
 
 async def _accounts(spy: SessionSpy) -> list[MailAccountEntity]:
@@ -343,7 +353,7 @@ class TestCreateAccount:
     ) -> None:
         state.select_provider(MailProvider.IMAP.value)
         state.set_credential("host", "imap.example.com")
-        state.set_credential("password", "hunter2")
+        state.set_credential("password", TYPED_PASSWORD)
 
         await state.create_account()
 
@@ -361,6 +371,39 @@ class TestCreateAccount:
 
         assert "UNIQUE" in state.error.upper()
         assert len(await _accounts(sessions)) == 1
+        assert state.busy is False
+
+    async def test_a_failed_credential_write_reaches_neither_the_log_nor_the_page(
+        self, state, registered, sessions, caplog
+    ) -> None:
+        """The handler that reports the failure must not be the one that leaks it.
+
+        This is the ``EncryptedString`` hole end to end. ``_create`` writes the
+        typed secret into a column whose bind processing does the encrypting,
+        so a misconfigured ``app_database_encryption_key`` fails the write —
+        and a raw ``StatementError`` says so while quoting its bind parameters,
+        which for that statement is the plaintext. ``create_account`` then
+        hands it to ``logger.exception`` *and* to ``error``, a state var that
+        is rendered in the browser, so one bad setting would put a password
+        into the application log and onto the page at once.
+
+        The guard is in :meth:`MailCredentialRepository.store_secret`; this
+        asserts it holds as far as both of those outputs, and that what is left
+        still says why the write failed.
+        """
+        await _filled(state)
+        service_registry().register_as(
+            DatabaseConfig,
+            DatabaseConfig.model_validate({"encryption_key": "not-a-fernet-key"}),
+        )
+
+        with caplog.at_level(logging.ERROR):
+            await state.create_account()
+
+        assert TYPED_PASSWORD not in caplog.text
+        assert TYPED_PASSWORD not in state.error
+        assert "Fernet" in caplog.text, "the reason has to survive the stripping"
+        assert "Fernet" in state.error
         assert state.busy is False
 
     async def test_the_busy_flag_goes_up_and_down(
@@ -733,7 +776,7 @@ class TestTheIdentityCheck:
         state.select_provider(MailProvider.IMAP.value)
         state.set_email_address(address)
         state.set_credential("host", "imap.example.com")
-        state.set_credential("password", "hunter2")
+        state.set_credential("password", TYPED_PASSWORD)
         await state.create_account()
         return (await _accounts(sessions))[0].id
 

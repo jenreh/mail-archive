@@ -11,7 +11,7 @@ One module per concern, layered so nothing points back up:
     Value objects — a message, an address, a page of results, a cursor.
     No I/O, no imports from anything below.
 ``errors``
-    The three failures an import can have and what each one means.
+    The four failures an import can have and what each one means.
 ``identity``
     The canonical message id. One mail is one node, however often it arrives.
 ``parsing``
@@ -29,6 +29,7 @@ One module per concern, layered so nothing points back up:
 from mailarc_core.mail.config import MailConfig
 from mailarc_core.mail.errors import (
     MailAuthError,
+    MailCursorExpired,
     MailError,
     MailPermanentError,
     MailTransientError,
@@ -75,6 +76,7 @@ __all__ = [
     "LabelKind",
     "MailAuthError",
     "MailConfig",
+    "MailCursorExpired",
     "MailError",
     "MailPermanentError",
     "MailProvider",

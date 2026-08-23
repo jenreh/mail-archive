@@ -4,9 +4,52 @@
 task test          # pytest with coverage; the gate is 80 %
 ```
 
-The whole suite runs in about ten seconds. Keep it that way: nothing here waits
-on a clock or a network, and the two tests that need a real graph server are
+The whole suite runs in about half a minute. Keep it near that: nothing here
+waits on a clock or a network, and the tests that need a real graph server are
 behind a marker.
+
+## The sandbox, and why every test already has one
+
+There is one archive on a developer machine and it is real mail — the accounts
+and their encrypted credentials in `.state/mail-archive.db`, the original bytes
+of every imported message in `.state/mailstore`, the graph in
+`.state/falkordb`. The blob store is content-addressed and write-once, so a
+fixture written into it cannot afterwards be told apart from a message that was
+really archived. The root `conftest.py` is what keeps the suite away from all
+three, and it does it four ways:
+
+- **Redirection.** Every `app_*` environment variable is pointed at a
+  per-run temporary directory before collection starts, so a default-built
+  `ArchiveConfig()` or `GraphConfig()` lands there. The database one is
+  `app_database_url_override`, **not** `app_database_url`: `DatabaseConfig.url`
+  is a computed field over a stored `url_override`, and the obvious name is
+  accepted by the environment and then silently ignored.
+- **A profile.** Environment variables lose to YAML. appkit returns
+  `init_settings` first and `Configuration[AppConfig]` validates
+  `configuration/config.yaml`'s `app.database` / `app.graph` mapping into the
+  nested settings classes, so those arrive as init kwargs and outrank every
+  `app_*` variable — which is why the composed config used to resolve to the
+  real archive and the developer's own FalkorDB from inside a sealed run. The
+  suite therefore also sets `PROFILES=test`, and `configuration/config.test.yaml`
+  names the sandbox from the one source nothing outranks.
+- **No `.env`.** Component configs declare `env_file=".env"` and
+  `DotEnvSettingsSource` opens that file itself, so scrubbing `os.environ`
+  cannot reach it. The dotenv source is dropped from appkit's hook for the
+  length of the run; everything the file holds is in `os.environ` already,
+  because appkit calls `load_dotenv(override=True)` at import.
+- **A tripwire.** `.state` is fingerprinted before the first test and after the
+  last, and a difference fails the run.
+
+**If the tripwire fires**, the run is telling you one of two things: a test
+reached past the sandbox, or the application itself was writing to the real
+archive while the suite ran. Rule the second out first — stop `task run` and
+any worker — then bisect with `-x` and a narrowing `-k`. What the message names
+is the file that changed.
+
+The one rule a new test has to follow: **never construct a configuration that
+writes without giving it an explicit path.** A test of a default belongs in
+`components/mailarc-core/tests/archive/test_archive_config.py`'s shape — read
+`Cls.model_fields["name"].default` rather than building the object.
 
 ## Where tests live
 
@@ -19,11 +62,19 @@ components/mailarc-sync/tests/          engine/ jobs/
 components/mailarc-google/tests/
 components/mailarc-ui/tests/
 components/mailarc-analytics/tests/
+components/mailarc-mcp/tests/          needs the `mcp` extra — `task install` has it
 ```
 
-All six trees are listed in `[tool.pytest.ini_options] testpaths`, and all six
+All seven trees are listed in `[tool.pytest.ini_options] testpaths`, and all six
 source trees in `[tool.coverage.run] source`. Adding a component means adding it
 to both.
+
+`components/mailarc-mcp/` is the one an installation may leave out (`uv sync`
+without `--extra mcp` — the desktop bundle's shape), so `task install` asks for
+the extra: a checkout that could not collect that tree would be green for the
+wrong reason. `test_isolation.py` skips the component rather than failing when
+it is absent, because a test that fires on exactly the installation an extra
+exists to produce punishes the feature.
 
 `asyncio_mode = "auto"`, so an `async def test_…` needs no decorator.
 
@@ -54,9 +105,32 @@ markers = [
 ]
 ```
 
-Two files carry it — `test_archive_writer_local.py` and `test_server_local.py` —
-and they are the only tests that need a real graph server. Everything else runs
-on a laptop with nothing installed.
+Every file whose name ends `_local.py` carries it, and they are the only tests
+that need a real graph server — three in `mailarc-core`, seven in
+`mailarc-analytics`, two in the repository's own `tests/` (the MCP server end
+to end, and the vector-index migration run against a live store). Everything
+else runs on a laptop with nothing installed.
+
+The marker is declared three times on purpose, for two reasons: once in the
+repository's `pyproject.toml` for a full run, and once each in
+`components/mailarc-analytics` and `components/mailarc-core` for a run started
+from inside the component, which picks that component's own ini file. An unregistered marker is a warning on
+every collected test, so a component that owns `graph_local` tests declares it.
+
+**The runtime is not optional in a full run.** Each `_local.py` file skips
+itself when `task tauri:vendor` has not produced `falkordb.so`, which is right
+for a component tested as a standalone wheel and wrong for the repository: over
+two hundred tests would vanish and the run would still report green. So the
+root `conftest.py` ends a repository-wide run that selected `graph_local` tests
+without a runtime, with a message naming the task. `--allow-missing-runtime`
+is the deliberate way past it, and saying so on the command line is the point —
+nobody then mistakes the result for a full pass.
+
+Each of those two components starts **one** FalkorDB per session and gives each
+test a graph name of its own. A function-scoped server would spawn a
+`redis-server` per test and leave every one of them to be reaped at interpreter
+exit — which turns a suite that runs in seconds into one that looks finished and
+then hangs for minutes.
 
 ```sh
 uv run pytest -m "not graph_local"     # skip them

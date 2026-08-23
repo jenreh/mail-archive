@@ -409,11 +409,12 @@ def date_label(sent_at: datetime | None, now: datetime) -> str:
 
     Today is a time, yesterday is a word, anything older is a date. Both
     instants are moved to the local zone first, because "today" is a local
-    notion and the archive stores UTC.
+    notion and the archive stores UTC — and that move is what
+    :func:`_local` has to survive.
     """
-    if sent_at is None:
+    local = _local(sent_at)
+    if local is None:
         return ""
-    local = sent_at.astimezone()
     today = now.astimezone().date()
     if local.date() == today:
         return local.strftime("%H:%M")
@@ -436,9 +437,29 @@ def label_text(name: str, kind: LabelKind) -> str:
 
 def long_date_label(sent_at: datetime | None) -> str:
     """The full date a header shows, in the local zone."""
+    local = _local(sent_at)
+    return "" if local is None else local.strftime("%a, %d.%m.%Y %H:%M")
+
+
+def _local(sent_at: datetime | None) -> datetime | None:
+    """One stored instant in the reader's own zone, or ``None``.
+
+    ``None`` covers two cases a row renders the same way: no date at all, and a
+    date the local zone cannot express. The second is not hypothetical — a
+    ``Date:`` header is whatever a sender wrote and nothing range-checks it, so
+    ``Date: Fri, 31 Dec 9999 23:59:59 +0000`` (a routine way of pinning a mail
+    to the top of a date sort) reaches the archive intact and then overflows
+    ``datetime.max`` the moment a positive UTC offset is added. Year 0001 does
+    the same against ``datetime.min`` west of UTC. One archived message must
+    not be able to take the whole list down with it.
+    """
     if sent_at is None:
-        return ""
-    return sent_at.astimezone().strftime("%a, %d.%m.%Y %H:%M")
+        return None
+    try:
+        return sent_at.astimezone()
+    except OverflowError, ValueError, OSError:
+        logger.warning("Date outside the range this zone can print: %r", sent_at)
+        return None
 
 
 def address_label(address: EmailAddress | None) -> str:

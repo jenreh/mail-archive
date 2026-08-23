@@ -1,9 +1,11 @@
 """The tables the mail import keeps outside the graph.
 
-The graph holds what a message *is*. These six tables hold what we have
+The graph holds what a message *is*. Six of these tables hold what we have
 *done*: which mailbox we sync, which secret opens it, how far we got, which
 job is running, which provider ids are already archived and which we had to
-give up on.
+give up on. The seventh holds what a *human* has decided — the embedder they
+picked, which is the first setting in this project a person edits at runtime
+rather than in a file.
 
 Every enum-ish column is a short string rather than a database enum. Adding a
 provider, a job kind or a status is then a code change, never a migration.
@@ -15,6 +17,7 @@ from enum import StrEnum
 from appkit_commons.database.entities import Base, EncryptedString, Entity
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -29,6 +32,12 @@ ADDRESS_LENGTH = 320
 
 PROVIDER_ID_LENGTH = 255
 """Provider message ids are opaque strings; none of the providers exceed this."""
+
+SEMANTIC_SETTINGS_ID = 1
+"""The only primary key ``semantic_settings`` may ever hold. See the entity."""
+
+BASE_URL_LENGTH = 1024
+"""Generous for a hostname and a path, short of what a database will not index."""
 
 
 class AccountStatus(StrEnum):
@@ -229,3 +238,52 @@ class MailFailedMessageEntity(Entity, Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class SemanticSettingsEntity(Entity, Base):
+    """The embedder as a human set it, laid over the configuration file.
+
+    **One row, and the database says so.** ``CHECK (id = 1)`` rather than a
+    ``LIMIT 1`` in the repository, because an archive has exactly one embedder:
+    §7.4's whole argument is that "which model is this archive embedded with"
+    must have a single answer, and a second row here would be a second answer
+    with nothing to arbitrate between them. A convention two concurrent saves
+    can break is not the same as a constraint that refuses the second one.
+
+    **Every column is nullable, and ``NULL`` means "not set".** The composition
+    root lays a non-``NULL`` value over the file/env ``SemanticConfig`` and
+    lets a ``NULL`` fall through to it — which is what lets somebody change the
+    model without also restating the provider, and what makes "put this back to
+    whatever the file says" expressible at all. An empty string is therefore a
+    real decision rather than an absence: it is already how ``SemanticConfig``
+    spells "whatever this provider's own default is".
+
+    **Typed columns rather than a key/value table, because of ``api_key``.** It
+    has to be an :class:`EncryptedString`, and a generic store has one value
+    column — so either every setting pays a Fernet round trip and the table
+    stops being readable with ``sqlite3``, or it grows a discriminator and a
+    second value column, which is an abstraction with exactly one case behind
+    it (§5). Typing also keeps ``dimension`` an ``INTEGER`` in the schema
+    instead of a string every reader has to parse, and makes a mistyped setting
+    name a migration rather than a value that is silently never read.
+
+    The key is write-only by construction, not by convention: see
+    :class:`~mailarc_core.database.repositories.SemanticSettingsRepository`,
+    whose ``save`` has no ``api_key`` parameter at all.
+    """
+
+    __tablename__ = "semantic_settings"
+    __table_args__ = (
+        CheckConstraint(
+            f"id = {SEMANTIC_SETTINGS_ID}", name="ck_semantic_settings_singleton"
+        ),
+    )
+
+    provider: Mapped[str | None] = mapped_column(String(32))
+    model: Mapped[str | None] = mapped_column(String(255))
+    dimension: Mapped[int | None] = mapped_column(Integer)
+    base_url: Mapped[str | None] = mapped_column(String(BASE_URL_LENGTH))
+    # Fernet-encrypted by the type, not by the DDL — the key is read at write
+    # time, so this is a plain VARCHAR in the schema, exactly like
+    # `mail_credentials.secret`.
+    api_key: Mapped[str | None] = mapped_column(EncryptedString)

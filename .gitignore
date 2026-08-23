@@ -126,6 +126,8 @@ src-tauri/resources/
 src-tauri/icons/
 # Local FalkorDB data
 .state/
+# Everything an agent driving the application is allowed to write.
+.state-agent/
 .playwright-mcp/
 .task/
 

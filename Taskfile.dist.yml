@@ -28,6 +28,12 @@ includes:
   sync:
     taskfile: ./taskfiles/Taskfile.sync.yml
 
+  # Everything an automated agent may run. Its own database, graph and blob
+  # store under .state-agent/ — see the file's header for why PROFILES alone
+  # is not enough.
+  agent:
+    taskfile: ./taskfiles/Taskfile.agent.yml
+
   docker:
     taskfile: ./taskfiles/Taskfile.docker.yml
     vars:
@@ -78,7 +84,7 @@ tasks:
       - uv python install {{.PYTHON_VERSION}}
       - uv python pin {{.PYTHON_VERSION}}
       - echo "📦 Syncing dependencies..."
-      - uv sync
+      - uv sync --extra mcp
       - echo "🔒 Installing pre-commit hooks..."
       - uv tool list | grep -q pre-commit || uv tool install pre-commit
       - git rev-parse --git-dir >/dev/null 2>&1 || git init -b main
@@ -86,11 +92,17 @@ tasks:
 
   install:
     desc: Install all dependencies (including dev extras)
-    cmd: uv sync
+    # `--extra mcp` because a developer environment is the web deployment: the
+    # MCP server is a workspace member behind that extra (see the comment on
+    # `[project.optional-dependencies]`), and the test suite covers it, so a
+    # checkout synced without it would be green for the wrong reason. The
+    # desktop shape is `uv sync` on its own — `task tauri:deps` shows what each
+    # of the two resolves to.
+    cmd: uv sync --extra mcp
 
   sync:
     desc: Install dependencies using uv
-    cmd: uv sync
+    cmd: uv sync --extra mcp
 
   clean:
     desc: Clean cache and build artifacts
@@ -99,3 +111,20 @@ tasks:
       - rm -rf __pycache__/ .cache/ .state/ .web/ dist/ build/ coverage.xml .coverage
       - find . -type d -name "__pycache__" -exec rm -rf {} +
       - find . -type f -name "*.pyc" -delete
+
+  # ----------------------------------------------------------------------------
+  # Isolation Probe (read by tests/test_taskfile_isolation.py)
+  # ----------------------------------------------------------------------------
+
+  env-probe:
+    # A task that asks for nothing, so that everything it receives was pushed at
+    # it. go-task merges every included taskfile's file-level `env:` into ONE
+    # environment shared by the whole project, and that has pointed this
+    # project's migrations at the real archive twice. The property is only
+    # visible from outside the file that breaks it, so the test runs this and
+    # reads what arrived: no `app_*` archive setting and no PROFILES may.
+    #
+    # `env` and not `echo` of named variables: an unset variable echoes as an
+    # empty string and would pass whatever leaked under a different name.
+    desc: Print this task's environment (used by the isolation test)
+    cmd: env

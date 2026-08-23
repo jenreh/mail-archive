@@ -1,0 +1,84 @@
+# The profile an automated agent runs the application under.
+#
+# There is one archive on a developer machine and it is real mail: the accounts
+# and their encrypted credentials in `.state/mail-archive.db`, the original
+# bytes of every imported message in `.state/mailstore`, the graph in
+# `.state/falkordb`. An agent asked to "start the app and check the page"
+# otherwise starts *that* application, against that data — and the blob store is
+# content-addressed and write-once, so anything it adds cannot afterwards be
+# told apart from a message that was really archived.
+#
+# The pytest suite is already sealed off by the root `conftest.py`, which
+# redirects every `app_*` setting into a temporary directory and fails the run
+# if `.state` changes. This profile is the other half of that: the suite covers
+# tests, and this covers everything that drives the real application.
+#
+#     PROFILES=agent_test task run
+#     PROFILES=agent_test uv run python -m app.derive
+#     PROFILES=agent_test uv run python -m app.worker
+#
+# Everything it can touch lives under `.state-agent/`, which is disposable by
+# construction: delete the directory and the next run rebuilds it empty. Nothing
+# here is a secret and nothing here is shared with the real profiles.
+
+profile: agent_test
+
+reflex:
+  deploy_url: http://localhost
+  # Deliberately not 8080/3030. A developer is usually already running the
+  # application while an agent is asked to look at it, and two instances on one
+  # port is a confusing failure — one of them silently serves the other's pages.
+  frontend_port: 8081
+  backend_port: 3031
+  workers: 1
+
+app:
+  environment: local
+  logging: logging.yaml
+
+  database:
+    type: sqlite
+    url: sqlite+aiosqlite:///.state-agent/mail-archive.db
+    # A fixed, non-secret key. The real one comes from the secret provider and
+    # an agent has no business holding it; this exists so that `EncryptedString`
+    # has something to work with when a scratch account is written.
+    #
+    # It has to be a *valid* Fernet key, which is 32 bytes url-safe base64
+    # encoded — 44 characters — and the 32-character plain string that used to
+    # sit here was not one. Observed, not theorised: storing an embedder API
+    # key in the sandbox failed with `'app_database_encryption_key' is not a
+    # valid 32-byte url-safe base64-encoded Fernet key`, and a scratch Gmail
+    # credential would have failed the same way. This is that same string, put
+    # through `base64.urlsafe_b64encode` so it stays obviously fake and is
+    # still readable as what it is.
+    encryption_key: YWdlbnQtdGVzdC1rZXktbm90LWEtc2VjcmV0LTAwMDA=
+    echo: False
+
+  graph:
+    mode: local
+    backend: falkordb
+    host: 127.0.0.1
+    # Not 6379. A graph server on the default port is the developer's, holding
+    # the real archive, and `mode: local` would otherwise adopt it rather than
+    # start one of its own.
+    port: 6399
+    # A different name as well as a different port and directory. All three
+    # matter: the name is what a query resolves against, so a server that was
+    # somehow reached on the wrong port would still not serve `mail-archive`.
+    graph_name: mail-archive-agent
+    data_dir: .state-agent/falkordb
+
+  archive:
+    # The one that cannot be undone. Kept furthest from the real path on
+    # purpose — a typo here should land nowhere, not in `.state/mailstore`.
+    store_dir: .state-agent/mailstore
+
+  sync:
+    # The application does not start a worker under this profile. An agent that
+    # wants one starts it explicitly and can therefore also stop it; a worker
+    # supervised as a child of a preview server is a process nobody reaps.
+    supervise_worker: false
+
+  authentication:
+    server_url: http://localhost:8081
+    server_port: 8081

@@ -10,7 +10,11 @@ desktop client — and a newsletter, which nests the other way round:
 Content-ID.
 """
 
-from mailarc_core.mail.model import ParsedAttachment
+from email.message import EmailMessage
+
+import pytest
+
+from mailarc_core.mail.model import ParsedAttachment, ParsedMessage
 from mailarc_core.mail.parsing import parse_message
 
 APPLE_MAIL_INLINE_PDF = b"""\
@@ -325,3 +329,112 @@ class TestEmbeddedFlag:
         assert ParsedAttachment(content_id="x").embedded is True
         assert ParsedAttachment(content_id="x", filename="a.png").embedded is False
         assert ParsedAttachment(filename=None).embedded is False
+
+
+class TestAnAttachmentNeverReachesTheEmbeddedText:
+    """What is sent to an embedder is ``subject`` + ``body_clean``, and only that.
+
+    ``catalog.MESSAGES_NEEDING_EMBEDDING`` selects ``m.subject`` and
+    ``left(m.body_clean, $max_chars)``; with ``app_semantic_provider=openai``
+    that text leaves the machine. An attachment is a different thing: its bytes
+    go to the content-addressed blob store and its digest to an ``Attachment``
+    node, and nobody chose to send a customer's contract to a remote API.
+
+    Today that holds because ``EmailMessage.get_body`` skips parts marked as
+    attachments, which is a property of the stdlib rather than of a decision
+    made here — so it is asserted rather than assumed. The obvious well-meant
+    change is a fallback that reads a lone ``text/plain`` attachment when a
+    message has no body; the second case below is what would catch it.
+    """
+
+    MARKER = "ZZONLYINSIDETHEATTACHMENTZZ"
+    """A string that exists nowhere but inside the attached bytes."""
+
+    def _with_attachment(self, kind: str) -> ParsedMessage:
+        message = EmailMessage()
+        message["From"] = "a@x.example"
+        message["To"] = "b@x.example"
+        message["Subject"] = "probe"
+        message["Date"] = "Mon, 05 Jan 2026 09:00:00 +0000"
+        message["Message-ID"] = f"<{kind}@x.example>"
+
+        if kind == "beside-a-body":
+            message.set_content("The real body.")
+            message.add_attachment(
+                f"{self.MARKER} in a .txt".encode(),
+                maintype="text",
+                subtype="plain",
+                filename="notes.txt",
+            )
+        elif kind == "instead-of-a-body":
+            message.set_content("")
+            message.add_attachment(
+                f"{self.MARKER} and nothing else".encode(),
+                maintype="text",
+                subtype="plain",
+                filename="notes.txt",
+            )
+        elif kind == "a-pdf":
+            message.set_content("The real body.")
+            message.add_attachment(
+                f"%PDF-1.4 {self.MARKER}".encode(),
+                maintype="application",
+                subtype="pdf",
+                filename="contract.pdf",
+            )
+        elif kind == "an-inline-image":
+            message.set_content("The real body.")
+            message.add_attachment(
+                f"PNGDATA{self.MARKER}".encode(),
+                maintype="image",
+                subtype="png",
+                cid="<logo@x>",
+            )
+        elif kind == "a-forwarded-mail":
+            message.set_content("See the forward.")
+            inner = EmailMessage()
+            inner["Subject"] = "fwd"
+            inner.set_content(f"{self.MARKER} inside the forward")
+            message.add_attachment(inner)
+        else:  # pragma: no cover - the parametrisation names them all
+            raise AssertionError(kind)
+        return parse_message(message.as_bytes())
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "beside-a-body",
+            "instead-of-a-body",
+            "a-pdf",
+            "an-inline-image",
+            "a-forwarded-mail",
+        ],
+    )
+    def test_its_content_is_in_neither_body_field(self, kind: str) -> None:
+        parsed = self._with_attachment(kind)
+
+        assert self.MARKER not in parsed.body_clean, (
+            f"{kind}: attachment content reached body_clean, which is the text "
+            "the embed job sends to a remote API"
+        )
+        assert self.MARKER not in parsed.body_text, (
+            f"{kind}: attachment content reached body_text, which the graph "
+            "keeps for full-text search"
+        )
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "beside-a-body",
+            "instead-of-a-body",
+            "a-pdf",
+            "an-inline-image",
+            "a-forwarded-mail",
+        ],
+    )
+    def test_but_the_attachment_itself_is_still_archived(self, kind: str) -> None:
+        """Excluded from the text, not dropped — the bytes still reach the store."""
+        parsed = self._with_attachment(kind)
+
+        assert len(parsed.attachments) == 1
+        assert parsed.attachments[0].sha256

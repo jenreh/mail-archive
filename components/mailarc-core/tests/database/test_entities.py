@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from mailarc_core.database.entities import (
+    SEMANTIC_SETTINGS_ID,
     AccountStatus,
     CredentialKind,
     MailAccountEntity,
@@ -25,6 +26,7 @@ from mailarc_core.database.entities import (
     MailFailedMessageEntity,
     MailSyncCheckpointEntity,
     MailSyncJobEntity,
+    SemanticSettingsEntity,
     SyncJobKind,
     SyncJobState,
 )
@@ -294,3 +296,69 @@ class TestFailedMessage:
         await session.flush()
 
         assert row.detail is None
+
+
+class TestSemanticSettings:
+    async def test_the_key_is_unreadable_in_the_file(
+        self, session, encryption_key
+    ) -> None:
+        """The whole reason this is a typed table and not a key/value store:
+        ``api_key`` has to be an ``EncryptedString`` column, and a generic
+        value column could only give that to every setting or to none."""
+        session.add(
+            SemanticSettingsEntity(
+                id=SEMANTIC_SETTINGS_ID,
+                provider="openai",
+                api_key="sk-live-do-not-print",
+            )
+        )
+        await session.flush()
+
+        raw = await session.execute(text("SELECT api_key FROM semantic_settings"))
+        stored = raw.scalar_one()
+
+        assert "sk-live" not in stored
+        assert (
+            Fernet(encryption_key).decrypt(stored.encode()).decode()
+            == "sk-live-do-not-print"
+        )
+
+    async def test_the_provider_stays_readable_beside_it(
+        self, session, encryption_key
+    ) -> None:
+        """Only the key is encrypted. A key/value table would have had to
+        encrypt the lot, which costs a Fernet round trip to answer "which
+        provider" and makes the file unreadable with ``sqlite3``."""
+        session.add(SemanticSettingsEntity(id=SEMANTIC_SETTINGS_ID, provider="openai"))
+        await session.flush()
+
+        raw = await session.execute(text("SELECT provider FROM semantic_settings"))
+
+        assert raw.scalar_one() == "openai"
+
+    async def test_a_second_row_is_refused_by_the_database(self, session) -> None:
+        """``CHECK (id = 1)``. An archive has one embedder — §7.4 needs
+        "which model is this archive embedded with" to have a single answer —
+        and a ``LIMIT 1`` in a repository is a convention two concurrent saves
+        can break."""
+        session.add(SemanticSettingsEntity(id=SEMANTIC_SETTINGS_ID, provider="ollama"))
+        await session.flush()
+        session.add(SemanticSettingsEntity(id=2, provider="openai"))
+
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+    async def test_every_setting_is_optional(self, session) -> None:
+        """``NULL`` is "not set", and the composition root lets it fall
+        through to the configuration file. A row with nothing in it is
+        therefore a legitimate state, not a half-written one."""
+        row = SemanticSettingsEntity(id=SEMANTIC_SETTINGS_ID)
+        session.add(row)
+
+        await session.flush()
+
+        assert row.provider is None
+        assert row.model is None
+        assert row.dimension is None
+        assert row.base_url is None
+        assert row.api_key is None

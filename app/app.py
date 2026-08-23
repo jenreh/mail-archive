@@ -17,21 +17,49 @@ from starlette.types import ASGIApp
 from app.components.navbar import app_navbar
 from app.composition import (
     graph_server_lifespan,
+    publish_analytics_reader,
     publish_archive_reader,
     publish_provider_registry,
+    publish_semantic_control,
+    publish_semantic_search,
+    semantic_settings_lifespan,
     sync_worker_lifespan,
 )
 from app.pages.home import home_page  # noqa: F401
 from app.pages.mail_accounts import mail_accounts_page  # noqa: F401
+from app.pages.mail_embedder import mail_embedder_page  # noqa: F401
+from app.pages.mail_insights import mail_insights_page  # noqa: F401
 from app.pages.mail_review import mail_review_page  # noqa: F401
 from app.pages.users import users_page  # noqa: F401
 from app.styles import base_style, base_stylesheets
 
 logging.basicConfig(level=logging.DEBUG)
-# oauthlib and requests-oauthlib log the complete token response — refresh
-# token included — at DEBUG. The root level above would put it in every log.
-for _noisy in ("oauthlib", "requests_oauthlib"):
+# Three libraries that write somebody's secret into the log at DEBUG, pinned by
+# name so that no root level — this one, or a debug session's, or a future
+# edit's — can reach them. An explicit level on a logger beats whatever the
+# root says, which is what makes this a floor rather than a preference.
+#
+# oauthlib and requests-oauthlib log the complete token response, refresh token
+# included. aiosqlite logs every statement it executes *with its bound values*
+# — measured, not assumed: at root DEBUG an insert into a table with an
+# `EncryptedString` column prints as `executing functools.partial(<cursor>,
+# 'INSERT INTO ...', ('gAAAAAB...',))`, so `mail_credentials.secret` and
+# `semantic_settings.api_key` reach the log as ciphertext and every other bound
+# value reaches it in the clear.
+#
+# Note what the `basicConfig` above does NOT do: appkit's `init_logging` runs
+# `dictConfig` later in this import and puts the root back to INFO, so the DEBUG
+# asked for here survives only until then. `tests/test_app_logging.py` pins
+# that, because the line reads like it decides the level and does not.
+for _noisy in ("oauthlib", "requests_oauthlib", "aiosqlite"):
     logging.getLogger(_noisy).setLevel(logging.INFO)
+# WARNING and not INFO, which is the whole point: SQLAlchemy gates its
+# statement-and-parameter echo on `isEnabledFor(INFO)` against this logger
+# rather than on `echo=True`, so INFO here would *switch the echo on*. It is
+# off today anyway — sqlalchemy pins its own logger to WARN at import when
+# nobody has set one — but that default is somebody else's and is only in force
+# while this file is imported after sqlalchemy.
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 create_login_page()
 create_profile_page(
     app_navbar(),
@@ -48,17 +76,34 @@ def add_https_middleware(asgi_app: ASGIApp) -> ASGIApp:
     return ForceHTTPSMiddleware(asgi_app)
 
 
-# The accounts page reads which providers exist, and the review page reads the
-# archive, from the service registry: `mailarc-ui` is a component and may not
-# import `app`, so the composition root leaves its decisions there for it.
+# The accounts page reads which providers exist, the review page reads the
+# archive, and the insights page reads both what was derived from it and the
+# search over it — all four out of the service registry: `mailarc-ui` is a
+# component and may not import `app`, so the composition root leaves its
+# decisions there for it. The search is published even with no embedder
+# configured: its full-text half needs none, and that is the half a default
+# installation depends on. The embedder page gets the two verbs that go the
+# other way — read what is in force, and adopt what was just saved — because a
+# form that writes a setting nothing re-reads would be a form that silently
+# does nothing until the next restart.
 publish_provider_registry()
 publish_archive_reader()
+publish_analytics_reader()
+publish_semantic_search()
+publish_semantic_control()
 
 app = rx.App(
     stylesheets=base_stylesheets,
     style=base_style,  # ty: ignore[invalid-argument-type]  # reflex dynamic styling
     api_transformer=[add_https_middleware],
 )
+
+# Lay whatever a human stored over the embedder the configuration file
+# describes, before the first request. It has to be a lifespan and not a call
+# above: the search is published while this module is being imported, which is
+# before there is an event loop to read the settings row with. Registered first
+# so nothing else starts against the configuration it replaces.
+app.register_lifespan_task(semantic_settings_lifespan)
 
 # Own the FalkorDB process for exactly as long as the app runs. In local mode
 # this starts the vendored server on boot and stops it on shutdown; in remote

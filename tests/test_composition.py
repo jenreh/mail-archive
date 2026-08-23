@@ -5,6 +5,7 @@ import importlib
 import logging
 import re
 import sys
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,6 +13,8 @@ from appkit_commons.registry import service_registry
 
 from app import composition
 from app.configuration import configure
+from mailarc_analytics import AnalyticsConfig, AnalyticsReader
+from mailarc_analytics.semantic import SemanticConfig, SemanticProvider, SemanticSearch
 from mailarc_core import (
     ArchiveConfig,
     ArchiveReader,
@@ -27,9 +30,19 @@ from mailarc_google import GmailSource
 from mailarc_google.source import GmailConfig, GmailCredentials
 from mailarc_sync.engine import FakeMailSource, ProviderRegistry, SyncConfig
 from mailarc_ui.accounts import provider_registry as registry_the_ui_sees
+from mailarc_ui.insights import analytics_reader as analytics_the_ui_sees
+from mailarc_ui.insights.search import archive_search as search_the_ui_sees
 from mailarc_ui.review import archive_reader as reader_the_ui_sees
 
-CONFIGS = (GraphConfig, SyncConfig, ArchiveConfig, MailConfig, GmailConfig)
+CONFIGS = (
+    GraphConfig,
+    SyncConfig,
+    ArchiveConfig,
+    AnalyticsConfig,
+    SemanticConfig,
+    MailConfig,
+    GmailConfig,
+)
 """Every configuration object the root hands out, and the getter for each."""
 
 REGISTRY_LOGGER = "appkit_commons.registry"
@@ -42,6 +55,11 @@ A refresh token and nothing else: the OAuth client belongs to the installation
 and is read from ``app.google``, not copied into every account row.
 """
 
+GMAIL_API_ROOT = "/gmail/v1"
+"""Where the local stand-in serves Gmail's API — never `googleapis.com`."""
+
+GMAIL_TOKEN_PATH = "/token"  # noqa: S105 - a URL path
+
 SLEEPER = (sys.executable, "-c", "import time; time.sleep(30)")
 """A child that outlives the test unless it is stopped."""
 
@@ -50,7 +68,15 @@ DIES = (sys.executable, "-c", "raise SystemExit(3)")
 
 
 def _getter(
-    config: type[GraphConfig | SyncConfig | ArchiveConfig | MailConfig | GmailConfig],
+    config: type[
+        GraphConfig
+        | SyncConfig
+        | ArchiveConfig
+        | AnalyticsConfig
+        | SemanticConfig
+        | MailConfig
+        | GmailConfig
+    ],
 ):
     if config is GraphConfig:
         return composition.graph_config
@@ -58,6 +84,10 @@ def _getter(
         return composition.sync_config
     if config is ArchiveConfig:
         return composition.archive_config
+    if config is AnalyticsConfig:
+        return composition.analytics_config
+    if config is SemanticConfig:
+        return composition.semantic_config
     if config is MailConfig:
         return composition.mail_config
     return composition.google_config
@@ -65,15 +95,28 @@ def _getter(
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
-    """The composition root memoises; each test needs a clean slate."""
+    """The composition root memoises; each test needs a clean slate.
+
+    ``_semantic_override`` is module state rather than a cache and is reset the
+    same way: a test that adopted stored settings would otherwise decide what
+    every later test's ``semantic_config()`` answers.
+    """
+    composition._semantic_override = None
     composition.graph_server.cache_clear()
     composition.provider_registry.cache_clear()
     composition.archive_reader.cache_clear()
+    composition.analytics_reader.cache_clear()
+    composition.semantic_embedder.cache_clear()
+    composition.semantic_search.cache_clear()
     composition.sync_worker.cache_clear()
     yield
+    composition._semantic_override = None
     composition.graph_server.cache_clear()
     composition.provider_registry.cache_clear()
     composition.archive_reader.cache_clear()
+    composition.analytics_reader.cache_clear()
+    composition.semantic_embedder.cache_clear()
+    composition.semantic_search.cache_clear()
     composition.sync_worker.cache_clear()
 
 
@@ -120,11 +163,24 @@ def test_configuring_the_application_registers_the_config(config) -> None:
 
 
 @pytest.mark.parametrize("config", CONFIGS, ids=lambda one: one.__name__)
-def test_a_config_explains_itself_when_unregistered(config, monkeypatch) -> None:
-    monkeypatch.setattr(composition.service_registry(), "get", lambda _: None)
+def test_a_config_explains_itself_when_unregistered(config) -> None:
+    """Against an empty registry, not against a stubbed ``get``.
 
-    with pytest.raises(RuntimeError, match=f"{config.__name__}.*configure"):
-        _getter(config)()
+    This used to patch ``get`` into returning ``None`` — which the real
+    ``ServiceRegistry`` never does: it raises ``KeyError``. So the test passed
+    while the branch it exercised was unreachable and the sentence it asserted
+    never reached anybody; a caller in an un-configured process got a bare
+    ``KeyError: 'Instance of type GraphConfig not found in registry'``. Emptying
+    the registry asks the same question of the code that actually runs.
+    """
+    registry = composition.service_registry()
+    saved = registry.snapshot()
+    try:
+        registry.restore({})
+        with pytest.raises(RuntimeError, match=f"{config.__name__}.*configure"):
+            _getter(config)()
+    finally:
+        registry.restore(saved)
 
 
 def test_the_startup_error_comes_from_the_server(monkeypatch) -> None:
@@ -210,6 +266,66 @@ def test_the_registry_offers_every_provider_this_build_ships() -> None:
         MailProvider.FAKE,
         MailProvider.GMAIL,
     ]
+
+
+async def test_every_provider_agrees_with_its_own_descriptor(
+    monkeypatch, httpserver, tmp_path
+) -> None:
+    """``supports_incremental`` and ``watermark()`` are one statement in two places.
+
+    Each provider pins the pairing for itself, but only this module knows the
+    whole list, and only a walk over it catches the *next* provider. The
+    consequence of a disagreement is the one the port's docstring names:
+    ``IntervalScheduler`` queues that mailbox a delta every interval, the engine
+    bootstraps into nothing every time, the job row says succeeded — and no
+    component is in a position to notice, because each of them is right about
+    its own half.
+
+    Gmail's ``watermark()`` is an HTTP call, so it is pointed at a local server
+    serving a canned profile. Nothing here reaches Google.
+    """
+    httpserver.expect_request(f"{GMAIL_API_ROOT}/users/me/profile").respond_with_json(
+        {"emailAddress": "jens@example.com", "historyId": "918273"}
+    )
+    httpserver.expect_request(GMAIL_TOKEN_PATH).respond_with_json(
+        {"access_token": "token", "expires_in": 3600, "token_type": "Bearer"}
+    )
+    monkeypatch.setattr(
+        composition,
+        "google_config",
+        lambda: GmailConfig(
+            api_base_url=httpserver.url_for(GMAIL_API_ROOT),
+            token_uri=httpserver.url_for(GMAIL_TOKEN_PATH),
+            request_timeout=5.0,
+        ),
+    )
+    mailbox = tmp_path / "exported"
+    mailbox.mkdir()
+    secrets = {
+        MailProvider.FAKE: str(mailbox),
+        # An access token that is still valid *and* a local token endpoint: the
+        # first means no refresh is attempted, the second means a refresh could
+        # not leave this machine if one were.
+        MailProvider.GMAIL: GmailCredentials(
+            refresh_token="refresh",
+            token_uri=httpserver.url_for(GMAIL_TOKEN_PATH),
+            access_token="local",
+            expires_at=datetime.now(UTC) + timedelta(minutes=60),
+        ).to_secret(),
+    }
+    registry = composition.provider_registry()
+
+    for descriptor in registry.descriptors():
+        source = registry.factory_for(descriptor.provider)(
+            None, secrets[descriptor.provider]
+        )
+        try:
+            mark = await source.watermark()
+        finally:
+            await source.aclose()
+        assert (mark is not None) is descriptor.supports_incremental, (
+            f"{descriptor.provider} promises one thing and answers another"
+        )
 
 
 def test_the_registry_can_build_the_fake_mailbox() -> None:
@@ -331,6 +447,119 @@ def test_publishing_the_reader_twice_leaves_one(caplog) -> None:
 
     assert service_registry().get(ArchiveReader) is first
     assert caplog.records == []
+
+
+def test_the_analytics_reader_is_built_on_the_configured_graph(monkeypatch) -> None:
+    """The same graph the archive reader reads and the rebuild writes to.
+
+    The cross-check on the insights page holds a derived edge against the
+    messages it came from, so a reader pointed at a second graph would not read
+    as a bug — it would read as an archive that disagrees with itself. Asserted
+    off the reader's own session factory, because that is the only part of it a
+    wrong wire would show up in.
+    """
+    graph = _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+    reader = composition.analytics_reader()
+
+    assert reader is composition.analytics_reader()
+    assert isinstance(reader._graph_session, functools.partial)
+    assert reader._graph_session.args == (graph,)
+
+
+def test_the_analytics_reader_has_no_second_store(monkeypatch) -> None:
+    """Everything a rebuild writes is a node or an edge — nothing on disk."""
+    _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+    assert not hasattr(composition.analytics_reader(), "_blobs")
+
+
+@pytest.mark.usefixtures("_published_registry")
+def test_the_ui_finds_the_analytics_reader_without_importing_the_app() -> None:
+    """Same hand-over as the archive reader, asserted through the UI's own
+    lookup because that is the code a broken one would break."""
+    published = composition.publish_analytics_reader()
+
+    assert published is composition.analytics_reader()
+    assert analytics_the_ui_sees() is published
+
+
+@pytest.mark.usefixtures("_published_registry")
+def test_publishing_the_analytics_reader_twice_leaves_one(caplog) -> None:
+    first = composition.publish_analytics_reader()
+
+    with caplog.at_level(logging.WARNING, logger=REGISTRY_LOGGER):
+        assert composition.publish_analytics_reader() is first
+
+    assert service_registry().get(AnalyticsReader) is first
+    assert caplog.records == []
+
+
+class TestTheSearch:
+    """The panel at ``/admin/insights`` reads through this and nothing else.
+
+    Its absence was invisible for a whole phase because every test in
+    ``mailarc-ui`` registers a search of its own, so these three assertions are
+    the ones that turn "nobody published it" from a red box on a live page into
+    a red test — the same three the analytics reader already carries.
+    """
+
+    def test_it_is_built_on_the_configured_graph(self, monkeypatch) -> None:
+        graph = _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        search = composition.semantic_search()
+
+        assert isinstance(search, SemanticSearch)
+        assert isinstance(search._graph_session, functools.partial)
+        assert search._graph_session.args == (graph,)
+
+    def test_it_is_a_singleton(self, monkeypatch) -> None:
+        """The embedder behind it holds an ``httpx`` pool; a second search
+        would be a second pool nobody closes."""
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        assert composition.semantic_search() is composition.semantic_search()
+
+    def test_it_takes_its_embedder_from_the_registered_configuration(
+        self, monkeypatch
+    ) -> None:
+        """The half a YAML profile can reach. With no ``semantic`` section on
+        ``AppConfig`` this could only ever be ``none``, whatever was written
+        in ``configuration/config.yaml``."""
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+        registry = service_registry()
+        saved = registry.snapshot()
+        registry.register_as(
+            SemanticConfig, SemanticConfig(provider=SemanticProvider.OLLAMA)
+        )
+        try:
+            assert composition.semantic_search().available
+        finally:
+            registry.restore(saved)
+
+    def test_it_is_off_by_default_rather_than_broken(self, monkeypatch) -> None:
+        """``provider=none`` is the supported default, and full text still
+        answers through the same object."""
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        assert not composition.semantic_search().available
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_the_ui_finds_it_without_importing_the_app(self) -> None:
+        published = composition.publish_semantic_search()
+
+        assert published is composition.semantic_search()
+        assert search_the_ui_sees() is published
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_publishing_it_twice_leaves_one(self, caplog) -> None:
+        first = composition.publish_semantic_search()
+
+        with caplog.at_level(logging.WARNING, logger=REGISTRY_LOGGER):
+            assert composition.publish_semantic_search() is first
+
+        assert service_registry().get(SemanticSearch) is first
+        assert caplog.records == []
 
 
 def test_the_worker_handle_is_a_singleton() -> None:

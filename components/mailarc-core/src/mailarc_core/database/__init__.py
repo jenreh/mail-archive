@@ -7,12 +7,13 @@ in the graph. One module per concern:
     The async/sync URL split and the connection pragmas that appkit_commons'
     single database URL cannot express.
 ``entities``
-    The six tables, as SQLAlchemy models. No queries.
+    The seven tables, as SQLAlchemy models. No queries.
 ``repositories``
     The lookups the engine and the job queue need beyond appkit's CRUD.
 """
 
 from mailarc_core.database.entities import (
+    SEMANTIC_SETTINGS_ID,
     AccountStatus,
     CredentialKind,
     MailAccountEntity,
@@ -21,14 +22,19 @@ from mailarc_core.database.entities import (
     MailFailedMessageEntity,
     MailSyncCheckpointEntity,
     MailSyncJobEntity,
+    SemanticSettingsEntity,
     SyncJobKind,
     SyncJobState,
 )
 from mailarc_core.database.repositories import (
+    ApiKeyNotStored,
+    SettingsChangedElsewhere,
     ArchivedMessageRepository,
+    CredentialNotStored,
     FailedMessageRepository,
     MailAccountRepository,
     MailCredentialRepository,
+    SemanticSettingsRepository,
     SyncCheckpointRepository,
     SyncJobRepository,
 )
@@ -41,9 +47,12 @@ from mailarc_core.database.sqlite import (
 )
 
 __all__ = [
+    "SEMANTIC_SETTINGS_ID",
     "AccountStatus",
+    "ApiKeyNotStored",
     "ArchivedMessageRepository",
     "CredentialKind",
+    "CredentialNotStored",
     "FailedMessageRepository",
     "MailAccountEntity",
     "MailAccountRepository",
@@ -53,6 +62,9 @@ __all__ = [
     "MailFailedMessageEntity",
     "MailSyncCheckpointEntity",
     "MailSyncJobEntity",
+    "SemanticSettingsEntity",
+    "SemanticSettingsRepository",
+    "SettingsChangedElsewhere",
     "SyncCheckpointRepository",
     "SyncJobKind",
     "SyncJobRepository",

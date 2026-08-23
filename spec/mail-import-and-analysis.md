@@ -143,7 +143,15 @@ src/mailarc_core/
 ### 2.5 Bestehende Testkonventionen
 
 - Tests spiegeln die Package-Struktur (`tests/graph/test_status.py`).
-- **Kein `conftest.py`** im Repo — Fixtures liegen in den Testmodulen.
+- `conftest.py` gibt es dreimal, jeweils mit einem eigenen Grund: im Wurzel-
+  verzeichnis der **Sandkasten** (leitet `app_*`-Konfiguration in ein
+  Temporärverzeichnis um und schlägt Alarm, falls ein Test doch `.state`
+  beschreibt), in `components/mailarc-core/tests/archive/` und
+  `components/mailarc-analytics/tests/` je ein sitzungsweiter FalkorDB.
+  Alles andere sind Fixtures in den Testmodulen selbst — ein Modul, das ein
+  anderes per Namen braucht, bekommt ein eigenes (`corpus.py`,
+  `planted_graph.py`), weil `import conftest` an die zuerst geladene Datei
+  bindet.
 - pytest-Marker `graph_local`: *„starts the vendored FalkorDB (needs
   `task tauri:vendor`)"*.
 - `asyncio_mode = "auto"` — async-Tests brauchen keinen Decorator.
@@ -156,9 +164,10 @@ src/mailarc_core/
 
 ### 2.6 Vorbereitete, noch ungenutzte Haken
 
-- [pyproject.toml:52](../pyproject.toml) enthält auskommentiert:
+- [pyproject.toml](../pyproject.toml) enthielt auskommentiert:
   `# mail_archive-mcp = "mail_archive.mcp_server.server:main"` → der MCP-Server
-  ist im Template vorgesehen.
+  war im Template vorgesehen. Heute real als `mail-archive-mcp =
+  "app.mcp_server:main"`, hinter dem Extra `mcp` (§4.1).
 - `graph/model.py` definiert `MIN_VECTOR_KNN_MAJOR = 4` und
   `GraphServerStatus.vector_knn_supported` mit dem Kommentar *„Whether this
   server can serve the KNN queries the project needs"*; `app/pages/home.py`
@@ -244,12 +253,16 @@ Phase 7 bleibt der Scheduler eine Option — erst bei einem PostgreSQL-Deploymen
 ### 4.1 Hierarchie und erlaubte Importe
 
 ```
-app/                          Pages, Routen, Composition Root, Worker, MCP-Server
+app/                          Pages, Routen, Composition Root, Worker,
+ │                            MCP-Entrypoint (app/mcp_server.py, dünn)
  ├─ mailarc-ui                Reflex-Komponenten + States (EINZIGES Modul mit Reflex)
  │   ├─ mailarc-sync          Engine, Job-Queue, Worker-Loop, ProviderRegistry
  │   │   └─ mailarc-core      Domäne, Port, Graph-Grundwahrheit, SQLite, BlobStore
  │   └─ mailarc-analytics     abgeleitete Knoten, Analyse-Queries, Embeddings
  │       └─ mailarc-core
+ ├─ mailarc-mcp               die sechs MCP-Werkzeuge — OPTIONAL (Extra `mcp`)
+ │   ├─ mailarc-analytics
+ │   └─ mailarc-core
  └─ mailarc-google            Gmail-Adapter — hängt NUR an mailarc-core
 ```
 
@@ -259,8 +272,19 @@ app/                          Pages, Routen, Composition Root, Worker, MCP-Serve
 | `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, Reflex, `runic.rag` |
 | `mailarc-sync` | `mailarc-core` | `mailarc_google`, Reflex, `runic.rag` |
 | `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex, `runic.rag` |
+| `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, `mailarc_google`, Reflex, `runic.rag`, **`app`** |
 | `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-user | `runic.rag` |
 | `app` | alles | `runic.rag` |
+
+**`mailarc-mcp` ist optional und muss es bleiben.** Es steht hinter
+`[project.optional-dependencies] mcp`: `uv sync` löst das Desktop-Bundle auf (82
+Distributionen), `uv sync --extra mcp` das Web-Deployment (125). `fastmcp` allein
+sind rund sechzig, und ein Desktop-Archiv bedient kein MCP. `app/mcp_server.py`
+ist der Entrypoint des Console-Scripts und das einzige Modul unter `app/`, das
+die Komponente nennen darf; **niemand sonst importiert dieses Modul, `mailarc_mcp`
+oder `fastmcp` zur Importzeit** — sonst starten `app/app.py` und `app/worker.py`
+genau auf der Installation nicht mehr, für die es das Extra gibt.
+`tests/test_mcp_server.py` liest alle Module unter `app/` und prüft das.
 
 **`app` ist der einzige Ort, der konkrete Implementierungen kennt.** Die
 Registrierung `registry.register(GmailSource.DESCRIPTOR, GmailSource.create)`
@@ -271,7 +295,7 @@ passiert in `app/composition.py`. Auch der Worker-Entrypoint liegt in
 > (`appkit_user.configuration` importiert es nicht). Der Worker-Prozess bleibt
 > damit schlank, obwohl er `app.*` importiert.
 
-### 4.2 Sub-Projekt-Layout (verbindlich für alle fünf)
+### 4.2 Sub-Projekt-Layout (verbindlich für alle sechs)
 
 ```
 components/<modul>/
@@ -355,6 +379,9 @@ mailarc-analytics/src/mailarc_analytics/
 mailarc-google/src/mailarc_google/
   source/      model config credentials oauth client mapping
 
+mailarc-mcp/src/mailarc_mcp/
+  server/      model reads server   (kein config.py — baut nichts aus Settings)
+
 mailarc-ui/src/mailarc_ui/
   accounts/    state components
   imports/     state components
@@ -370,11 +397,19 @@ sehen identisch aus, statt dass `mailarc_google.gmail` stottert.
 `mailarc-ui` *muss* Reflex importieren. `components/mailarc-core/tests/test_isolation.py`
 wird umgebaut:
 
-- Prüft `mailarc_core`, `mailarc_sync`, `mailarc_analytics`, `mailarc_google`
-  gegen `FORBIDDEN = ("reflex", "appkit_mantine", "appkit_ui", "appkit_user")`.
+- Prüft `mailarc_core`, `mailarc_sync`, `mailarc_analytics`, `mailarc_google`,
+  `mailarc_mcp` gegen `FORBIDDEN = ("reflex", "appkit_mantine", "appkit_ui",
+  "appkit_user")`.
 - Prüft **zusätzlich** für alle Module inkl. `mailarc_ui`, dass `runic.rag`
   nicht importiert wird.
+- Prüft für dieselben fünf, dass `app` nicht importiert wird. `mailarc_ui`
+  bleibt hier außen vor — nicht als Ausnahme, sondern weil die Probe es nicht
+  auflösen kann: alles, was Reflex anfasst, lädt `rxconfig.py`, und das sagt
+  `from app import settings`.
 - Nimmt `mailarc-ui` von der Reflex-Prüfung ausdrücklich aus.
+- Überspringt eine Komponente, die diese Installation nicht hat: `mailarc-mcp`
+  ist das Extra `mcp`, und ein Test, der auf genau der Installation rot wird,
+  für die es das Extra gibt, bestraft das Feature.
 - Bleibt ein Subprozess-Probe (Begründung s. §2.5).
 
 `CLAUDE.md` §6 wird entsprechend umformuliert.
@@ -531,9 +566,19 @@ Wortlaut*.
 
 1. `body_clean` (Zitate/Signatur/Disclaimer entfernt) → 3-Wort-Shingles.
 2. 64-Bit-SimHash → `Message.simhash`.
-3. Bucketing über 4 × 16-Bit-Bänder (LSH), danach Hamming-Distanz ≤ 3 innerhalb
+3. Bucketing über 4 × 16-Bit-Bänder (LSH), danach Hamming-Distanz ≤ 5 innerhalb
    des Buckets. Linear statt quadratisch. FalkorDB kann Hamming nicht selbst —
    die Gruppierung läuft in Python über die indizierte Spalte.
+
+   > **≤ 5, nicht ≤ 3.** Am ursprünglichen Wert 3 zerfällt eine monatlich
+   > wiederkehrende zwölfteilige Statusmail in vier Stücke — gemessen, nicht
+   > geschätzt: `TestWhyTheDistanceIsFiveAndNotThree` in
+   > `components/mailarc-analytics/tests/derived/test_derived_templates.py`
+   > lässt die Analyse bei 3, 4 und 5 laufen und zeigt die Aufteilung. Der
+   > Abstand, den eine Wortänderung kostet, sinkt mit der Textlänge, weshalb
+   > §6.3 den Schwellwert ausdrücklich an echten Archiven kalibriert sehen will
+   > und nicht in dieser Datei festschreibt. Konfigurierbar über
+   > `app_analytics_simhash_max_distance`.
 4. Gruppe ≥ 3 Vorkommen → `Template`-Knoten.
 
 `automation_score` gewichtet **Häufigkeit × Regelmäßigkeit der Abstände ×
@@ -561,6 +606,7 @@ class MailSourcePort(Protocol):
     async def fetch_raw(
         self, refs: Sequence[MessageRef]
     ) -> AsyncIterator[RawMessage]: ...
+    async def watermark(self) -> SyncCursor | None: ...
     async def aclose(self) -> None: ...
 ```
 
@@ -569,6 +615,32 @@ class MailSourcePort(Protocol):
 - `SyncCursor(provider, token, kind: full|incremental)` ist für die Engine
   **opak**: Gmail legt `historyId` hinein, IMAP `UIDVALIDITY/UIDNEXT`, MS Graph
   den `deltaLink`.
+- `watermark()` ist die **sechste** Methode (Phase 7). Ein Delta braucht einen
+  Startpunkt, *bevor* es je gelaufen ist, und den kennt nur der Anbieter —
+  Gmails `getProfile().historyId`, IMAPs `UIDNEXT`, Graphs erster `deltaLink`.
+  Keine der fünf anderen Methoden kann danach fragen; ein „magischer" Cursor
+  mit leerem Token als Bootstrap-Signal würde einem ungültigen Wert Bedeutung
+  geben, und `getattr`-Ententypisierung verstecken, dass jeder Anbieter diese
+  Entscheidung treffen muss. Die Engine liest ihn **vor** dem ersten Listing
+  und schreibt ihn erst, wenn der Lauf durch ist — ein Startpunkt liegt hinter
+  allem, was der Lauf geholt hat, ein Endpunkt würde alles verlieren, was
+  währenddessen ankam. Genauer: vor dem ersten Listing **des Laufs durchs
+  Postfach**, nicht des Versuchs. Ein Erstimport überlebt oft keine Sitzung, und
+  weil ein Postfach neueste zuerst listet, arbeitet ein fortgesetzter Versuch
+  nach *unten* weiter — alles, was seit dem ersten Versuch ankam, steht über
+  seiner Wiederaufsetzseite und ist in keiner Seite mehr. Deshalb parkt die
+  Engine die Marke des Versuchs, der den Lauf begonnen hat, im dritten Scope
+  `full-pending` und erbt sie beim Fortsetzen. `None` heißt „kein Delta
+  möglich" und muss mit `ProviderDescriptor.supports_incremental`
+  übereinstimmen; `tests/test_composition.py` prüft das Paar über die ganze
+  Registry, nicht nur je Anbieter.
+
+  Ein Ordner voller `.eml` hat kein Änderungsprotokoll: seine Dateinamen sind,
+  was der Exporteur gewählt hat, und „alles nach dem neuesten Namen" wäre eine
+  Annahme darüber, die eine später einsortierte Datei für immer unsichtbar
+  macht. `FakeMailSource.watermark()` gibt darum den leeren String zurück — ein
+  Delta listet das ganze Verzeichnis und das Ledger entscheidet. Bezahlbar, weil
+  Listen dort ein lokales `glob` ist und kein HTTP.
 - Async, weil ein Erstimport zehntausende HTTP-Requests bedeutet. Die
   **runic-Seite bleibt synchron** und läuft über `asyncio.to_thread` (§2.3).
   Grund: `AsyncSession` kann kein Lazy-Loading und wirft `LazyLoadError`.
@@ -596,6 +668,22 @@ queued ──claim──> running ──> succeeded
 - `kind` ∈ `import` | `incremental` | `derive` | `embed`. Die Zuordnung
   kind → Handler passiert in `app/worker.py` — dieselbe Composition-Root-Regel,
   keine neue Abstraktion.
+- Der **Auslöser** liegt daneben, nicht darin: `jobs/scheduler.py` mit
+  `IntervalScheduler`. Er reiht nur ein und öffnet kein Postfach; ob ein
+  Anbieter ein Delta kann, liest er an `ProviderDescriptor.supports_incremental`
+  ab. Ausgelassen wird ein Konto, das deaktiviert ist, in `auth_error` steht,
+  bereits einen offenen `incremental`- **oder** `import`-Job hat (beide
+  schreiben denselben Full-Scope-Checkpoint und kollidieren auf
+  `uq_mail_archived_messages_account_message`), einen Anbieter nennt, den
+  dieser Prozess nicht registriert hat, **oder noch nie einen Vollabgleich zu
+  Ende gebracht hat**. Letzteres ist die Bedingung, die man leicht vergisst und
+  teuer vergisst: über ein nie gelaufenes Postfach gibt es keine Historie, die
+  Engine setzt die Marke auf *heute*, archiviert nichts und meldet Erfolg — und
+  jeder spätere Sweep holt nur noch, was danach ankam. Signal ist die
+  `incremental`-Checkpoint-Zeile, also genau das, was ein durchgelaufener Lauf
+  hinterlässt; die Full-Scope-Zeile taugt nicht, weil ein abgebrochener Import
+  eine hinterlässt. `SyncConfig.incremental_interval`
+  steuert ihn, Default `0.0` = aus.
 
 ### 7.3 Engine (`mailarc_sync/engine/engine.py`)
 
@@ -639,9 +727,17 @@ von Voraussetzungen.
 
 ### 7.5 Befragbarkeit: MCP statt eingebautem LLM
 
-`app/mcp_server/` aktiviert den in `pyproject.toml` bereits vorgesehenen
-Entrypoint (§2.6) und stellt bereit: `search_messages` (Volltext + optional
-KNN), `co_recipients`, `topics`, `templates`, `thread`, `timeline`.
+`components/mailarc-mcp/` stellt bereit: `search_messages` (Volltext + optional
+KNN), `co_recipients`, `topics`, `templates`, `thread`, `timeline`. Der in
+`pyproject.toml` vorgesehene Entrypoint (§2.6) zeigt auf `app/mcp_server.py` —
+drei Anweisungen: Prozess konfigurieren, die vier Reader aus dem Composition
+Root holen, `build_server(access, version=…)` aufrufen. Die Komponente selbst
+liest keine Einstellung, weil sie das nicht darf (§4.1).
+
+Eine **eigene Komponente und ein Extra**, nicht ein Package unter `app/`:
+`fastmcp` sind rund sechzig Distributionen — keyring, cryptography, authlib,
+uvicorn, watchfiles — und das Desktop-Bundle bedient kein MCP. `uv sync` gibt
+das Bundle, `uv sync --extra mcp` das Web-Deployment.
 
 Jedes Werkzeug ist ein parametrisiertes, katalogisiertes Cypher aus
 `mailarc_analytics/queries/catalog.py` — **kein freies Cypher von außen**.
@@ -653,6 +749,14 @@ Jedes Werkzeug ist ein parametrisiertes, katalogisiertes Cypher aus
 | `MailAuthError` | Job → `failed`, `account.status = auth_error`, UI bietet Re-Consent |
 | `MailTransientError` (429, 5xx, Netz) | Backoff + Jitter, `Retry-After` respektiert |
 | `MailPermanentError` (kaputte MIME, 404) | Nachricht überspringen, Zeile in `mail_failed_messages`, weiter |
+| `MailCursorExpired` (zu alte `startHistoryId`, neue `UIDVALIDITY`) | Cursor wegwerfen, im selben Job als Vollabgleich weiterlaufen |
+
+`MailCursorExpired` ist ein **Geschwister** von `MailPermanentError`, keine
+Unterklasse — obwohl Gmail beides als 404 sagt. Als Unterklasse würden zwei
+bestehende Handler sie stillschweigend einsammeln: die Engine schriebe einen
+abgelaufenen Cursor als übersprungene Nachricht in `mail_failed_messages`
+(mit einer Provider-ID, die es nie gab), und der Worker ließe den Job
+scheitern. Beides ist nicht „von vorn anfangen".
 
 **Kein `except: pass`.** Jede übersprungene Nachricht hinterlässt eine Zeile.
 
@@ -996,8 +1100,9 @@ Fortschritt pollen, abbrechen. Wird später ersetzt.
    OpenAI), `search.py` (KNN + Volltext), Job-`kind=embed`.
 2. VECTOR-Index-Migration mit fester Dimension; `embedding_model` am Knoten.
 3. Signal 6 in `topics.py` ergänzen (verbindet nur, was 1–5 offen ließen).
-4. `app/mcp_server/` mit dem Query-Katalog (§7.5); Entrypoint in
-   `pyproject.toml` aktivieren. `insights/`-Seite in der UI.
+4. Der MCP-Server mit dem Query-Katalog (§7.5); Entrypoint in
+   `pyproject.toml` aktivieren. `insights/`-Seite in der UI. (Nachträglich nach
+   `components/mailarc-mcp/` gezogen und zum Extra `mcp` gemacht — s. §4.1.)
 
 **DoD**
 
@@ -1019,7 +1124,18 @@ Fortschritt pollen, abbrechen. Wird später ersetzt.
 **DoD**
 
 - Zweiter Lauf nach genau einer neuen Mail holt genau diese eine und rechnet die
-  abgeleiteten Knoten inkrementell nach.
+  abgeleiteten Knoten nach.
+
+**Abweichung, ausdrücklich:** der zweite Teil wird als **Neuberechnung der
+ganzen abgeleiteten Schicht** erfüllt, nicht inkrementell. Ein
+`incremental`-Lauf, der mindestens eine Nachricht archiviert hat, reiht einen
+`derive`-Job ein; einer, der nichts archiviert hat, abgebrochen wurde oder
+gescheitert ist, reiht nichts ein. Grund: der Rebuild löscht die abgeleitete
+Schicht, bevor er sie schreibt, ist damit idempotent und höchstens teuer —
+während ein echtes inkrementelles Ableiten ein deutlich größeres Stück Arbeit
+ist, weil keine der drei Analysen lokal zu den neuen Nachrichten ist. Eine
+Ko-Adressaten-Gruppe, ein Thema und eine Vorlage sind je eine Aussage über das
+ganze Archiv, und eine neue Mail kann jede davon verschieben.
 
 ### Phase 8 — Weitere Anbieter (validiert den Port)
 

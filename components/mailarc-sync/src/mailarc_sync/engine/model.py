@@ -17,7 +17,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from mailarc_core.archive.model import ArchiveSource
-from mailarc_core.mail.model import MailProvider, ParsedMessage
+from mailarc_core.mail.model import MailProvider, ParsedMessage, SyncCursorKind
 
 
 class ImportTarget(BaseModel):
@@ -98,6 +98,17 @@ class ImportResult(BaseModel):
 
     cancelled: bool = False
     """True when the caller asked to stop between two batches, not an error."""
+
+    mode: SyncCursorKind = SyncCursorKind.FULL
+    """What the run *ended* as, which is not always what it was asked for.
+
+    A delta whose cursor the provider rejected finishes as a full walk, and the
+    caller has to be able to see that without reading a log — a delta that
+    reports thousands of messages is otherwise indistinguishable from a bug.
+    """
+
+    resynced: bool = False
+    """True when an expired cursor turned this run into a full walk."""
 
 
 class PreparedMessage(BaseModel):

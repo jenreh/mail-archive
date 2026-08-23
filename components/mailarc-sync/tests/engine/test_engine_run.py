@@ -4,35 +4,50 @@ Real everywhere it is cheap to be: a real :class:`FakeMailSource` over real
 ``.eml`` files, a real parser, a real blob store on ``tmp_path``, a real SQLite
 file with the real repositories, and the real
 :class:`~mailarc_core.archive.writer.MessageArchiver`. The one stand-in is the
-graph session — no FalkorDB runs here — and it is the same hand-written
-``FakeSession`` shape ``tests/archive/test_archive_writer.py`` uses, so the
-writer is exercised rather than mocked away.
+graph session — no FalkorDB runs here — and it lives in ``engine_doubles.py``
+beside this file, together with the fixtures in ``conftest.py``.
 
 That leaves the claims below about the engine itself: which messages it decides
 to fetch, when it writes a checkpoint, what it does with a message it cannot
 parse, and whether a failure anywhere in the pipeline reaches the caller as the
-error it was rather than as an ``ExceptionGroup`` or as a hang.
+error it was rather than as an ``ExceptionGroup`` or as a hang. The incremental
+mode is next door in ``test_engine_delta.py``.
 """
 
 import asyncio
 import hashlib
-import time
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
-from contextlib import asynccontextmanager, contextmanager
-from pathlib import Path
-from typing import Any, Never, cast
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any, cast
 
 import pytest
-from appkit_commons.database.entities import Base
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from engine_doubles import (
+    ADDRESS,
+    WITH_ATTACHMENT,
+    ExplodingSession,
+    FakeSession,
+    HalfwaySource,
+    LateFailureSource,
+    NeverWorksSource,
+    NoAdvanceSource,
+    PagedTotalsSource,
+    RecordingSource,
+    RefusingSource,
+    blob_root,
+    build_engine,
+    checkpoint,
+    message_bytes,
+    no_backoff,
+    rows,
+    source_for,
+    target,
+)
 from mailarc_core.archive.blobs import BlobStore
 from mailarc_core.archive.config import ArchiveConfig
-from mailarc_core.archive.model import BlobKind, Message
+from mailarc_core.archive.model import BlobKind
 from mailarc_core.archive.writer import MessageArchiver
 from mailarc_core.database.entities import (
-    MailAccountEntity,
     MailArchivedMessageEntity,
     MailFailedMessageEntity,
     MailSyncCheckpointEntity,
@@ -45,322 +60,22 @@ from mailarc_core.database.repositories import (
 from mailarc_core.mail.errors import MailAuthError, MailTransientError
 from mailarc_core.mail.model import (
     MailProvider,
-    MessageRef,
     ParsedAttachment,
-    RawMessage,
+    SyncCursor,
+    SyncCursorKind,
 )
 from mailarc_sync.engine import engine as engine_module
 from mailarc_sync.engine.config import SyncConfig
 from mailarc_sync.engine.engine import (
     FULL_SCOPE,
+    INCREMENTAL_SCOPE,
+    PENDING_SCOPE,
     PERMANENT_REASON,
     GraphSessionFactory,
     ImportEngine,
 )
 from mailarc_sync.engine.fake import FakeMailSource
-from mailarc_sync.engine.model import ImportCounts, ImportProgress, ImportTarget
-
-ADDRESS = "jens@example.com"
-
-WITH_ATTACHMENT = (
-    b"Message-ID: <m1@example.com>\n"
-    b"Date: Wed, 04 Mar 2026 09:11:00 +0100\n"
-    b"From: anna@example.com\n"
-    b"To: jens@example.com\n"
-    b"Subject: mit Anhang\n"
-    b'Content-Type: multipart/mixed; boundary="b"\n'
-    b"\n"
-    b"--b\n"
-    b"Content-Type: text/plain\n"
-    b"\n"
-    b"Anbei das Angebot.\n"
-    b"--b\n"
-    b'Content-Type: application/pdf; name="angebot.pdf"\n'
-    b"Content-Disposition: attachment\n"
-    b"\n"
-    b"%PDF-1.4 not really a pdf\n"
-    b"--b--\n"
-)
-
-
-def message_bytes(number: int) -> bytes:
-    """One well-formed message; ``number`` is all that tells them apart."""
-    return (
-        f"Message-ID: <m{number}@example.com>\n"
-        f"Date: Wed, 04 Mar 2026 09:{number:02d}:00 +0100\n"
-        f"From: Anna <anna@example.com>\n"
-        f"To: jens@example.com\n"
-        f"Subject: Angebot {number}\n"
-        "\n"
-        "Hallo, anbei das Angebot.\n"
-    ).encode()
-
-
-class FakeSession:
-    """The handful of :class:`runic.ogm.Session` members the writer reaches for.
-
-    ``flush`` is what makes an added node findable by ``get``, the same
-    behaviour the archive tests model and for the same reason: without it the
-    writer's get-before-add would look like it works when it does not.
-    """
-
-    def __init__(self) -> None:
-        self.nodes: dict[tuple[type, str], Any] = {}
-        self.relate_calls: list[tuple[str, str, str]] = []
-        self._pending: list[Any] = []
-
-    def get(self, cls: type, pk: str) -> Any:
-        return self.nodes.get((cls, pk))
-
-    def add(self, entity: Any) -> None:
-        self._pending.append(entity)
-
-    def flush(self) -> None:
-        for entity in self._pending:
-            self.nodes[(type(entity), entity.id)] = entity
-        self._pending.clear()
-
-    def relate(self, source, field, target, edge=None) -> None:
-        self.relate_calls.append((field.relationship, source.id, target.id))
-
-    def messages(self) -> list[str]:
-        """The canonical ids that reached the graph."""
-        return sorted(pk for cls, pk in self.nodes if cls is Message)
-
-    def edges(self, relationship: str) -> set[tuple[str, str]]:
-        """Every edge of one type, as a real MERGE would leave them."""
-        return {
-            (source, target)
-            for kind, source, target in self.relate_calls
-            if kind == relationship
-        }
-
-
-class ExplodingSession(FakeSession):
-    """A graph that refuses writes — an outage in the middle of a page.
-
-    It takes its time about it, because the timing is the point: while the
-    write hangs, the fetch stage fills the queue and blocks on it. That is the
-    state the archive stage has to fail *out of* without wedging anyone.
-    """
-
-    def add(self, entity: Any) -> Never:
-        time.sleep(0.2)
-        raise RuntimeError("graph is gone")
-
-
-class RecordingSource:
-    """A :class:`FakeMailSource` that remembers what was asked of it."""
-
-    provider = MailProvider.FAKE
-
-    def __init__(self, directory: Path) -> None:
-        self._inner = FakeMailSource(directory, address=ADDRESS)
-        self.fetched: list[str] = []
-        self.fetch_calls = 0
-
-    async def verify(self):  # noqa: ANN201 - delegates to FakeMailSource
-        return await self._inner.verify()
-
-    async def list_labels(self):  # noqa: ANN201 - delegates
-        return await self._inner.list_labels()
-
-    async def list_messages(self, cursor, *, limit: int):  # noqa: ANN201 - delegates
-        return await self._inner.list_messages(cursor, limit=limit)
-
-    async def fetch_raw(self, refs: Sequence[MessageRef]) -> AsyncIterator[RawMessage]:
-        self._record(refs)
-        return await self._inner.fetch_raw(refs)
-
-    async def aclose(self) -> None:
-        await self._inner.aclose()
-
-    def _record(self, refs: Sequence[MessageRef]) -> None:
-        self.fetch_calls += 1
-        self.fetched.extend(ref.provider_message_id for ref in refs)
-
-
-class HalfwaySource(RecordingSource):
-    """Dies with a rate limit after handing over the first message.
-
-    The interesting half of a retry: what already arrived must not arrive
-    twice, or the ledger's unique constraint turns a survivable outage into a
-    failed job.
-    """
-
-    def __init__(self, directory: Path, *, retry_after: float | None = None) -> None:
-        super().__init__(directory)
-        self._retry_after = retry_after
-
-    async def fetch_raw(self, refs: Sequence[MessageRef]) -> AsyncIterator[RawMessage]:
-        self._record(refs)
-        if self.fetch_calls == 1:
-            return self._die_after_one(refs)
-        return await self._inner.fetch_raw(refs)
-
-    async def _die_after_one(
-        self, refs: Sequence[MessageRef]
-    ) -> AsyncIterator[RawMessage]:
-        async for raw in await self._inner.fetch_raw(refs[:1]):
-            yield raw
-        raise MailTransientError("429 slow down", retry_after=self._retry_after)
-
-
-class LateFailureSource(RecordingSource):
-    """Rate-limits *after* the last message of the slice is already through."""
-
-    async def fetch_raw(self, refs: Sequence[MessageRef]) -> AsyncIterator[RawMessage]:
-        self._record(refs)
-        if self.fetch_calls == 1:
-            return self._die_at_the_end(refs)
-        return await self._inner.fetch_raw(refs)
-
-    async def _die_at_the_end(
-        self, refs: Sequence[MessageRef]
-    ) -> AsyncIterator[RawMessage]:
-        async for raw in await self._inner.fetch_raw(refs):
-            yield raw
-        raise MailTransientError("429 on the way out")
-
-
-class NeverWorksSource(RecordingSource):
-    """A provider having an outage that outlasts the engine's patience."""
-
-    async def fetch_raw(self, refs: Sequence[MessageRef]) -> Never:
-        self._record(refs)
-        raise MailTransientError("503 service unavailable")
-
-
-class RefusingSource(RecordingSource):
-    """Credentials that stopped working between the listing and the fetch."""
-
-    async def fetch_raw(self, refs: Sequence[MessageRef]) -> Never:
-        self._record(refs)
-        raise MailAuthError("token revoked")
-
-
-@pytest.fixture
-def mailbox(tmp_path) -> Path:
-    """Three messages in a directory, named so the listing order is known."""
-    directory = tmp_path / "mailbox"
-    directory.mkdir()
-    for number in (1, 2, 3):
-        (directory / f"m{number}.eml").write_bytes(message_bytes(number))
-    return directory
-
-
-@pytest.fixture
-async def database(tmp_path) -> AsyncIterator[Any]:
-    """A session factory over a real SQLite file, with appkit's commit rule.
-
-    ``get_asyncdb_session`` commits when its block leaves cleanly and rolls
-    back when it does not; the engine leans on exactly that, so the fixture
-    copies it rather than handing out a bare session.
-    """
-    database_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'mail.db'}")
-    async with database_engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(database_engine, expire_on_commit=False)
-
-    @asynccontextmanager
-    async def session() -> AsyncIterator[AsyncSession]:
-        async with factory() as open_session:
-            try:
-                yield open_session
-                await open_session.commit()
-            except BaseException:
-                await open_session.rollback()
-                raise
-
-    yield session
-    await database_engine.dispose()
-
-
-@pytest.fixture
-async def account_id(database) -> int:
-    """The account row every relational table hangs off."""
-    async with database() as session:
-        account = MailAccountEntity(
-            provider=MailProvider.FAKE,
-            display_name="Fixtures",
-            email_address=ADDRESS,
-        )
-        session.add(account)
-        await session.flush()
-        return account.id
-
-
-@pytest.fixture
-def graph() -> FakeSession:
-    return FakeSession()
-
-
-@pytest.fixture
-def make_engine(tmp_path, database, graph) -> Callable[..., ImportEngine]:
-    """The real engine over the fixtures, with the knobs a test wants to turn."""
-
-    def build(**overrides: Any) -> ImportEngine:
-        return build_engine(
-            tmp_path=tmp_path, database=database, graph=graph, **overrides
-        )
-
-    return build
-
-
-@contextmanager
-def graph_factory(session: FakeSession) -> Iterator[FakeSession]:
-    """What the engine calls when it wants a graph session."""
-    yield session
-
-
-def build_engine(
-    *, tmp_path: Path, database, graph: FakeSession, **overrides: Any
-) -> ImportEngine:
-    """The real engine, wired to the fixtures above."""
-    archive = ArchiveConfig(store_dir=tmp_path / "blobs")
-    config: dict[str, Any] = {"batch_size": 2, **overrides}
-    return ImportEngine(
-        config=SyncConfig(**config),
-        blobs=BlobStore(archive),
-        archiver=MessageArchiver(archive),
-        graph_session=cast(GraphSessionFactory, lambda: graph_factory(graph)),
-        database_session=database,
-    )
-
-
-def target(account_id: int) -> ImportTarget:
-    return ImportTarget(
-        account_id=account_id, address=ADDRESS, provider=MailProvider.FAKE
-    )
-
-
-def source_for(mailbox: Path) -> FakeMailSource:
-    return FakeMailSource(mailbox, address=ADDRESS)
-
-
-def blob_root(mailbox: Path) -> Path:
-    """Where :func:`build_engine` puts the store — beside the mailbox."""
-    return mailbox.parent / "blobs"
-
-
-async def rows(database, entity: type[Any]) -> list[Any]:
-    """Everything in one table, oldest first — the ledger as a human reads it."""
-    async with database() as session:
-        result = await session.execute(select(entity).order_by(entity.id))
-        return list(result.scalars().all())
-
-
-def no_backoff(
-    monkeypatch, delays: list[tuple[int, float | None]] | None = None
-) -> None:
-    """Keep the retry, drop the wait — the delay itself is tested separately."""
-
-    def instant(attempt: int, retry_after: float | None) -> float:
-        if delays is not None:
-            delays.append((attempt, retry_after))
-        return 0.0
-
-    monkeypatch.setattr(engine_module, "_backoff_delay", instant)
+from mailarc_sync.engine.model import ImportCounts, ImportProgress
 
 
 class TestAWholeMailbox:
@@ -422,6 +137,59 @@ class TestAWholeMailbox:
         assert seen[-1].estimated_total == 3
 
 
+class TestTheEstimateTheJobRowShows:
+    """`messages_done` may never overtake `messages_total`; a bar cannot show that."""
+
+    async def test_a_per_page_estimate_never_falls_behind_what_is_done(
+        self, mailbox, account_id, make_engine
+    ) -> None:
+        """One message a page, each page reporting `1`, three pages in all.
+
+        Read straight through, the row would say ``3 / 1``. The running maximum
+        says ``3 / 3``.
+        """
+        seen: list[ImportProgress] = []
+
+        async def record(progress: ImportProgress) -> None:
+            seen.append(progress)
+
+        await make_engine(batch_size=1).run(
+            PagedTotalsSource(mailbox), target(account_id), on_progress=record
+        )
+
+        assert [one.counts.processed for one in seen] == [1, 2, 3]
+        assert [one.estimated_total for one in seen] == [1, 2, 3]
+
+    def test_a_page_that_offers_no_number_leaves_the_estimate_alone(self) -> None:
+        """`None` means "keep what the row has", not "you are at 100%"."""
+        assert engine_module._estimate(None, None, 40) is None
+        assert engine_module._estimate(12, None, 40) == 12
+
+
+class TestASourceThatCannotPage:
+    async def test_a_cursor_that_does_not_move_ends_the_run_instead_of_spinning(
+        self, mailbox, account_id, make_engine
+    ) -> None:
+        """Otherwise the loop lists the same page until somebody kills the worker."""
+        with pytest.raises(RuntimeError, match="next cursor"):
+            await make_engine(batch_size=1).run(
+                NoAdvanceSource(mailbox), target(account_id)
+            )
+
+    def test_a_cursor_of_another_kind_is_not_a_repeat(self) -> None:
+        """The two alphabets are unrelated; an equal token across them is chance."""
+        full = SyncCursor(
+            provider=MailProvider.FAKE, token="7", kind=SyncCursorKind.FULL
+        )
+        delta = SyncCursor(
+            provider=MailProvider.FAKE, token="7", kind=SyncCursorKind.INCREMENTAL
+        )
+
+        assert engine_module._stuck_on(full, delta) is False
+        assert engine_module._stuck_on(full, full) is True
+        assert engine_module._stuck_on(None, full) is False
+
+
 class TestWhatIsAlreadyOurs:
     async def test_a_message_in_the_ledger_is_never_fetched_again(
         self, mailbox, database, account_id, graph, make_engine
@@ -477,12 +245,19 @@ class TestCheckpoints:
     async def test_the_last_checkpoint_counts_everything_the_run_processed(
         self, mailbox, database, account_id, make_engine
     ) -> None:
+        """One row per scope: the walk's own, the delta's start, the parked mark."""
         await make_engine().run(source_for(mailbox), target(account_id))
 
         checkpoints = await rows(database, MailSyncCheckpointEntity)
-        assert len(checkpoints) == 1, "one row per account and scope, updated in place"
-        assert checkpoints[0].messages_seen == 3
-        assert checkpoints[0].cursor is None
+        assert {one.scope for one in checkpoints} == {
+            FULL_SCOPE,
+            INCREMENTAL_SCOPE,
+            PENDING_SCOPE,
+        }
+        assert len(checkpoints) == 3, "one row per account and scope, updated in place"
+        walk = await checkpoint(database, account_id, FULL_SCOPE)
+        assert walk.messages_seen == 3
+        assert walk.cursor is None
 
     async def test_a_run_resumes_at_the_stored_cursor(
         self, mailbox, database, account_id, make_engine
@@ -685,7 +460,14 @@ class TestFailuresThatEndTheRun:
     async def test_nothing_is_written_down_when_the_graph_fails(
         self, mailbox, database, account_id, tmp_path
     ) -> None:
-        """No checkpoint may advance past messages that never landed."""
+        """No resume point and no delta may advance past messages that never landed.
+
+        The mark parked under `PENDING_SCOPE` is the exception and is not a
+        position: it was written before the first listing and says where a
+        *later* attempt should watermark from. A run that dies here leaves no
+        full-scope cursor, so the next one starts from the top and overwrites
+        it.
+        """
         engine = build_engine(
             tmp_path=tmp_path, database=database, graph=ExplodingSession()
         )
@@ -693,7 +475,8 @@ class TestFailuresThatEndTheRun:
         with pytest.raises(RuntimeError):
             await engine.run(source_for(mailbox), target(account_id))
 
-        assert await rows(database, MailSyncCheckpointEntity) == []
+        assert await checkpoint(database, account_id, FULL_SCOPE) is None
+        assert await checkpoint(database, account_id, INCREMENTAL_SCOPE) is None
         assert await rows(database, MailArchivedMessageEntity) == []
 
 

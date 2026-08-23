@@ -32,6 +32,28 @@ def test_a_lease_outlives_several_missed_heartbeats() -> None:
     assert config.lease_seconds > 3 * config.heartbeat_interval
 
 
+class TestTheScheduleIsOffUntilSomebodyTurnsItOn:
+    """The one default that is a promise to the user rather than a tuning knob.
+
+    A fresh install must not start talking to two real mailboxes on its own,
+    and nothing else in the tree would notice if it did: a schedule that swept
+    every fifteen minutes out of the box would leave every test green.
+    """
+
+    def test_it_is_zero_out_of_the_box(self) -> None:
+        """Read off the field rather than off an instance, so an environment
+        that happens to have the variable set cannot make this pass."""
+        assert SyncConfig.model_fields["incremental_interval"].default == 0.0
+
+    def test_zero_is_what_the_schedule_reads_as_off(self) -> None:
+        assert SyncConfig().incremental_interval <= 0.0
+
+    def test_the_environment_can_turn_it_on(self, monkeypatch) -> None:
+        monkeypatch.setenv("app_sync_incremental_interval", "900")
+
+        assert SyncConfig().incremental_interval == 900.0
+
+
 def test_the_application_supervises_the_worker_unless_told_otherwise() -> None:
     """True for the desktop app; Docker and systemd turn it off."""
     assert SyncConfig().supervise_worker is True

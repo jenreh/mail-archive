@@ -1,6 +1,7 @@
 # Architecture
 
-A uv workspace: one Reflex application on top of five first-party components.
+A uv workspace: one Reflex application on top of six first-party components,
+one of which an installation may leave out.
 
 ![Component layering](../diagrams/architecture.svg)
 
@@ -12,6 +13,7 @@ A uv workspace: one Reflex application on top of five first-party components.
 | `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, Reflex |
 | `mailarc-sync` | `mailarc-core` | `mailarc_google`, Reflex |
 | `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex |
+| `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, `mailarc-google`, Reflex |
 | `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit | `app` |
 | `app` | everything | — |
 
@@ -34,7 +36,25 @@ threads, labels, attachments. An LLM extraction would lay a probabilistic layer
 over ground truth and make every count approximate.
 
 So nothing writes to the archive except the import. A model reads it at query
-time, through the planned MCP server, and never writes.
+time, through the MCP server (`mail-archive-mcp`), and never writes.
+
+## One component is optional
+
+`mailarc-mcp` is the only component outside the root's default dependency
+closure. It sits behind an extra:
+
+```sh
+uv sync                 # 82 distributions — what the desktop bundle carries
+uv sync --extra mcp     # 125 — the web deployment, MCP server included
+```
+
+`fastmcp` is around sixty distributions and a desktop archive serves no MCP, so
+the bundle should not carry them. What keeps that true is one rule:
+`app/mcp_server.py` is the only module under `app/` allowed to name the
+component, and nothing imports *it* — `tests/test_mcp_server.py` reads every
+module in `app/` and checks, because the failure would be the web application
+refusing to start on exactly the installation the extra exists to produce. See
+[the MCP server](./mcp-server.md).
 
 ## The composition root
 
@@ -50,6 +70,28 @@ registry.register(GmailSource.DESCRIPTOR, GmailSource.create)
 
 Everything below it asks by `MailProvider` and never learns a vendor name. That
 is what keeps `mailarc-sync` from having to know the providers.
+
+### How a decision reaches the browser half
+
+`mailarc-ui` may not import `app`, so everything the composition root decides
+gets left in appkit's service registry and read back out **inside a method** —
+never at import time, which would run before the registry was filled. That is
+how the provider list, the archive reader, the analytics reader and the search
+all arrive.
+
+`SemanticControl` is the one entry that carries *callables* rather than a built
+object, and the reason is the embedder settings page:
+
+```python
+SemanticControl(current=semantic_config, reload=load_semantic_config)
+```
+
+The effective configuration changes every time somebody saves, so a registry
+entry holding the object it was handed at startup would report the embedder it
+replaced; and adopting a save — re-reading the store, closing the old client,
+re-publishing the search — is building a component from configuration, which
+belongs here and nowhere else. Two verbs, one registry entry, and the page still
+knows nothing about `app`.
 
 Two things are cached singletons there for the same reason — a second one would
 be a second answer to "which is *the* one":

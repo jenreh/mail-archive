@@ -284,12 +284,19 @@ def to_svg(diagram: Diagram) -> str:
 
 
 def _svg_defs() -> str:
-    """One arrowhead per edge colour used, keyed by a sanitised colour name."""
+    """One arrowhead per edge colour used, keyed by a sanitised colour name.
+
+    ``sorted`` over the set, because a set's iteration order is not stable
+    across runs and this string is written to a file somebody diffs: without it
+    every ``task docs:diagrams`` rewrote all seven SVGs with the four markers
+    shuffled, so a real change to one diagram arrived inside six files of
+    noise.
+    """
     markers = [
         f'<marker id="a{colour.lstrip("#")}" viewBox="0 0 10 10" refX="9" '
         'refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
         f'<path d="M 0 1 L 9 5 L 0 9 z" fill="{colour}" /></marker>'
-        for colour in {MUTED, TEXT, "#B3261E", "#2E7D46"}
+        for colour in sorted({MUTED, TEXT, "#B3261E", "#2E7D46"})
     ]
     return "<defs>" + "".join(markers) + "</defs>"
 

@@ -1,7 +1,7 @@
 """The one seam where a second implementation is allowed to exist.
 
 Gmail, IMAP, Microsoft Graph and the in-memory fake the engine tests against
-all answer the same five questions, and the engine must not be able to tell
+all answer the same six questions, and the engine must not be able to tell
 which one it is holding. Everything else in this project is straight layering
 — there is no ``CredentialStore`` port, no factory protocol, no repository
 interface, because each of those has exactly one implementation and a port
@@ -60,6 +60,31 @@ class MailSourcePort(Protocol):
 
         A stream rather than a list: a batch of full messages is tens of
         megabytes, and the writer can start before the last one lands.
+        """
+        ...
+
+    async def watermark(self) -> SyncCursor | None:
+        """Where an incremental sync would start if it started now.
+
+        The sixth question, and the only one none of the five above can be
+        made to answer: a delta needs a starting point *before* it has ever
+        run, and only the provider has one — Gmail's ``getProfile`` historyId,
+        IMAP's ``UIDNEXT``, MS Graph's first ``deltaLink``. The two ways of
+        avoiding a method here are both worse. A magic empty-token cursor
+        meaning "bootstrap yourself" gives an invalid value a meaning; reaching
+        for the method with ``getattr`` hides a decision every provider has to
+        make behind a spelling nobody type-checks.
+
+        ``None`` from a source that has no delta at all, and that answer has to
+        agree with its
+        :attr:`~mailarc_core.mail.model.ProviderDescriptor.supports_incremental`
+        — a descriptor promising a delta while this returns ``None`` is a
+        mailbox that will schedule incremental runs forever and never fetch
+        anything.
+
+        Read *before* the listing starts and stored only once the run is over:
+        a watermark taken at the start is behind everything the run went on to
+        fetch, so the next delta overlaps instead of leaving a gap.
         """
         ...
 

@@ -114,7 +114,7 @@ GMAIL_DESCRIPTOR = ProviderDescriptor(
     provider=MailProvider.GMAIL,
     label="Gmail",
     credential_fields=(),
-    supports_incremental=False,
+    supports_incremental=True,
 )
 """What a Gmail account needs from the user, and what it can do once it has it.
 
@@ -129,9 +129,19 @@ whatever a descriptor declares, so declaring nothing renders nothing, and the
 provider that *does* need typing — IMAP, with a host and an app password —
 will get its form from the same code.
 
-``supports_incremental`` stays false while listing walks page tokens. Gmail's
-``historyId`` makes a delta possible and phase 7 is where it gets built; saying
-so before then would promise the engine something the adapter cannot do.
+``supports_incremental`` is **true** as of phase 7:
+:meth:`~mailarc_google.source.source.GmailSource.list_messages` walks
+``users.history.list`` for a cursor of kind ``incremental``, and
+:meth:`~mailarc_google.source.source.GmailSource.watermark` reads the first
+``historyId`` out of ``users.getProfile``.
+
+The flag and that method have to agree, and the pairing is the reason both
+exist. This flag is what the scheduler reads before it queues a delta for an
+account; a descriptor that promised one while ``watermark()`` answered ``None``
+would have the account queued forever and fetch nothing, and no other part of
+the system is in a position to notice. Gmail's answer is never ``None``, so
+this one is ``True`` — and a provider whose delta is not built yet says
+``False`` until it is, which is what this line said until phase 7 built it.
 """
 
 

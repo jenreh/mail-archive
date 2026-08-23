@@ -118,6 +118,33 @@ advances only once everything before it is archived.
 A finished walk stores `None`: there is no next page, and a later run starts from
 the top and skips what it already has for the price of one listing pass.
 
+### The three checkpoint scopes
+
+`mail_sync_checkpoints` is keyed on `(account_id, scope)`, and a mailbox has up
+to three rows:
+
+| Scope | Holds | Written |
+| --- | --- | --- |
+| `full` | The listing page token a full walk resumes at | Every `checkpoint_every` messages of a full walk; `NULL` when it runs out of pages |
+| `incremental` | The watermark the next delta starts at | Once, when a run finishes uncancelled |
+| `full-pending` | The watermark the walk *in progress* opened with | Before a full walk lists its first page; cleared when it finishes |
+
+The third one is the one that needs explaining. A watermark has to be read
+**before** the walk lists anything, so that it sits behind everything the walk
+goes on to fetch — reading it at the end would lose every message that arrived
+while the run was going. But a full import of a large mailbox routinely spans
+several attempts, and a mailbox lists newest first: a resumed attempt carries on
+*downward* into older mail, so everything that arrived since the first attempt
+began is above the page it picks up at and in no page this walk will ever list.
+An attempt that read its own watermark would therefore store one that is in front
+of mail no run has seen, and that mail would be in no delta either — gone, with
+every job reporting success.
+
+So the mark is parked under `full-pending` before the first listing and inherited
+by whoever finishes the walk; a resume never asks the provider for a fresh one. A
+resume that finds nothing parked is a checkpoint from before this scope existed
+and reads a fresh mark, which is what every resume used to do — once per account.
+
 ## Why the consumer never raises out of its loop
 
 This is not caution. A consumer that raises while the fetch stage is blocked on

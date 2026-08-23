@@ -12,14 +12,28 @@ tasks:
   # Reflex Application Commands
   # ----------------------------------------------------------------------------
 
+  # Each entry point exports PROFILES itself. It must NOT be set in `.env`:
+  # appkit_commons loads that file with override=True, so a value there beats
+  # the real process environment and pins every entry point to one profile —
+  # `PROFILES=prod task tauri:dev` would silently run the dev profile.
   run:
     desc: Start the reflex web application
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} reflex run"
 
   run:debug:
     desc: Start the reflex web application with debug logging
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} reflex run --loglevel=debug"
 
   run:prod:
     desc: Start the reflex web application in prod mode
+    env:
+      PROFILES: prod
     cmd: "{{.RUNNER}} reflex run --env prod --single-port"
+
+  # An agent drives the application through `task agent:app`, never through
+  # these. PROFILES alone does not redirect a bare `ArchiveConfig()`; the agent
+  # namespace exports the `app_*` variables that do.

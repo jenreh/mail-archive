@@ -18,13 +18,19 @@ One module per concern:
     ``JobQueue`` — the state machine over ``mail_sync_jobs``.
 ``worker``
     ``JobWorker`` — the poll loop, and nothing about processes or config.
+``scheduler``
+    ``IntervalScheduler`` — the recurring trigger, which only ever enqueues.
+    Its own module beside the queue, because "when should a job exist" is the
+    one question the queue refuses to answer.
 """
 
 from mailarc_sync.jobs.model import JobKind, JobProgress, JobState, SyncJob
 from mailarc_sync.jobs.queue import JobQueue, SessionFactory
+from mailarc_sync.jobs.scheduler import IntervalScheduler
 from mailarc_sync.jobs.worker import JobHandler, JobWorker, default_worker_id
 
 __all__ = [
+    "IntervalScheduler",
     "JobHandler",
     "JobKind",
     "JobProgress",

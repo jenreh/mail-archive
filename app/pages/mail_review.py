@@ -12,7 +12,7 @@ from appkit_user.authentication.templates import authenticated
 from app.components.navbar import app_navbar
 from mailarc_ui.review import MessageReviewState, review_panel
 
-ROUTE = "/mail/review"
+ROUTE = "/admin/review"
 """Where this page lives; ``app/components/navbar.py`` links here."""
 
 
@@ -22,7 +22,7 @@ ROUTE = "/mail/review"
     description="Look into the synced messages and their raw source",
     navbar=app_navbar(),
     with_header=False,
-    # Admin-only, for the reason `/mail/accounts` is: the archive is every
+    # Admin-only, for the reason `/admin/accounts` is: the archive is every
     # mailbox of the installation, which is everybody's private mail.
     admin_only=True,
     # ty cannot model reflex event-handler calls; suppress the false positive.

@@ -17,7 +17,7 @@ from app.components.navbar import app_navbar
 from mailarc_ui.accounts import AccountRow, MailAccountState, accounts_panel
 from mailarc_ui.imports import ImportJobState, import_panel
 
-ROUTE = "/mail/accounts"
+ROUTE = "/admin/accounts"
 """Where this page lives.
 
 A constant because ``app/components/navbar.py`` links here and a typo in either

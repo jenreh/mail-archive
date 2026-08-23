@@ -21,10 +21,11 @@ class MailSourcePort(Protocol):
     async def fetch_raw(
         self, refs: Sequence[MessageRef]
     ) -> AsyncIterator[RawMessage]: ...
+    async def watermark(self) -> SyncCursor | None: ...
     async def aclose(self) -> None: ...
 ```
 
-Five methods, and one hard rule: **every one may raise from
+Six methods, and one hard rule: **every one may raise from
 `mailarc_core.mail.errors` and nothing else.** An adapter that lets an `httpx`
 error through has not decided whether the engine should retry.
 
@@ -34,7 +35,25 @@ error through has not decided whether the engine should retry.
 | `list_labels` | Every label or folder the account has. Read once per run |
 | `list_messages` | One page of references. `None` starts from the beginning. Paging is yours; the engine only asks whether a next cursor came back |
 | `fetch_raw` | A **coroutine returning an async iterator**, not an async generator — see below |
+| `watermark` | Where a delta would start **if it started now** — Gmail's `getProfile().historyId`, IMAP's `UIDNEXT`, Graph's first `deltaLink`. `None` from a source that has no delta at all |
 | `aclose` | Release the connection. Safe to call twice |
+
+`watermark` is the one that is easy to get subtly wrong. The engine reads it
+**before** the first listing and stores it only when the run finishes: a mark
+read before the walk sits behind everything the walk fetched, so the next run's
+overlap is filtered by the archived-messages ledger and nothing can fall in a
+gap. An end-point would lose every message that arrived while the run was
+going. Do not cache it across runs either — a stale mark is stale in the losing
+direction.
+
+Two more things follow from that, and both are the engine's job rather than
+yours. A full walk that is resumed inherits the mark of the attempt that *began*
+it, out of the `full-pending` checkpoint scope, because a mailbox lists newest
+first and a resumed attempt only ever goes further back. And a `watermark()`
+that returns a mark **new arrivals can sneak under** is worse than none: if your
+ordering is not one arrivals respect — file names, subjects, anything a user
+chose — return a mark that accounts for nothing and let the ledger do the
+filtering, the way `FakeMailSource` does over a directory.
 
 ### `fetch_raw` returns a stream
 
@@ -83,7 +102,7 @@ GMAIL_DESCRIPTOR = ProviderDescriptor(
         CredentialField(name="client_id", label="OAuth client ID"),
         CredentialField(name="client_secret", label="OAuth client secret", secret=True),
     ),
-    supports_incremental=False,
+    supports_incremental=True,
 )
 ```
 
@@ -91,8 +110,16 @@ Because the form is generated from `credential_fields` with `rx.foreach`, **a
 new provider costs no UI change.** One declaration means the form and the
 registry cannot drift apart.
 
-`supports_incremental` must be honest. Saying `True` before the delta path
-exists promises the engine something the adapter cannot do.
+`supports_incremental` must be honest, and it now has a consumer that acts on
+it: the interval scheduler queues an `incremental` job for every enabled account
+whose provider claims a delta. Saying `True` before `list_messages` can walk one
+promises the engine something the adapter cannot do — and a descriptor that
+claims a delta while `watermark()` answers `None` is a mailbox nothing will ever
+sync. Assert the pair against a fixture, the way
+`test_google_source.py::TestTheDelta::test_the_descriptor_and_the_watermark_agree`
+does — and note that
+`tests/test_composition.py::test_every_provider_agrees_with_its_own_descriptor`
+walks the whole registry and will hold your provider to it too.
 
 ## The credential
 
@@ -239,7 +266,14 @@ Then add it to the root `pyproject.toml` — `[tool.uv.sources]`,
 
 `uv sync` installs the root's dependency closure and nothing else, so a member
 nothing depends on yet is not importable. Put it in the `dev` group until the
-application actually wires it in — that is what `mailarc-analytics` does today.
+application actually wires it in — that is where `mailarc-analytics` sat until
+the `derive` job gave the application a reason to import it.
+
+A component an installation should be able to *decline* goes in an extra
+instead: `mailarc-mcp` sits behind `[project.optional-dependencies] mcp` so the
+desktop bundle does not carry `fastmcp`. The price is one rule — nothing under
+`app/` may import it at module level except its own entry point — and one test
+that reads every module in `app/` and holds it.
 
 ### Config holds no account
 
@@ -255,15 +289,18 @@ has to be able to point them at a local HTTP server.
 **No test may talk to the real provider.** Use `pytest-httpserver`, and cover at
 least:
 
-- The happy path for each of the five methods.
+- The happy path for each of the six methods.
 - A **429 with `Retry-After`** → `MailTransientError` carrying the value.
 - A **5xx** → `MailTransientError`.
 - An **expired or revoked token** → `MailAuthError`.
 - A **404 on a message** → `MailPermanentError`.
+- A **cursor the provider refuses as too old** → `MailCursorExpired`, and *only*
+  from the delta call. Gmail answers 404 to both, so the same status has to mean
+  two different things depending on what was asked for.
 - Paging: at least two pages, and the last one returning `next_cursor=None`.
 - Resuming from a cursor.
 
-`FakeMailSource` is the reference implementation — 150 lines, all five methods,
+`FakeMailSource` is the reference implementation — 150 lines, all six methods,
 the full error taxonomy — and it is worth reading before writing a new one.
 
 ## Fetch the raw bytes, always

@@ -267,13 +267,11 @@ class MailAccountState(rx.State):
             # would only be something for a later reader to mistake for a
             # credential.
             if self.credential_fields:
-                await _CREDENTIALS.create(
+                await _CREDENTIALS.store_secret(
                     session,
-                    MailCredentialEntity(
-                        account_id=account.id,
-                        kind=FORM_CREDENTIAL_KIND,
-                        secret=secret,
-                    ),
+                    account_id=account.id,
+                    kind=FORM_CREDENTIAL_KIND,
+                    secret=secret,
                 )
         logger.info("Added the %s account %s", provider.value, address)
 
@@ -399,13 +397,11 @@ async def _grant(account_id: int) -> None:
     async with get_asyncdb_session() as session:
         for stale in await _credentials_of(session, account_id):
             await _CREDENTIALS.delete(session, stale)
-        await _CREDENTIALS.create(
+        await _CREDENTIALS.store_secret(
             session,
-            MailCredentialEntity(
-                account_id=account_id,
-                kind=CredentialKind.OAUTH,
-                secret=secret,
-            ),
+            account_id=account_id,
+            kind=CredentialKind.OAUTH,
+            secret=secret,
         )
     logger.info("Consent completed for account %d", account_id)
 

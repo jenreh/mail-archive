@@ -63,6 +63,10 @@ Two things about the scaffold that will otherwise cost you an afternoon:
 Only FalkorDB is wired up there. It is the backend this project ships and the
 only one it can start locally.
 
+Revision chain: `fc2f7a8d4b66` (the ground truth's indexes) → `53fcf8d0fe56`
+(the three the derived layer's primary keys need, plus `Message.id`, which the
+derived reader pages the archive by).
+
 #### Two FalkorDB quirks the baseline records
 
 - `create_constraint` creates its own index unconditionally, and FalkorDB
@@ -74,6 +78,27 @@ only one it can start locally.
 
 Drop order in `downgrade` is the reverse: constraint before its index, or the
 drop fails.
+
+#### The derived layer
+
+```sh
+task graph:rebuild-derived         # delete Group/Topic/Template, compute again
+```
+
+Not a migration, and deliberately in the same namespace as one so that the two
+things that write graph structure are found in the same place. It runs
+`python -m app.derive`, which opens one session on the configured graph and asks
+`mailarc-analytics` to delete every `Group`, `Topic` and `Template` node and
+every `CO_ADDRESSED` edge, then recompute all three from the ground truth. Safe
+to run at any time: derived nodes are disposable by construction, and a second
+run over an unchanged archive writes exactly the same graph.
+
+The same work is available as a queued job — `kind=derive`, with no account,
+because it is about the whole archive — so a long rebuild reports into a row
+that can be read and cancelled while it runs, instead of holding a terminal.
+**Rebuild** on `/admin/insights` enqueues that job and follows the row; the task
+above is the same rebuild with no queue and no worker in the way, which is what
+makes it the one to reach for when the worker is what you are debugging.
 
 ## Running things
 
@@ -112,10 +137,18 @@ Never hand-edit `pyproject.toml` for a dependency — `uv add` keeps `uv.lock`
 honest.
 
 `uv sync` installs the root's dependency closure and nothing else, so a
-workspace member nothing depends on yet is not importable. That is why
-`mailarc-analytics` sits in the `dev` group: the test suite imports all five,
-and it moves up to `[project] dependencies` in the phase that first wires it
-into the application.
+workspace member nothing depends on yet is not importable. Five of the six are
+in that closure: `mailarc-analytics` moved out of the `dev` group and into
+`[project] dependencies` when the `derive` job and `task graph:rebuild-derived`
+gave the application a reason to import it.
+
+`mailarc-mcp` is deliberately outside it, behind `[project.optional-dependencies]
+mcp`. `uv sync` is the desktop bundle's shape (82 distributions) and
+`uv sync --extra mcp` the web deployment's (125) — `fastmcp` alone is around
+sixty, and a desktop archive serves no MCP. `task install` and `task sync` ask
+for the extra, because a developer environment is the web one and the test suite
+covers the component; `task tauri:deps` prints both resolutions and fails if
+`fastmcp` ever leaks into the first.
 
 ## Docker
 
@@ -128,6 +161,22 @@ task docker:run
 Under Docker, set `sync.supervise_worker: false` and run the worker as its own
 service — otherwise the application starts a second one and the two race for the
 same jobs.
+
+## Syncing on a schedule
+
+```yaml
+app:
+  sync:
+    incremental_interval: 900   # seconds; 0 (the default) is off
+```
+
+Off by default: a fresh install must not start talking to somebody's mailbox on
+its own. Turned on, the worker queues one `incremental` job per enabled mailbox
+every interval — accounts waiting for a re-consent and accounts that already
+have a sync going are skipped, and a delta that brought new mail in queues a
+rebuild of the derived layer after itself. It only ever *enqueues*; the same
+worker loop then runs those jobs like any other. See
+[jobs and the worker](jobs-and-worker.md#the-recurring-trigger).
 
 ## The desktop app
 

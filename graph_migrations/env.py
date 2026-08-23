@@ -1,9 +1,26 @@
 """Points runic.migrate at the same graph the application talks to.
 
-Executed on every ``runic`` call. Host, port and graph name come from
-:class:`~mailarc_core.graph.config.GraphConfig` rather than from a second set
-of environment variables, so a migration can never be applied to a different
-graph than the one the app reads — ``app_graph_host`` and friends move both.
+Executed on every ``runic`` call. Host, port and graph name come from the
+**composed** application configuration rather than from a second set of
+environment variables, so a migration can never be applied to a different graph
+than the one the app reads.
+
+``from app import settings``, the way ``alembic/env.py`` does it, and not a
+bare ``GraphConfig()``. That was the bug this docstring used to describe as a
+feature: ``YamlConfigSettingsSource`` filters the YAML by the fields of the
+class asking for it, and the top-level keys are ``profile`` / ``reflex`` /
+``app`` — none of them a ``GraphConfig`` field — so a bare ``GraphConfig()``
+reads *nothing* out of the profile files. Measured before the fix:
+
+    $ PROFILES=agent_test uv run python -c "...GraphConfig()..."
+    127.0.0.1 6379 mail-archive .state/falkordb
+
+That is the real archive, under every profile, including the ones that exist
+precisely so an agent or a test cannot reach it. ``PROFILES=agent_test task
+graph:upgrade`` applied migrations to the developer's live graph. Going through
+``AppConfig`` puts ``app.graph`` where the YAML source can see it, which is
+what makes ``task graph:*`` profile-aware for real — and what the environment
+block in ``taskfiles/Taskfile.graph.yml`` has always claimed.
 
 The scaffold lives in ``graph_migrations/`` and not in runic's default
 ``runic/``: a package directory of that name at the repository root shadows
@@ -17,9 +34,9 @@ one it can start locally; a second one gets its branch here when it exists.
 from runic.migrate import context
 from runic.migrate.adapters import create_adapter
 
-from mailarc_core.graph.config import GraphConfig
+from app import settings
 
-config = GraphConfig()
+config = settings.app.graph
 
 adapter = create_adapter(
     "falkordb",

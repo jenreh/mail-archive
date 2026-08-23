@@ -3,8 +3,9 @@
 Two groups of settings live here. The first four are the pipeline's shape —
 how much is listed at once, how much is fetched in parallel, how often the
 run writes down where it got to. The rest belong to the worker loop: how often
-it looks for work, how long a claim survives without a sign of life, and
-whether the application is the one that starts it at all.
+it looks for work, how long a claim survives without a sign of life, how often
+it goes looking for new mail on its own, and whether the application is the one
+that starts it at all.
 
 Everything else about an import — which mailbox, which folder, when — is state
 in SQLite, not configuration.
@@ -55,10 +56,14 @@ class SyncConfig(BaseConfig):
     """
 
     checkpoint_every: int = 200
-    """Messages between two checkpoints.
+    """Messages between two checkpoints of a **full** walk.
 
     A crash costs at most this many messages of *listing* work; nothing is
     re-archived, because the relational read model remembers what landed.
+
+    It has no meaning for an incremental run, which checkpoints once at the
+    end or not at all: its scope may only ever hold a legal starting point,
+    and a mid-delta watermark would skip the records after it.
     """
 
     poll_interval: float = 2.0
@@ -76,6 +81,18 @@ class SyncConfig(BaseConfig):
 
     worker_id: str = Field(default_factory=default_worker_id)
     """Who claims jobs. Distinct per process, so two workers cannot collide."""
+
+    incremental_interval: float = 0.0
+    """Seconds between two sweeps for new mail; zero turns the schedule off.
+
+    Off by default because a fresh install must not start talking to somebody's
+    mailbox on its own — the first sync is a button a human presses.
+    ``app_sync_incremental_interval=900`` turns it on.
+
+    Read by :class:`~mailarc_sync.jobs.scheduler.IntervalScheduler`, which
+    ``app/worker.py`` starts beside the poll loop. A sweep only enqueues, so
+    this is how often mailboxes are *looked at*, not how long a sync takes.
+    """
 
     supervise_worker: bool = True
     """Whether the web application starts and watches the worker itself.

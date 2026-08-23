@@ -1,4 +1,4 @@
-"""Gmail as :class:`~mailarc_core.mail.ports.MailSourcePort` — four calls, no more.
+"""Gmail as :class:`~mailarc_core.mail.ports.MailSourcePort` — five calls, no more.
 
 The sibling of :class:`~mailarc_sync.engine.fake.FakeMailSource`, and shaped
 like it on purpose: a class attribute for the provider, a ``create`` that is
@@ -14,7 +14,10 @@ and the size arrive alongside the bytes and become the reference the archive
 sees.
 
 This class owns no state beyond its client: which account, whose credentials
-and how far the last run got are rows in SQLite (§8.1).
+and how far the last run got are rows in SQLite (§8.1). The delta added in
+phase 7 keeps that true: ``startHistoryId`` and ``pageToken`` travel inside the
+cursor the engine hands back, never in an attribute here, because an attribute
+would make a run resumed by a second worker silently list the wrong window.
 """
 
 import logging
@@ -22,6 +25,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 from urllib.parse import quote
 
+from mailarc_core.mail.errors import MailCursorExpired
 from mailarc_core.mail.model import (
     AccountIdentity,
     LabelInfo,
@@ -30,6 +34,7 @@ from mailarc_core.mail.model import (
     MessageRef,
     RawMessage,
     SyncCursor,
+    SyncCursorKind,
 )
 from mailarc_core.mail.ports import MailSourceFactory, MailSourcePort
 from mailarc_google.source import mapping
@@ -43,16 +48,31 @@ logger = logging.getLogger(__name__)
 PROFILE_PATH = "/users/me/profile"
 LABELS_PATH = "/users/me/labels"
 MESSAGES_PATH = "/users/me/messages"
+HISTORY_PATH = "/users/me/history"
 
 RAW_FORMAT = "raw"
 """The only format this adapter ever asks for. See the module docstring."""
 
+MESSAGE_ADDED = "messageAdded"
+"""The only kind of change this archive can act on.
+
+``users.history.list`` also offers ``messageDeleted``, ``labelAdded`` and
+``labelRemoved``. An archive keeps what it was given — a mail deleted in Gmail
+next week was still received this week — so the other three would produce
+records it would only ever discard, and asking for one type keeps the pages
+small enough that a quiet mailbox costs a single call.
+"""
+
 GMAIL_MAX_PAGE_SIZE = 500
-"""Gmail's own ceiling for ``maxResults``; asking for more is a 400."""
+"""Gmail's own ceiling for ``maxResults``; asking for more is a 400.
+
+The same number for ``messages.list`` and for ``history.list``, whose defaults
+differ (100 for history) but whose maximum does not.
+"""
 
 
 class GmailSource:
-    """One Gmail account, behind the five methods the engine knows."""
+    """One Gmail account, behind the six methods the engine knows."""
 
     provider = MailProvider.GMAIL
     DESCRIPTOR = GMAIL_DESCRIPTOR
@@ -118,22 +138,43 @@ class GmailSource:
     ) -> MessagePage:
         """One page of references; ``None`` starts at the top of the mailbox.
 
+        The cursor's ``kind`` picks the endpoint, and it is the only thing that
+        can: the engine hands back whatever it was given, so a cursor minted by
+        :meth:`watermark` or by a previous history page keeps the whole run on
+        ``users.history.list``, while a page token from a full walk keeps it on
+        ``users.messages.list``. Reading the *engine's* mode instead would need
+        a seventh port argument for something the cursor already says.
+
         The page size is the smallest of what the engine asked for, what
         :class:`GmailConfig` allows this adapter to lean on Gmail with (§11)
         and Gmail's own maximum. Spam and trash stay out: that is Gmail's
         default for ``messages.list`` and an archive of a mailbox is what the
         user sees in it.
         """
-        params: dict[str, str | int] = {
-            "maxResults": max(
-                1, min(limit, self._config.page_size, GMAIL_MAX_PAGE_SIZE)
-            )
-        }
+        if cursor is not None and cursor.kind is SyncCursorKind.INCREMENTAL:
+            return await self._list_history(cursor, limit=limit)
+        params: dict[str, str | int] = {"maxResults": self._page_size(limit)}
         if cursor is not None:
             params["pageToken"] = cursor.token
         return mapping.message_page(
             await self._client.get(MESSAGES_PATH, params=params)
         )
+
+    async def watermark(self) -> SyncCursor | None:
+        """The mailbox's history id right now — where a delta would start.
+
+        Never ``None``: Gmail always has one, which is what
+        :data:`~mailarc_google.source.model.GMAIL_DESCRIPTOR` promises with
+        ``supports_incremental``.
+
+        This is the second ``getProfile`` of a run, after :meth:`verify`'s, and
+        it stays a second call on purpose. Caching one for both would save a
+        quota unit and make the watermark older than the listing it is supposed
+        to sit behind — harmless in the direction that costs a re-fetch the
+        ledger filters out, and mail-losing in the other. The engine reads this
+        *before* the first listing precisely so it errs the cheap way.
+        """
+        return mapping.account_watermark(await self._client.get(PROFILE_PATH))
 
     async def fetch_raw(self, refs: Sequence[MessageRef]) -> AsyncIterator[RawMessage]:
         """The RFC 5322 bytes for those references, as they arrive.
@@ -147,6 +188,39 @@ class GmailSource:
     async def aclose(self) -> None:
         """Release the HTTP client. Safe to call twice."""
         await self._client.aclose()
+
+    async def _list_history(self, cursor: SyncCursor, *, limit: int) -> MessagePage:
+        """What arrived since a ``historyId``, one page at a time.
+
+        ``startHistoryId`` is required on every call and ``pageToken`` on every
+        call after the first, so both ride in the cursor
+        (:data:`~mailarc_google.source.mapping.HISTORY_CURSOR_SEPARATOR`).
+
+        The ``not_found`` is the phase's whole point. Gmail answers 404 both for
+        a message that is gone and for a ``startHistoryId`` it no longer keeps —
+        "typically valid for at least a week, in rare circumstances a few
+        hours" — and only the caller knows which it asked for. Left at the
+        default, an expired cursor would arrive at the engine as a
+        :class:`~mailarc_core.mail.errors.MailPermanentError`, be filed as one
+        skipped message, and the account would quietly stop syncing while every
+        run reported success.
+        """
+        start_history_id, page_token = mapping.read_history_cursor(cursor)
+        params: dict[str, str | int] = {
+            "startHistoryId": start_history_id,
+            "historyTypes": MESSAGE_ADDED,
+            "maxResults": self._page_size(limit),
+        }
+        if page_token is not None:
+            params["pageToken"] = page_token
+        payload = await self._client.get(
+            HISTORY_PATH, params=params, not_found=MailCursorExpired
+        )
+        return mapping.history_page(payload, start_history_id=start_history_id)
+
+    def _page_size(self, limit: int) -> int:
+        """The smallest of the engine's limit, the config's and Gmail's own."""
+        return max(1, min(limit, self._config.page_size, GMAIL_MAX_PAGE_SIZE))
 
     async def _stream(self, refs: Sequence[MessageRef]) -> AsyncIterator[RawMessage]:
         """One request per message, in the order they were asked for.

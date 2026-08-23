@@ -78,6 +78,39 @@ class JobQueue:
             entity = await self._jobs.find_by_id(session, job_id)
             return None if entity is None else _as_job(entity)
 
+    async def find_open(
+        self, kind: JobKind, account_id: int | None = None
+    ) -> SyncJob | None:
+        """The oldest job of *kind* that has not ended yet, or ``None``.
+
+        The question a panel has to ask before it queues anything: "is one of
+        these already going?". Without it a page can only know about a job it
+        started itself, so two open tabs — or one tab after a reload, which
+        forgets ``job_id`` — each queue their own. For a ``derive`` that is not
+        merely wasted work: a rebuild starts by deleting the derived layer, so
+        two of them interleaving can wipe rows the other has already written.
+
+        ``account_id`` is matched exactly, ``None`` included, because ``None``
+        is a real value here and not a wildcard — a ``derive`` is about the
+        whole archive and carries no account, which is precisely the row this
+        has to find.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MailSyncJobEntity)
+                .where(
+                    MailSyncJobEntity.kind == kind,
+                    MailSyncJobEntity.account_id.is_(None)
+                    if account_id is None
+                    else MailSyncJobEntity.account_id == account_id,
+                    MailSyncJobEntity.state.in_(_OPEN_STATES),
+                )
+                .order_by(MailSyncJobEntity.id)
+                .limit(1)
+            )
+            entity = result.scalar_one_or_none()
+            return None if entity is None else _as_job(entity)
+
     async def claim(self, worker_id: str, lease_seconds: float) -> SyncJob | None:
         """Take the oldest queued job, or return ``None`` if there is none.
 
@@ -180,10 +213,39 @@ class JobQueue:
     async def request_cancel(self, job_id: int) -> bool:
         """Ask a job to stop; ``False`` if it had already ended.
 
-        A flag, not a kill. The worker reads it between batches, so whatever
-        was half-written when a human clicked cancel is still written whole.
+        A flag, not a kill — *for a job somebody is running*. The worker reads
+        it between batches, so whatever was half-written when a human clicked
+        cancel is still written whole.
+
+        A job still QUEUED is the other case, and it used to fall through to
+        the same flag: nobody had claimed it, so nobody was going to read the
+        flag, and with no worker up at all — the normal state of a dev machine
+        — it stayed queued and *active* for ever. The panel above it then
+        showed a rebuild that claimed to be running, two disabled buttons and
+        no way out but a reload, which queued a second job. So an unclaimed job
+        is ended here and now: the half-written stage the flag exists to
+        protect does not exist yet.
+
+        Two conditional writes rather than a read and a write. The first only
+        matches while the job is still QUEUED, so a worker that claims it in
+        between loses that write and wins the second — the job goes on running
+        and gets the flag, which is the correct outcome for a job that now has
+        an owner.
         """
         async with self._session_factory() as session:
+            ended = await self._write(
+                session,
+                MailSyncJobEntity.id == job_id,
+                MailSyncJobEntity.state == SyncJobState.QUEUED,
+                state=SyncJobState.CANCELLED,
+                cancel_requested=True,
+                finished_at=datetime.now(UTC),
+                worker_id=None,
+                lease_until=None,
+            )
+            if ended == 1:
+                logger.info("Job %d cancelled before any worker claimed it", job_id)
+                return True
             asked = await self._write(
                 session,
                 MailSyncJobEntity.id == job_id,

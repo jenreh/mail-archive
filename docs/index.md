@@ -46,6 +46,7 @@ features:
 | [Getting started](./user/getting-started.md) | Install the tools, create the database, get the app running |
 | [Connecting a mailbox](./user/connecting-a-mailbox.md) | Add an account, get through Google's consent screen |
 | [Importing mail](./user/importing-mail.md) | Start an import, read the progress, cancel, resume, review what arrived |
+| [Semantic search](./user/semantic-search.md) | Turning an embedder on, what it costs, and what an assistant may read |
 | [Configuration](./user/configuration.md) | Profiles, environment variables, every setting there is |
 | [The desktop app](./user/desktop-app.md) | Building the macOS `.app`, what it bundles, what it does not |
 | [Troubleshooting](./user/troubleshooting.md) | The failures that actually happen, and what each one means |
@@ -54,11 +55,12 @@ features:
 
 | Page | What it answers |
 | --- | --- |
-| [Architecture](./developer/architecture.md) | The five components, who may import whom, and why |
+| [Architecture](./developer/architecture.md) | The six components, who may import whom, and why |
 | [Data model](./developer/data-model.md) | The graph nodes, the six tables, the blob store |
 | [The import pipeline](./developer/import-pipeline.md) | Stage by stage, and the two decisions that shape it |
 | [Jobs and the worker](./developer/jobs-and-worker.md) | Leases, claims, cancellation, crash recovery |
 | [Adding a mail provider](./developer/adding-a-provider.md) | What implementing `MailSourcePort` involves |
+| [The MCP server](./developer/mcp-server.md) | The six read-only tools, wiring a client, and the trust model |
 | [Testing](./developer/testing.md) | Where tests live, what the markers mean, the isolation test |
 | [Operations](./developer/operations.md) | Migrations, tasks, the quality gate |
 
@@ -67,7 +69,7 @@ features:
 Email already carries an exact graph in its headers. An LLM extraction would
 only lay a probabilistic layer over ground truth and make every count
 approximate — so nothing writes to the archive except the import. A model reads
-it at query time, through the planned MCP server, and never writes.
+it at query time, through the MCP server (`mail-archive-mcp`), and never writes.
 
 That rule is enforced, not merely stated: no component may import `runic.rag`,
 and a test checks it from a subprocess.
@@ -83,21 +85,29 @@ Built and tested:
   (a folder of `.eml` files) driving them.
 - The graph server's lifecycle, status and vendored runtime.
 - The Gmail adapter end to end — consent, credential refresh, the HTTP client
-  and the mapping from Google's JSON into the domain.
+  and the mapping from Google's JSON into the domain, registered as a provider
+  an account can pick, with pages that mount the account, import and review
+  states.
+- The three deterministic analyses — who is written to together, which mails
+  belong to one project, which mails are written again and again with the same
+  wording — and `task graph:rebuild-derived`, which throws all three away and
+  computes them again.
+- The insights page, which starts that rebuild as a queued job, watches it, and
+  reads the findings back — including a cross-check that recomputes the
+  co-addressed counts from the messages and holds them against the edge a
+  rebuild wrote, so a wrong write path says so instead of being reported as a
+  finding.
+
+- Semantic search and the MCP server. An embedder is optional and off by
+  default — see [Semantic search](./user/semantic-search.md) — and with one
+  configured, the `embed` job fills in `Message.embedding`, the insights page
+  gains a search box, A2 gains its sixth signal, and `mail-archive-mcp`
+  answers six read-only tools over the same query catalogue.
 
 Not there yet:
 
-- **Gmail is not registered.** `GmailSource` is complete and tested, but
-  [`app/composition.py`](https://github.com/jenreh/mail-archive/blob/main/app/composition.py)
-  still has a comment where its `registry.register(...)` line goes, so the only
-  provider an account can actually pick today is the folder of `.eml` files.
-- **The account and import pages.** The Reflex states and components exist in
-  `mailarc-ui`; no page under
-  [`app/pages/`](https://github.com/jenreh/mail-archive/tree/main/app/pages)
-  mounts them yet.
-- **`mailarc-analytics`.** An empty package. The three analyses it is meant to
-  carry are specified but unwritten.
-- **Incremental sync, embeddings, and the MCP server.** All later phases.
+- **Incremental sync and a schedule.** Every import is still a full pass over
+  the scope it is given.
 
 The full plan lives in
 [`spec/mail-import-and-analysis.md`](https://github.com/jenreh/mail-archive/blob/main/spec/mail-import-and-analysis.md)

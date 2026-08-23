@@ -1,14 +1,17 @@
-"""The taxonomy, checked as what it is: a routing decision, not three names.
+"""The taxonomy, checked as what it is: a routing decision, not four names.
 
 The engine catches these by class, so the inheritance is load-bearing — a
 `MailAuthError` that also matched the transient branch would be retried until
-the job gave up instead of asking the user to sign in again.
+the job gave up instead of asking the user to sign in again, and a
+`MailCursorExpired` that matched the permanent branch would be filed as a
+skipped message instead of starting a full sync.
 """
 
 import pytest
 
 from mailarc_core.mail.errors import (
     MailAuthError,
+    MailCursorExpired,
     MailError,
     MailPermanentError,
     MailTransientError,
@@ -16,7 +19,8 @@ from mailarc_core.mail.errors import (
 
 
 @pytest.mark.parametrize(
-    "error", [MailAuthError, MailTransientError, MailPermanentError]
+    "error",
+    [MailAuthError, MailTransientError, MailPermanentError, MailCursorExpired],
 )
 def test_every_failure_is_catchable_as_one_mail_error(error) -> None:
     with pytest.raises(MailError):
@@ -29,11 +33,27 @@ def test_every_failure_is_catchable_as_one_mail_error(error) -> None:
         (MailAuthError, MailTransientError),
         (MailTransientError, MailPermanentError),
         (MailPermanentError, MailAuthError),
+        (MailCursorExpired, MailPermanentError),
+        (MailPermanentError, MailCursorExpired),
     ],
 )
-def test_the_three_kinds_do_not_overlap(raised, other) -> None:
+def test_the_four_kinds_do_not_overlap(raised, other) -> None:
     """Each one means a different reaction, so none may catch another."""
     assert not issubclass(raised, other)
+
+
+def test_an_expired_cursor_is_not_a_message_that_can_be_skipped() -> None:
+    """The pairing that would break quietly rather than loudly.
+
+    Gmail says both with a 404. As a subclass, the engine's per-message
+    `except MailPermanentError` would swallow an expired cursor into a
+    `mail_failed_messages` row for a message id that never existed, and the
+    delta would never fall back to a full walk.
+    """
+    with pytest.raises(MailError) as escaped:
+        raise MailCursorExpired("startHistoryId is too old")
+
+    assert not isinstance(escaped.value, MailPermanentError)
 
 
 def test_a_transient_error_can_carry_the_providers_retry_after() -> None:

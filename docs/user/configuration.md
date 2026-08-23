@@ -122,12 +122,25 @@ noise. They are switches for a debugging session, not for production.
 | --- | --- | --- |
 | `batch_size` | `100` | References per listing page, and the archive write batch |
 | `fetch_concurrency` | `8` | Concurrent fetch streams |
-| `checkpoint_every` | `200` | Messages between two checkpoints |
+| `checkpoint_every` | `200` | Messages between two checkpoints of a **full** walk |
+| `incremental_interval` | `0.0` | Seconds between two sweeps for new mail; `0` is off |
 | `poll_interval` | `2.0` | Seconds an idle worker waits before asking again |
 | `lease_seconds` | `120.0` | How long a claim survives without a heartbeat |
 | `heartbeat_interval` | `10.0` | Seconds between lease extensions |
 | `worker_id` | `<pid>@<host>` | Who claims jobs; distinct per process |
 | `supervise_worker` | `true` | Whether the web app starts the worker itself |
+
+`incremental_interval` is off by default on purpose: a fresh install must not
+start talking to your mailbox on its own, so the first sync is a button you
+press. Set it to `900` and the worker looks for new mail every fifteen minutes,
+skipping any account that is disabled, waiting for a re-consent, already
+syncing, or **whose first full import has not finished**.
+
+That last one is why turning the schedule on before pressing **Import** does not
+start the archive off: a delta asks the provider what changed since a point in
+time, and a mailbox nobody has walked has no such point. The schedule waits, and
+says so once in the log at debug level. Press **Import**, let it run to the end,
+and every sweep after that picks up where it left off.
 
 `fetch_concurrency` limits the provider's patience, not ours — eight concurrent
 conversations keep a first import moving without earning a rate limit.
@@ -152,6 +165,35 @@ own unit. Leave it on for the desktop app, where there is nobody else to do it.
 Not one of these names a mailbox. Which account, whose credentials and how far
 the last run got are **state in SQLite**, not configuration — a second Gmail
 account must not need a second config.
+
+### Semantic — `app.semantic` / `APP_SEMANTIC_`
+
+Off by default, and off is a complete state: without an embedder A1–A3 run in
+full and only semantic search and A2's sixth signal are missing. See
+[Semantic search](./semantic-search.md) for what turning it on costs and what
+an assistant reading the archive can see.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `provider` | `none` | `none`, `ollama` (local, no account) or `openai` (uploads every body it embeds) |
+| `model` | `""` | Empty means the provider's own default — `nomic-embed-text` or `text-embedding-3-small` |
+| `dimension` | `768` | **Must equal the vector migration's `DIMENSION`.** The only length both providers can produce |
+| `base_url` | `""` | Empty means the provider's own default; a setting so tests can point at a local server |
+| `api_key` | unset | OpenAI needs one; Ollama ignores it. A `SecretStr` |
+| `batch_size` | `32` | Texts per HTTP call. Tuned for the local model, which chokes where a paid API does not |
+| `page_size` | `500` | Messages per graph round trip — the job's unit of memory and of progress |
+| `request_timeout` | `120.0` | A cold local model really is that slow |
+| `max_body_chars` | `8000` | ~2 000 tokens. Past that an embedding describes the quoted thread, not the message |
+| `knn_over_fetch` | `10` | FalkorDB's KNN cannot be filtered before the fact, so a search over-fetches and cuts |
+| `topic_similarity_min` | `0.82` | Signal 6's gate. At 0.7 an invoice and a delivery note are neighbours in every model |
+| `topic_neighbours` | `5` | How many close messages one message may name |
+| `task_prefix` | `false` | Whether the Ollama adapter prefixes its input with a task instruction |
+
+`dimension` is the one that cannot be changed in place. FalkorDB accepts a
+vector of any other length, stores it and **silently declines to index it** — no
+error, no log line — so the embed job reads the live index's dimension before it
+writes anything and refuses a mismatch by name. Changing it needs a new graph
+migration and a full re-embed.
 
 ### Database — `app.database`
 

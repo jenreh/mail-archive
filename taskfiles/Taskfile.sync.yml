@@ -15,4 +15,8 @@ tasks:
   worker:
     desc: |
       Run the import worker in the foreground (Ctrl-C stops it at the next job)
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} python -m app.worker"
+
+  # The sandboxed worker is `task agent:worker`. See taskfiles/Taskfile.agent.yml.

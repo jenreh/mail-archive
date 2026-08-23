@@ -392,10 +392,43 @@ class TestCancel:
         assert job.cancel_requested is True
         assert job.state is JobState.RUNNING
 
+    async def test_cancelling_a_job_no_worker_has_claimed_ends_it_outright(
+        self, queue: JobQueue, account_id: int
+    ) -> None:
+        """A flag needs a reader, and a queued job has none.
+
+        "A flag, not a kill" exists to protect a half-written stage, and a job
+        nobody has claimed has no stage to protect. Left as a flag it stayed
+        QUEUED and active for ever whenever no worker was running — which is
+        the normal state of a dev machine — so the panel above it showed a
+        rebuild that claimed to be running, two disabled buttons and no way
+        back short of a reload that queued a second job.
+        """
+        job_id = await queue.enqueue(JobKind.IMPORT, account_id)
+
+        assert await queue.request_cancel(job_id) is True
+
+        job = await queue.get(job_id)
+        assert job is not None
+        assert job.state is JobState.CANCELLED
+        assert job.finished_at is not None
+
+    async def test_a_job_ended_that_way_is_no_longer_claimable(
+        self, queue: JobQueue, account_id: int
+    ) -> None:
+        """The race the conditional write closes: a worker must not pick up a
+        job that was cancelled a moment before it looked."""
+        job_id = await queue.enqueue(JobKind.IMPORT, account_id)
+        await queue.request_cancel(job_id)
+
+        assert await queue.claim("worker-a", 60) is None
+
     async def test_the_flag_is_readable_on_its_own(
         self, queue: JobQueue, account_id: int
     ) -> None:
+        """Asked of a *running* job, which is the only one that carries it."""
         job_id = await queue.enqueue(JobKind.IMPORT, account_id)
+        await queue.claim("worker-a", 60)
 
         assert await queue.is_cancel_requested(job_id) is False
         await queue.request_cancel(job_id)

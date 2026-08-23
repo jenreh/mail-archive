@@ -138,8 +138,39 @@ Two gotchas the baseline migration records:
 - One full-text index covers **both** properties. The archive searches them
   together, and FalkorDB keeps one such index per label.
 
-The vector index on `Message.embedding` is deliberately absent. Nothing writes
-embeddings yet, and an HNSW index costs memory from the day it exists.
+The vector index on `Message.embedding` is deliberately **not** in the baseline:
+nothing wrote embeddings before phase 6, and an HNSW index costs memory from the
+day it exists. Revision `5f4678dfc5a4` adds it — 768 dimensions, cosine, `M=16`,
+`efConstruction=400`, `efRuntime=512` — and those five numbers are read back off
+a running server by `tests/test_graph_migrations_vector_local.py`, because a
+wrong one does not raise. FalkorDB accepts a vector of any other length, stores
+it and silently declines to index it, so a job against a mismatched index
+reports every message embedded and no search finds one. `efRuntime` cannot be
+overridden at query time, which is why the migration's literal is the only
+chance to set it: runic's default of 10 measured 14 % recall@10 where 512
+measured 99 %.
+
+The second revision adds the three the derived layer needs, and one on the
+ground truth:
+
+```python
+op.create_range_index(label, "id")  # Group, Topic, Template
+op.create_range_index("Message", "id")
+```
+
+Range indexes, not unique constraints, although each of those keys is unique by
+construction. A constraint is checked on every write to the label, and these
+nodes are deleted and rewritten wholesale on every rebuild — so it would charge
+for a guarantee the id already gives. Without any index, though, each of the
+`MERGE (:Group {id: ...})` statements a rebuild issues scans every node wearing
+that label, and a rebuild issues one per finding.
+
+`Message.id` is there for the read rather than the write. The baseline indexed
+the four properties the analyses *filter* by and left the primary key alone,
+because nothing walked the archive in id order until the derived reader did:
+it pages the ground truth with `WHERE m.id > $after ... ORDER BY m.id`, which
+is an index seek with the index and a full sort of every message without it,
+once per page.
 
 ### A declaration-order trap
 
@@ -152,6 +183,62 @@ body is still running. It is therefore annotated `Any`, with the real type in
 `target=`. A forward reference there does not merely fail for that field — it
 aborts the whole resolution pass and **silently strips the datetime and vector
 converters off every other field on the node**.
+
+## The graph — derived
+
+Written by exactly one module in the other direction:
+[`mailarc_analytics.derived`](https://github.com/jenreh/mail-archive/tree/main/components/mailarc-analytics/src/mailarc_analytics/derived).
+Everything here is an *answer*, not a fact, and every node is disposable —
+`task graph:rebuild-derived` deletes all of it and computes it again. An
+analysis bug therefore costs one run, never a restore.
+
+### Nodes
+
+| Node | Key | Holds |
+| --- | --- | --- |
+| `Group` | `participant_key` | `size`, `message_count`, `first_seen`, `last_seen` |
+| `Topic` | `topic:<sha256 of its members>` | `label`, `method`, `score`, `message_count`, `first_seen`, `last_seen` |
+| `Template` | `template:<simhash>:<direction>` | `sample_text`, `occurrences`, `automation_score`, `direction`, `first_seen`, `last_seen` |
+
+The keys are hashes of the finding's own content, not ULIDs as first sketched.
+A generated id would be new on every rebuild, which makes "run it twice and
+nothing changes" unprovable — the whole derived layer would churn on each run
+even when the archive had not moved.
+
+### Edges
+
+| Edge | From → to | Carries |
+| --- | --- | --- |
+| `CO_ADDRESSED` | Address → Address | `count`, `first_seen`, `last_seen` |
+| `ADDRESSED_GROUP` | Message → Group | |
+| `ABOUT` | Message → Topic | `score`, `method` |
+| `INSTANCE_OF` | Message → Template | `distance` |
+
+`CO_ADDRESSED` is undirected, and its `MERGE` pattern carries no arrow, so the
+same pair handed in either order finds the one edge instead of growing a second.
+Which way round it ended up stored is an accident of who was written to first —
+so every read has to match it without an arrow too. Bcc'd addresses are
+deliberately left out of it: a blind copy was written to *without* the other
+recipients knowing, and an edge saying otherwise would be wrong about the one
+thing Bcc means.
+
+`ABOUT.method` is what keeps a suggestion from hardening into a fact. A
+`method="ref"` cluster was drawn by a ticket token both messages carry; a
+`method="embedding"` cluster is a guess — a nearest-neighbour pair above
+`app_semantic_topic_similarity_min`, offered only where the five exact signals
+left two messages unconnected, and only on an installation with an embedder
+configured. It stays a
+plain string rather than an enum on purpose — a graph written by a newer build
+has to keep decoding in an older one.
+
+### A derived node never becomes ground truth
+
+`Label` comes from the provider, `Topic` comes from us, and nothing merges them.
+A user may promote a `Topic` into a real `Label`; there is no way back. The
+delete statements in the query catalogue are pinned to that rule at import time
+— [`rebuild.py`](https://github.com/jenreh/mail-archive/blob/main/components/mailarc-analytics/src/mailarc_analytics/derived/rebuild.py)
+matches each of the four against an exact shape and refuses to import if one
+has been edited into something that could reach a `Message`.
 
 ## The relational store
 

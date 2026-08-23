@@ -105,6 +105,34 @@ tasks:
       - "{{.RUNNER}} python scripts/vendor_uv.py --verify-only"
 
   # ----------------------------------------------------------------------------
+  # Dependencies
+  # ----------------------------------------------------------------------------
+
+  deps:
+    desc: Show what the bundle carries against what the web deployment carries
+    # The desktop bundle serves no MCP, and the difference is the whole reason
+    # `mailarc-mcp` is a component behind the `mcp` extra rather than three
+    # modules under `app/`. Nothing here has to be switched off for that: the
+    # shell starts the backend with plain `uv run reflex run` (src-tauri/src/
+    # backend.rs), which requests no extras, so the desktop path never asks for
+    # `mcp` and `fastmcp` cannot arrive by accident. `uv export` reads the
+    # resolution without touching a virtualenv, so this is safe to run beside a
+    # developer's `.venv.mac` — which does hold the extra, because `task install`
+    # asks for it and the test suite covers the component.
+    cmds:
+      - |
+        set -euo pipefail
+        desktop=$(uv export --no-dev --no-emit-workspace --no-hashes -q | grep -c '^[a-zA-Z]')
+        web=$(uv export --no-dev --extra mcp --no-emit-workspace --no-hashes -q | grep -c '^[a-zA-Z]')
+        echo "📦 desktop bundle (uv sync)             : ${desktop} distributions"
+        echo "🌐 web deployment (uv sync --extra mcp) : ${web} distributions"
+        if uv export --no-dev --no-emit-workspace --no-hashes -q | grep -q '^fastmcp'; then
+          echo "❌ fastmcp resolved into the desktop set — the mcp extra has leaked"
+          exit 1
+        fi
+        echo "✅ no fastmcp in the desktop set"
+
+  # ----------------------------------------------------------------------------
   # Running
   # ----------------------------------------------------------------------------
 

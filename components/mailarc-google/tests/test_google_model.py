@@ -52,20 +52,28 @@ class TestDescriptor:
 
         assert "refresh_token" not in names
 
-    def test_it_claims_no_incremental_sync_yet(self) -> None:
-        """Listing walks page tokens; the historyId delta is phase 7."""
-        assert GMAIL_DESCRIPTOR.supports_incremental is False
+    def test_it_claims_the_incremental_sync_phase_7_built(self) -> None:
+        """`history.list` walks the delta and `getProfile` starts it.
+
+        The flag is what the scheduler reads before queueing a delta, so it is
+        only ever true while `GmailSource.watermark()` has an answer — the
+        agreement itself is asserted in `test_google_source.py`, which has a
+        server to ask.
+        """
+        assert GMAIL_DESCRIPTOR.supports_incremental is True
 
 
-MAILBOX_MUTATING_SCOPES = frozenset({
-    "https://mail.google.com/",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.compose",
-    "https://www.googleapis.com/auth/gmail.insert",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.settings.basic",
-    "https://www.googleapis.com/auth/gmail.settings.sharing",
-})
+MAILBOX_MUTATING_SCOPES = frozenset(
+    {
+        "https://mail.google.com/",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.insert",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
+        "https://www.googleapis.com/auth/gmail.settings.sharing",
+    }
+)
 """Every Gmail scope that can alter a message, a draft or a mail setting."""
 
 
@@ -86,23 +94,27 @@ class TestScopes:
 
 class TestGoogleTokenResponse:
     def test_it_reads_what_the_token_endpoint_actually_sends(self) -> None:
-        issued = GoogleTokenResponse.model_validate({
-            "access_token": SAMPLE_ACCESS,
-            "expires_in": 3599,
-            "scope": GMAIL_READONLY_SCOPE,
-            "token_type": "Bearer",
-        })
+        issued = GoogleTokenResponse.model_validate(
+            {
+                "access_token": SAMPLE_ACCESS,
+                "expires_in": 3599,
+                "scope": GMAIL_READONLY_SCOPE,
+                "token_type": "Bearer",
+            }
+        )
 
         assert issued.access_token == SAMPLE_ACCESS
         assert issued.expires_in == 3599
         assert issued.refresh_token is None, "a refresh usually reissues nothing"
 
     def test_it_ignores_fields_google_adds_later(self) -> None:
-        issued = GoogleTokenResponse.model_validate({
-            "access_token": ANY_ACCESS,
-            "id_token": "unused",
-            "some_new_field": 1,
-        })
+        issued = GoogleTokenResponse.model_validate(
+            {
+                "access_token": ANY_ACCESS,
+                "id_token": "unused",
+                "some_new_field": 1,
+            }
+        )
 
         assert issued.access_token == ANY_ACCESS
 

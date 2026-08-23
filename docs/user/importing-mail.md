@@ -128,7 +128,7 @@ twice.
 
 ## Looking at what arrived
 
-**Review** in the navigation (`/mail/review`) lists the archive the way a mail
+**Review** in the navigation (`/admin/review`) lists the archive the way a mail
 client would: sender and date on the first line, subject and a paperclip on the
 second, two lines of preview under them, newest first. Under the preview sit
 the labels the provider filed the message under — your own labels in blue,
@@ -164,14 +164,63 @@ A few things are on purpose:
 Like the accounts page, the review is **admin-only**: the archive is every
 mailbox of the installation.
 
+## Checking what the analyses made of it
+
+**Insights** in the navigation (`/admin/insights`) is the other half: the review
+page shows what the import wrote, this one shows what was *derived* from it —
+who gets addressed together, which of those groups recur, what the mail is
+about, and which of it is written by a machine.
+
+Nothing is derived until you ask. **Rebuild** queues the work as a job and the
+bar under it climbs in stages, so the page stays usable while a large archive is
+read; **Cancel** stops it at the next stage boundary. A rebuild throws the whole
+derived layer away and computes it again, which means running it twice over an
+unchanged archive changes nothing, and a cancelled one costs only the stages it
+had reached.
+
+The panel worth reading first is the **cross-check**, and it is the reason this
+page exists rather than a report. Who is addressed together is the one finding
+that can be worked out two ways: from the stored edge a rebuild wrote, and from
+the messages themselves, counted again from scratch. The page asks both and
+holds the answers against each other:
+
+- **Teal** — the two agree on every pair the check could rule on.
+- **Yellow** — the messages count *more* than the edge does. Usually harmless:
+  no rebuild since the last import, a rebuild capped by configuration, or
+  messages sent to more people than the analysis is set to consider.
+- **Red** — the edge claims **more** than the messages support, or names a pair
+  the messages never produced. Nothing legitimate does that; a red verdict means
+  the number is wrong, not that it is stale.
+
+Under the verdict sit the heaviest pairs they disagree on, both numbers side by
+side and a dash where one side never named the pair at all — so a wrong count
+can be looked up in the archive rather than argued about. The line beside the
+verdict says how many pairs it actually ruled on: only the busiest are compared,
+and a pair below where the other list was cut proves nothing either way.
+
+The rest is what was found: recurring groups with their size and message count,
+topics with the **method** that produced each one — a badge, because `ref` is a
+fact read out of a header while the others are a suggestion — and templates
+split into what you send and what you receive, since only the mail you write
+yourself can be automated.
+
+Admin-only, like the review page, and for a stronger reason: a co-recipient
+listing says who writes to whom across every mailbox in the installation.
+
 ## Job kinds
 
 | Kind | State |
 | --- | --- |
 | `import` | Works — a full walk of a mailbox |
-| `incremental` | Planned. Gmail's `historyId` delta |
-| `derive` | Planned. Rebuilds the analysis nodes |
-| `embed` | Planned. Fills in message embeddings |
+| `derive` | Works — recomputes the analysis nodes. **Rebuild** on the insights page enqueues one; `task graph:rebuild-derived` does the same without a worker |
+| `incremental` | Works — Gmail's `historyId` delta, queued by the interval schedule (see [Configuration](./configuration.md)). Falls back to a full walk in the same job when the cursor is too old |
+| `embed` | Works — computes the message embeddings semantic search needs. Needs an embedder configured (see [Semantic search](./semantic-search.md)). **Rebuild the vectors** on the embedder page enqueues one; `task graph:embed` runs the same job without a worker |
 
-A job of an unimplemented kind fails with "no handler registered", which is both
-what the worker does with an unmapped kind and the truth.
+Every kind has a handler. A kind without one would fail its job with "no handler
+registered", which is what the worker does with an unmapped kind; the next kind
+to be added fails a test before it can fail a job.
+
+The schedule only queues `incremental` for a mailbox whose **first full import
+has finished**. There is no history before that point, so a delta over a fresh
+account would archive nothing and report success for ever. Press **Import**
+once; from then on the schedule keeps up.

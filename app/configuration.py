@@ -10,6 +10,8 @@ from appkit_commons.registry import service_registry
 from appkit_user.configuration import AuthenticationConfiguration
 from pydantic import Field
 
+from mailarc_analytics import AnalyticsConfig
+from mailarc_analytics.semantic import SemanticConfig
 from mailarc_core import ArchiveConfig, GraphConfig
 from mailarc_core.database import sqlite
 from mailarc_core.mail.config import MailConfig
@@ -24,6 +26,17 @@ class AppConfig(ApplicationConfig):
     graph: GraphConfig = Field(default_factory=GraphConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
+    analytics: AnalyticsConfig = Field(default_factory=AnalyticsConfig)
+    semantic: SemanticConfig = Field(default_factory=SemanticConfig)
+    """The embedder, if this installation has one. Off by default (§7.4).
+
+    Carried here rather than left to ``app_semantic_*`` alone because
+    ``model_config['extra']`` is ``ignore``: an ``app.semantic.provider: ollama``
+    block in ``configuration/config.yaml`` — the documented way every other
+    component on this list is configured — reached nothing at all while this
+    field was missing, and was dropped without a word.
+    """
+
     mail: MailConfig = Field(default_factory=MailConfig)
     google: GmailConfig = Field(default_factory=GmailConfig)
 

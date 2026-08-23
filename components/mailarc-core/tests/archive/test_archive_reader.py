@@ -229,9 +229,9 @@ class TestTheListing:
         assert len(session.statements) == 1
 
     def test_nothing_is_none_where_a_row_prints_a_string(self, blobs) -> None:
-        session = FakeSession([
-            (message(subject=None, body_text=None, eml_sha256=None), None)
-        ])
+        session = FakeSession(
+            [(message(subject=None, body_text=None, eml_sha256=None), None)]
+        )
 
         [summary] = reader(session, blobs).list_messages()
 

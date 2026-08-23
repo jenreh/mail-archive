@@ -39,6 +39,7 @@ from mailarc_imap.source import (
     ImapConfig,
     ImapCredentials,
     ImapSource,
+    mapping,
 )
 
 
@@ -82,22 +83,30 @@ class TestVerify:
             await built.verify()
         await built.aclose()
 
-    async def test_a_folder_that_is_not_there_fails_here_and_not_at_three_in_the_morning(
+    async def test_it_proves_the_login_without_naming_a_folder(
         self, config: ImapConfig, server: FakeImapServer
     ) -> None:
+        """A walk covers the whole account, so there is no folder to get wrong.
+
+        This replaces a test that typed a folder name into the credential and
+        expected ``verify`` to reject it. That failure mode is gone with the
+        field: ``verify`` proves the login and lists, and a mailbox whose
+        folders are not the ones somebody expected is not a credential problem.
+        """
         built = ImapSource(
             ImapCredentials(
                 host="127.0.0.1",
                 port=server.port,
                 username=server.username,
                 password=server.password,
-                folder="Typo",
             ),
             config,
         )
 
-        with pytest.raises(MailPermanentError):
-            await built.verify()
+        identity = await built.verify()
+
+        assert identity.address.address == server.username.lower()
+        assert not any("EXAMINE" in command for command in server.commands)
         await built.aclose()
 
 
@@ -385,12 +394,14 @@ class TestARenumberedMailbox:
         with caplog.at_level("WARNING"):
             await source.list_messages(
                 SyncCursor(
-                    provider=MailProvider.IMAP, token="1000:1", kind=SyncCursorKind.FULL
+                    provider=MailProvider.IMAP,
+                    token='{"at": "INBOX", "marks": {"INBOX": [1000, 1]}, "v": 2}',
+                    kind=SyncCursorKind.FULL,
                 ),
                 limit=10,
             )
 
-        assert "restarting the walk" in caplog.text
+        assert "walking it from the top" in caplog.text
         assert first.refs
 
     async def test_a_cursor_from_another_provider_is_treated_the_same_way(
@@ -635,3 +646,233 @@ class TestClosing:
         self, credentials, config
     ) -> None:
         await ImapSource(credentials, config).aclose()
+
+
+class TestTheWalkCoversTheWholeAccount:
+    """The whole mailbox, always — there is no folder to pick any more."""
+
+    async def test_every_folder_is_walked(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        fill(server, 1, 2)
+        fill(server, 5, folder="Reisen")
+        fill(server, 9, folder="Reisen/Rechnungen")
+
+        seen: list[str] = []
+        cursor: SyncCursor | None = None
+        while True:
+            page = await source.list_messages(cursor, limit=10)
+            seen.extend(ref.provider_message_id for ref in page.refs)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert {one.rsplit(":", 2)[0] for one in seen} == {
+            "INBOX",
+            "Reisen",
+            "Reisen/Rechnungen",
+        }
+        assert len(seen) == 4
+
+    async def test_the_folder_is_the_label_whole(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """Gmail's mechanics, chosen deliberately over splitting the path.
+
+        A nested folder is one tag carrying its whole path, exactly as
+        ``mailarc-google`` stores a nested Gmail label.
+        """
+        fill(server, 1, folder="Reisen/Rechnungen")
+
+        labels: set[str] = set()
+        cursor: SyncCursor | None = None
+        while True:
+            page = await source.list_messages(cursor, limit=10)
+            labels.update(label for ref in page.refs for label in ref.labels)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert "Reisen/Rechnungen" in labels
+        assert "Reisen" not in labels
+
+    async def test_a_message_in_two_folders_keeps_two_distinct_ids(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """Two folders on one server routinely share a ``UIDVALIDITY``.
+
+        If the id were the bare UID the ledger would recognise the second
+        sighting as already archived and most of the mailbox would never be
+        fetched — silent, permanent, and reported as success.
+        """
+        fill(server, 1)
+        fill(server, 1, folder="Archive")
+
+        ids: list[str] = []
+        cursor: SyncCursor | None = None
+        while True:
+            page = await source.list_messages(cursor, limit=10)
+            ids.extend(ref.provider_message_id for ref in page.refs)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert len(ids) == len(set(ids)) == 2
+
+    async def test_a_resumed_walk_does_not_restart_a_finished_folder(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        fill(server, 1, 2, 3)
+        fill(server, 7, folder="Reisen")
+
+        first = await source.list_messages(None, limit=2)
+        assert first.next_cursor is not None
+        second = await source.list_messages(first.next_cursor, limit=2)
+
+        delivered = [ref.provider_message_id for ref in (*first.refs, *second.refs)]
+        assert len(delivered) == len(set(delivered))
+
+    async def test_a_folder_deleted_mid_walk_carries_on_at_the_next_one(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """A restart that reports itself as a resume is only ever noticed as an
+        unexplained hour of listing."""
+        fill(server, 1, folder="Alpha")
+        fill(server, 2, folder="Beta")
+        fill(server, 3, folder="Gamma")
+
+        first = await source.list_messages(None, limit=10)
+        assert first.next_cursor is not None
+        del server.folders["Beta"]
+
+        page = await source.list_messages(first.next_cursor, limit=10)
+
+        assert [ref.provider_message_id for ref in page.refs] == ["Gamma:1000:3"]
+
+    async def test_the_watermark_marks_every_folder(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """A delta resumes each folder above what the full walk saw of it."""
+        fill(server, 1, 2)
+        fill(server, 8, folder="Reisen")
+
+        mark = await source.watermark()
+
+        assert mark is not None
+        assert mark.kind is SyncCursorKind.INCREMENTAL
+        position = mapping.read_cursor(mark)
+        assert position is not None
+        assert set(position.marks) == {"INBOX", "Reisen"}
+        assert position.marks["INBOX"].next_uid == 3
+        assert position.marks["Reisen"].next_uid == 9
+
+
+class TestSpamAndDeletedAreNotArchived:
+    """Spam was never the user's mail; a deleted message is one they threw away."""
+
+    @pytest.mark.parametrize(
+        ("folder", "flags"),
+        [
+            ("Junk", ()),
+            ("Deleted Messages", ()),
+            ("Aufbewahrung", (rb"\Junk",)),
+            ("Papierkorb", (rb"\Trash",)),
+        ],
+    )
+    async def test_they_are_not_walked(
+        self,
+        source: ImapSource,
+        server: FakeImapServer,
+        folder: str,
+        flags: tuple[bytes, ...],
+    ) -> None:
+        fill(server, 1)
+        fill(server, 2, folder=folder)
+        server.mailbox(folder).flags = (*server.mailbox(folder).flags, *flags)
+
+        seen: list[str] = []
+        cursor: SyncCursor | None = None
+        while True:
+            page = await source.list_messages(cursor, limit=10)
+            seen.extend(ref.provider_message_id for ref in page.refs)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert seen == ["INBOX:1000:1"]
+
+    async def test_they_are_still_reported_as_folders(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """``list_labels`` describes the mailbox; ``list_messages`` decides what
+        is kept. A folder list that silently omitted two names would be one
+        nobody could trust."""
+        fill(server, 2, folder="Junk")
+
+        names = {label.name for label in await source.list_labels()}
+
+        assert "Junk" in names
+
+    async def test_a_user_folder_nested_under_another_is_kept(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """Somebody who files marketing under ``Kunden/Junk`` meant to keep it."""
+        fill(server, 4, folder="Kunden/Junk")
+
+        page = await source.list_messages(None, limit=10)
+        seen = list(page.refs)
+        while page.next_cursor is not None:
+            page = await source.list_messages(page.next_cursor, limit=10)
+            seen.extend(page.refs)
+
+        assert [ref.provider_message_id for ref in seen] == ["Kunden/Junk:1000:4"]
+
+
+class TestAMailboxWithNothingToWalk:
+    """The empty cases, which are ordinary answers rather than failures."""
+
+    async def test_an_account_of_nothing_but_spam_lists_nothing(
+        self, source: ImapSource, server: FakeImapServer, caplog
+    ) -> None:
+        """And says so once, because a silent empty import is indistinguishable
+        from a working one that found no mail."""
+        server.folders.clear()
+        fill(server, 1, folder="Junk")
+
+        with caplog.at_level("WARNING"):
+            page = await source.list_messages(None, limit=10)
+
+        assert page.refs == ()
+        assert page.next_cursor is None
+        assert "no syncable folder" in caplog.text
+
+    async def test_such_an_account_has_no_watermark_either(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """``None`` from a source with nothing to delta over. The descriptor
+        promises a delta for the provider, not for an empty mailbox."""
+        server.folders.clear()
+
+        assert await source.watermark() is None
+
+    async def test_a_walk_whose_last_folder_vanished_is_simply_over(
+        self, source: ImapSource, server: FakeImapServer
+    ) -> None:
+        """Not an error: the page loop has nothing left to ask for.
+
+        ``INBOX`` is cleared deliberately. The fake server always serves one,
+        and with it in place the walk simply moved on to an empty inbox — so
+        the assertions below held without the deleted-folder path ever running.
+        """
+        server.folders.clear()
+        fill(server, 1, folder="Alpha")
+        fill(server, 2, folder="Zulu")
+
+        first = await source.list_messages(None, limit=10)
+        assert first.next_cursor is not None
+        del server.folders["Zulu"]
+
+        page = await source.list_messages(first.next_cursor, limit=10)
+
+        assert page.refs == ()
+        assert page.next_cursor is None

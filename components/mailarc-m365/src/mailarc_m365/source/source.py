@@ -282,6 +282,15 @@ class M365Source:
                 params={
                     "$top": self._page_size(limit),
                     "$select": MESSAGE_SELECT,
+                    # The mailbox's size, and the only way to get one: Graph
+                    # returns `@odata.count` when asked and never otherwise,
+                    # and the engine's estimate stays `None` for every page
+                    # that offers no number — which left an M365 full walk the
+                    # one walk whose progress bar had no denominator. Not a
+                    # directory object, so no `ConsistencyLevel` header is
+                    # involved; `/me/messages?$top=2&$count=true` is
+                    # Microsoft's own example of the parameter.
+                    "$count": "true",
                     # Newest first, said out loud rather than inherited from
                     # Graph's default. The engine's resume logic rests on this
                     # ordering — a resumed walk carries on into older mail and

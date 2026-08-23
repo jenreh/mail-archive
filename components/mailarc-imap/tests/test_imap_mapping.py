@@ -31,21 +31,57 @@ ACCOUNT = ImapCredentials(
 
 
 class TestTheCursor:
-    """``UIDVALIDITY`` and the first UID not yet looked at."""
+    """A whole walk's place: the folder in hand, and a mark per folder."""
 
     @pytest.mark.parametrize("kind", [SyncCursorKind.FULL, SyncCursorKind.INCREMENTAL])
     def test_it_round_trips(self, kind: SyncCursorKind) -> None:
-        minted = mapping.cursor(1738, 4201, kind)
+        minted = mapping.cursor(
+            mapping.WalkPosition(
+                folder="Reisen",
+                marks={
+                    "INBOX": mapping.CursorPosition(uidvalidity=1738, next_uid=4201),
+                    "Reisen": mapping.CursorPosition(uidvalidity=9, next_uid=3),
+                },
+            ),
+            kind,
+        )
 
         position = mapping.read_cursor(minted)
 
         assert position is not None
-        assert (position.uidvalidity, position.next_uid) == (1738, 4201)
+        assert position.folder == "Reisen"
+        assert position.marks["INBOX"].uidvalidity == 1738
+        assert position.marks["INBOX"].next_uid == 4201
+        assert position.marks["Reisen"].next_uid == 3
         assert minted.kind is kind
         assert minted.provider is MailProvider.IMAP
 
-    def test_a_token_with_no_separator_is_not_one(self) -> None:
-        """A Gmail ``historyId`` in the column of an account that changed type."""
+    def test_the_same_position_always_writes_the_same_token(self) -> None:
+        """A checkpoint row that rewrites itself every page is a write nobody
+        asked for."""
+        position = mapping.WalkPosition(
+            folder="INBOX",
+            marks={
+                "Reisen": mapping.CursorPosition(uidvalidity=2, next_uid=2),
+                "INBOX": mapping.CursorPosition(uidvalidity=1, next_uid=5),
+            },
+        )
+
+        first = mapping.cursor(position, SyncCursorKind.FULL)
+        again = mapping.cursor(position.model_copy(deep=True), SyncCursorKind.FULL)
+
+        assert first.token == again.token
+
+    def test_a_folder_with_no_mark_is_simply_one_not_reached_yet(self) -> None:
+        position = mapping.read_cursor(
+            mapping.cursor(mapping.WalkPosition(folder="INBOX"), SyncCursorKind.FULL)
+        )
+
+        assert position is not None
+        assert position.marks == {}
+
+    def test_a_gmail_history_id_is_not_a_walk(self) -> None:
+        """An account that was a Gmail mailbox before somebody re-added it."""
         stray = SyncCursor(
             provider=MailProvider.IMAP,
             token="918273",
@@ -54,19 +90,48 @@ class TestTheCursor:
 
         assert mapping.read_cursor(stray) is None
 
-    def test_a_token_that_is_not_two_numbers_is_not_one(self) -> None:
-        stray = SyncCursor(provider=MailProvider.IMAP, token="latest:page")
+    def test_a_version_one_token_is_no_longer_readable(self) -> None:
+        """The single-folder shape, from before a walk covered the account.
+
+        Deliberately unreadable rather than migrated: a full walk starts over
+        and a delta raises ``MailCursorExpired``, and the ledger filters the
+        re-listing down to nothing re-fetched. One extra walk, no mail lost.
+        """
+        assert (
+            mapping.read_cursor(
+                SyncCursor(provider=MailProvider.IMAP, token="1738:4201")
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            '{"v": 2, "at": "INBOX"}',
+            '{"v": 2, "marks": {}}',
+            '{"v": 2, "at": 7, "marks": {}}',
+            '{"v": 2, "at": "INBOX", "marks": {"INBOX": [1]}}',
+            '{"v": 2, "at": "INBOX", "marks": {"INBOX": ["a", "b"]}}',
+            '{"v": 99, "at": "INBOX", "marks": {}}',
+            "[]",
+        ],
+    )
+    def test_a_malformed_walk_is_not_one(self, token: str) -> None:
+        stray = SyncCursor(provider=MailProvider.IMAP, token=token)
 
         assert mapping.read_cursor(stray) is None
 
     def test_a_uid_below_one_is_lifted_to_the_first(self) -> None:
         """UIDs start at 1; a stored zero would search a range no server issues."""
         position = mapping.read_cursor(
-            SyncCursor(provider=MailProvider.IMAP, token="1738:0")
+            SyncCursor(
+                provider=MailProvider.IMAP,
+                token='{"v": 2, "at": "INBOX", "marks": {"INBOX": [1738, 0]}}',
+            )
         )
 
         assert position is not None
-        assert position.next_uid == mapping.FIRST_UID
+        assert position.marks["INBOX"].next_uid == mapping.FIRST_UID
 
 
 class TestTheMessageId:
@@ -124,43 +189,125 @@ class TestTheMessageId:
 class TestThePage:
     """Paging is the adapter's business; the engine only asks for a next cursor."""
 
-    def test_a_short_page_closes_the_walk(self) -> None:
+    def test_a_page_that_does_not_exhaust_the_folder_stays_on_it(self) -> None:
         page = mapping.message_page(
-            INBOX, (1, 2, 3), limit=10, kind=SyncCursorKind.FULL
+            INBOX,
+            (1, 2, 3),
+            limit=2,
+            kind=SyncCursorKind.FULL,
+            marks={},
+            next_folder="Reisen",
         )
 
-        assert len(page.refs) == 3
-        assert page.next_cursor is None
+        assert len(page.refs) == 2
+        assert page.next_cursor is not None
+        expected = '{"at": "INBOX", "marks": {"INBOX": [1738, 3]}, "v": 2}'  # noqa: S105 - a cursor
 
-    def test_a_full_page_names_the_uid_after_the_last_one(self) -> None:
-        page = mapping.message_page(INBOX, (1, 2, 3), limit=2, kind=SyncCursorKind.FULL)
+        assert page.next_cursor.token == expected
+
+    def test_a_finished_folder_moves_the_walk_to_the_next_one(self) -> None:
+        """And leaves the finished one marked at ``UIDNEXT``, not at the last UID.
+
+        ``UIDNEXT`` is the server's promise about what has not arrived yet, so
+        it is what makes the next delta resume above everything this walk saw
+        instead of re-listing the last message for ever.
+        """
+        page = mapping.message_page(
+            INBOX,
+            (1, 2),
+            limit=10,
+            kind=SyncCursorKind.FULL,
+            marks={},
+            next_folder="Reisen",
+        )
 
         assert page.next_cursor is not None
-        assert page.next_cursor.token == "1738:3"  # noqa: S105 - a cursor
+        position = mapping.read_cursor(page.next_cursor)
+        assert position is not None
+        assert position.folder == "Reisen"
+        assert position.marks["INBOX"].next_uid == INBOX.uidnext
 
-    def test_an_exactly_full_page_still_closes_the_walk(self) -> None:
-        """Nothing left over means nothing to resume, however tidy the arithmetic."""
-        page = mapping.message_page(INBOX, (1, 2), limit=2, kind=SyncCursorKind.FULL)
+    def test_the_last_folder_closes_the_walk(self) -> None:
+        page = mapping.message_page(
+            INBOX,
+            (1, 2),
+            limit=10,
+            kind=SyncCursorKind.FULL,
+            marks={},
+            next_folder=None,
+        )
 
         assert page.next_cursor is None
 
-    def test_an_empty_answer_closes_it_too(self) -> None:
-        page = mapping.message_page(INBOX, (), limit=10, kind=SyncCursorKind.FULL)
+    def test_an_exactly_full_page_still_finishes_the_folder(self) -> None:
+        """Nothing left over means nothing to resume, however tidy the arithmetic."""
+        page = mapping.message_page(
+            INBOX,
+            (1, 2),
+            limit=2,
+            kind=SyncCursorKind.FULL,
+            marks={},
+            next_folder=None,
+        )
+
+        assert page.next_cursor is None
+
+    def test_an_empty_folder_moves_straight_on(self) -> None:
+        page = mapping.message_page(
+            INBOX,
+            (),
+            limit=10,
+            kind=SyncCursorKind.FULL,
+            marks={},
+            next_folder="Reisen",
+        )
 
         assert page.refs == ()
-        assert page.next_cursor is None
+        assert page.next_cursor is not None
+        position = mapping.read_cursor(page.next_cursor)
+        assert position is not None
+        assert position.folder == "Reisen"
+
+    def test_the_marks_of_earlier_folders_survive(self) -> None:
+        """Without this a resumed walk would restart every folder it finished."""
+        earlier = {"Archive": mapping.CursorPosition(uidvalidity=5, next_uid=99)}
+
+        page = mapping.message_page(
+            INBOX,
+            (1,),
+            limit=10,
+            kind=SyncCursorKind.FULL,
+            marks=earlier,
+            next_folder="Reisen",
+        )
+
+        assert page.next_cursor is not None
+        position = mapping.read_cursor(page.next_cursor)
+        assert position is not None
+        assert position.marks["Archive"].next_uid == 99
+        assert position.marks["INBOX"].next_uid == INBOX.uidnext
 
     def test_the_kind_survives_the_page(self) -> None:
         page = mapping.message_page(
-            INBOX, (1, 2, 3), limit=1, kind=SyncCursorKind.INCREMENTAL
+            INBOX,
+            (1, 2, 3),
+            limit=1,
+            kind=SyncCursorKind.INCREMENTAL,
+            marks={},
+            next_folder=None,
         )
 
         assert page.next_cursor is not None
         assert page.next_cursor.kind is SyncCursorKind.INCREMENTAL
 
-    def test_the_estimate_is_what_is_left_from_here(self) -> None:
+    def test_the_estimate_is_what_is_left_in_this_folder(self) -> None:
         page = mapping.message_page(
-            INBOX, (1, 2, 3, 4), limit=2, kind=SyncCursorKind.FULL
+            INBOX,
+            (1, 2, 3, 4),
+            limit=2,
+            kind=SyncCursorKind.FULL,
+            marks={},
+            next_folder=None,
         )
 
         assert page.estimated_total == 4

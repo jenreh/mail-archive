@@ -21,7 +21,7 @@ import json
 import pytest
 
 from mailarc_core.mail.errors import MailAuthError
-from mailarc_imap.source import DEFAULT_FOLDER, IMAPS_PORT, ImapCredentials
+from mailarc_imap.source import IMAPS_PORT, ImapCredentials
 
 PASSWORD = "abcd-efgh-ijkl-mnop"  # noqa: S105 - a fixture, never a real one
 """Shaped like a real app-specific password, so a leak is unmistakable."""
@@ -38,7 +38,6 @@ def form(**overrides: str) -> str:
         "port": "993",
         "username": "jens@icloud.com",
         "password": PASSWORD,
-        "folder": "",
     }
     values.update(overrides)
     return json.dumps(values)
@@ -53,13 +52,19 @@ class TestTheAccountFormsShape:
     def test_a_blank_port_falls_back_to_the_default(self) -> None:
         assert ImapCredentials.from_secret(form(port="")).port == IMAPS_PORT
 
-    def test_a_blank_folder_falls_back_to_the_inbox(self) -> None:
-        assert ImapCredentials.from_secret(form()).folder == DEFAULT_FOLDER
+    def test_a_row_written_before_the_walk_covered_the_account_still_opens(
+        self,
+    ) -> None:
+        """The migration behaviour an opaque credential column exists to give.
 
-    def test_a_folder_the_user_typed_wins(self) -> None:
-        secret = form(folder="[Gmail]/All Mail")
+        Accounts added while the form still asked for a folder have one sitting
+        in their JSON. Rejecting it would make an upgrade re-type every app
+        password; pydantic ignores unknown keys, so the row simply opens.
+        """
+        stored = ImapCredentials.from_secret(form(folder="[Gmail]/All Mail"))
 
-        assert ImapCredentials.from_secret(secret).folder == "[Gmail]/All Mail"
+        assert stored.host == "imap.mail.me.com"
+        assert not hasattr(stored, "folder")
 
     def test_whitespace_around_a_host_is_not_part_of_it(self) -> None:
         assert ImapCredentials.from_secret(form(host="  imap.gmail.com ")).host == (
@@ -90,7 +95,7 @@ class TestTheRoundTrip:
     """``to_secret`` and ``from_secret`` are the only two ways in and out."""
 
     def test_what_it_wrote_is_what_it_reads(self) -> None:
-        stored = ImapCredentials.from_secret(form(folder="Archive"))
+        stored = ImapCredentials.from_secret(form())
 
         assert ImapCredentials.from_secret(stored.to_secret()) == stored
 

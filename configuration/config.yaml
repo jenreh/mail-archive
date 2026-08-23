@@ -85,16 +85,11 @@ app:
   # public client and must NOT have one, so a desktop installation sets only
   # the id. Neither belongs in a committed file.
   #
-  #m365:
-  #  client_id: secret:mn-m365-client-id
-  #  client_secret: secret:mn-m365-client-secret
-  #  # `allitems` is the search folder that spans the whole mailbox and the only
-  #  # well-known name that makes a delta mean "the mailbox". A tenant whose
-  #  # mailboxes answer `ErrorItemNotFound: ... Default folder AllItems not
-  #  # found` sets `inbox` or a folder id here, and accepts that mail filed
-  #  # elsewhere is picked up by a full import rather than by a delta.
-  #  delta_folder: allitems
-  #  default_tenant: common  # a single-organisation deployment names its own
+  m365:
+    client_id: secret:mn-m365-client-id
+    client_secret: secret:mn-m365-client-secret
+    delta_folder: allitems
+    default_tenant: common
 
   authentication:
     session_timeout: 25 # minutes

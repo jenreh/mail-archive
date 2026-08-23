@@ -384,12 +384,16 @@ def _optional(payload: Mapping[str, Any], key: str) -> str | None:
 def _count(value: object) -> int | None:
     """A Graph counter as an ``int``, or ``None`` when it is neither.
 
-    ``@odata.count`` only appears when a caller asked for ``$count``, which
-    this adapter does not: a count over a large mailbox is a query Graph itself
-    warns is expensive, and the progress row already reports a running maximum
-    against what it has processed. It is read anyway because reading it costs a
-    line and a deployment that adds the parameter should not have to change
-    this file to see the number.
+    ``@odata.count`` only appears when a caller asked for ``$count``, and the
+    full walk in :meth:`~mailarc_m365.source.source.M365Source.list_messages`
+    does — it is the mailbox size the progress bar divides by. A delta cannot
+    ask (``messages/delta`` takes no ``$count``), which is why
+    :func:`delta_page` counts its own references instead.
+
+    ``None`` for anything that is not a number, including a page that carries
+    no count at all: the engine reads that as "keep the estimate you have",
+    which is the right answer for a ``nextLink`` Graph chose not to repeat the
+    count on.
     """
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         return None

@@ -125,35 +125,15 @@ class ImapClient:
         """The credentials this connection speaks with. Nothing rotates them."""
         return self._credentials
 
-    @property
-    def folder(self) -> str:
-        """The one folder this account syncs, as the credential names it."""
-        return self._credentials.folder
-
-    async def select(self) -> FolderState:
-        """Re-read ``UIDVALIDITY``, ``UIDNEXT`` and the message count.
+    async def select(self, folder: str) -> FolderState:
+        """``EXAMINE`` *folder* and read back ``UIDVALIDITY`` and ``UIDNEXT``.
 
         A round trip every time, deliberately. The two numbers it brings back
         are what the cursor is made of, and a cached ``UIDNEXT`` is a watermark
         that sits in front of mail that has since arrived — the one direction
         §7.4 says a watermark may never err in.
         """
-        return await self._run(self._select)
-
-    async def current_folder(self) -> FolderState:
-        """The freshest state this connection has seen, without a round trip.
-
-        For :meth:`~mailarc_imap.source.source.ImapSource.fetch_raw`, which has
-        to know the generation of the UID space it is fetching from but is
-        called eight times per page. Every listing refreshes it through
-        :meth:`select`, so the value is at most one page old — and a
-        ``UIDVALIDITY`` that changes inside one page is a mailbox being rebuilt
-        under a running import, which the next listing turns into a
-        :class:`~mailarc_core.mail.errors.MailCursorExpired` anyway.
-        """
-        if self._state is not None:
-            return self._state
-        return await self.select()
+        return await self._run(lambda: self._select(folder))
 
     async def list_folders(self) -> tuple[FolderListing, ...]:
         """Every mailbox the account can see, as the server names them.
@@ -167,8 +147,8 @@ class ImapClient:
         """
         return await self._run(self._list_folders)
 
-    async def search_from(self, first_uid: int) -> tuple[int, ...]:
-        """Every UID in the selected folder at or above ``first_uid``, sorted.
+    async def search_from(self, folder: str, first_uid: int) -> tuple[int, ...]:
+        """Every UID in *folder* at or above ``first_uid``, sorted.
 
         The filter is not belt and braces. RFC 3501 §9 defines ``n:*`` as *the
         range between n and the largest UID in the mailbox*, and a range is
@@ -178,11 +158,20 @@ class ImapClient:
         handing the engine the last message forever, and the cursor would never
         move.
         """
-        uids = await self._run(lambda: self._search(first_uid))
+        uids = await self._run(lambda: self._search(folder, first_uid))
         return tuple(sorted(uid for uid in uids if uid >= first_uid))
 
-    async def fetch_body(self, uid: int) -> FetchedBody:
+    async def fetch_body(self, folder: str, uidvalidity: int, uid: int) -> FetchedBody:
         """The RFC 5322 bytes of one message, without marking it read.
+
+        Takes the folder and the generation it was listed under, and checks
+        both **inside the lock**, because that is the only place the check can
+        be true. The engine runs eight streams at once (§7.3) and all of them
+        share this one socket: a caller that selected a folder and then called
+        a bare ``fetch_body`` would be fetching from whichever folder the
+        *other* seven streams left selected, and the bytes of some other
+        message would be archived under this one's id. Passing the folder in
+        and re-selecting under the lock makes that unrepresentable.
 
         One command per message rather than one per batch. A single ``UID
         FETCH 1:100`` would be nine fewer round trips and would also
@@ -197,7 +186,7 @@ class ImapClient:
         untagged ``FETCH`` — and the meaning is the same as Gmail's 404 on a
         message: skip it, write it down, keep going.
         """
-        return await self._run(lambda: self._fetch(uid))
+        return await self._run(lambda: self._fetch(folder, uidvalidity, uid))
 
     async def aclose(self) -> None:
         """Log out and drop the connection. Safe to call twice (§7.1).
@@ -380,17 +369,17 @@ class ImapClient:
             return None
         return ssl.create_default_context(cafile=self._config.tls_ca_file)
 
-    def _select(self) -> FolderState:
-        """``EXAMINE`` the account's folder — read-only, so nothing is flagged.
+    def _select(self, folder: str) -> FolderState:
+        """``EXAMINE`` *folder* — read-only, so nothing is flagged.
 
         ``readonly=True`` sends ``EXAMINE`` instead of ``SELECT``. Both open the
         folder; only ``EXAMINE`` promises the server that this client will not
         change a flag, which for an archive is a promise worth making at the
         protocol level rather than by remembering not to.
         """
-        response = self._require_connection().select_folder(self.folder, readonly=True)
+        response = self._require_connection().select_folder(folder, readonly=True)
         state = FolderState(
-            folder=self.folder,
+            folder=folder,
             uidvalidity=_number(response, b"UIDVALIDITY"),
             uidnext=_number(response, b"UIDNEXT"),
             exists=_number(response, b"EXISTS", default=0),
@@ -409,24 +398,39 @@ class ImapClient:
             for flags, delimiter, name in rows
         )
 
-    def _selected(self) -> None:
-        """Open the folder if this connection has not opened it yet.
+    def _selected(self, folder: str) -> FolderState:
+        """Make *folder* the selected one, and say what it looks like now.
 
         ``UID SEARCH`` and ``UID FETCH`` act on the selected folder, so they
-        cannot run before one is. Doing it here rather than in :meth:`_connect`
-        keeps the login from spending a round trip a caller that only wants the
-        folder list would never use — and keeps :meth:`select` the one place
-        that deliberately re-reads the state.
-        """
-        if self._state is None:
-            self._select()
+        cannot run before one is. A round trip only when the folder actually
+        changes: a page of two hundred UIDs is one folder, so a walk pays one
+        ``EXAMINE`` per page and not one per message.
 
-    def _search(self, first_uid: int) -> Sequence[int]:
-        self._selected()
+        Doing it here rather than in :meth:`_connect` keeps the login from
+        spending a round trip a caller that only wants the folder list would
+        never use.
+        """
+        if self._state is None or self._state.folder != folder:
+            return self._select(folder)
+        return self._state
+
+    def _search(self, folder: str, first_uid: int) -> Sequence[int]:
+        self._selected(folder)
         return self._require_connection().search([SEARCH_UID, f"{first_uid}:*"])
 
-    def _fetch(self, uid: int) -> FetchedBody:
-        self._selected()
+    def _fetch(self, folder: str, uidvalidity: int, uid: int) -> FetchedBody:
+        state = self._selected(folder)
+        if state.uidvalidity != uidvalidity:
+            # The folder was renumbered between the listing and this fetch, so
+            # this UID now belongs to a different message. Fetching anyway
+            # would file some other message's bytes under this one's id — the
+            # one failure in this component no later run could detect or
+            # repair, because the ledger would record it as archived.
+            raise MailPermanentError(
+                f"{folder} was renumbered mid-run: UID {uid} was listed under "
+                f"UIDVALIDITY {uidvalidity}, the folder is now at "
+                f"{state.uidvalidity}"
+            )
         response = self._require_connection().fetch([uid], [BODY_PEEK, MESSAGE_SIZE])
         entry = response.get(uid)
         if entry is None:
@@ -434,7 +438,7 @@ class ImapClient:
             # deleted between the listing and now. The server never says so
             # outright, and the meaning is Gmail's 404 on a message.
             raise MailPermanentError(
-                f"UID {uid} is no longer in {self.folder} on {self._credentials.host}"
+                f"UID {uid} is no longer in {folder} on {self._credentials.host}"
             )
         raw = entry.get(BODY_RESPONSE)
         if not isinstance(raw, bytes):
@@ -443,9 +447,7 @@ class ImapClient:
             # it is the same decision as a message that is gone — but a
             # different sentence, because the two are worth telling apart in a
             # `mail_failed_messages` row.
-            raise MailPermanentError(
-                f"UID {uid} in {self.folder} came back without a body"
-            )
+            raise MailPermanentError(f"UID {uid} in {folder} came back without a body")
         size = entry.get(MESSAGE_SIZE)
         return FetchedBody(
             uid=uid, raw=raw, size=size if isinstance(size, int) else None

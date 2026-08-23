@@ -76,6 +76,46 @@ synchronisable folder would hand the user a name that answers ``SELECT`` with
 ``NO``.
 """
 
+EXCLUDED_FLAGS = (rb"\Junk", rb"\Trash")
+"""RFC 6154 SPECIAL-USE flags for the two folders this archive does not keep.
+
+Spam was never the user's mail and a deleted message is one they threw away;
+archiving either turns a record of a mailbox into a record of everything that
+ever touched it. Drafts and Sent are deliberately *not* here — a draft is
+something the user wrote and Sent is half of every conversation.
+
+The flags are authoritative wherever the server sends them, which is the whole
+reason to prefer them over :data:`EXCLUDED_NAMES`: a folder someone made and
+called ``Junk`` to hold junk mail from one sender is a folder they want kept,
+and only the flag can tell it from the server's own spam bucket.
+"""
+
+EXCLUDED_NAMES = frozenset(
+    {
+        "junk",
+        "spam",
+        "bulk mail",
+        "trash",
+        "deleted messages",
+        "deleted items",
+        "[gmail]/spam",
+        "[gmail]/trash",
+        "[gmail]/bin",
+    }
+)
+"""Fallback names for servers that do not advertise SPECIAL-USE.
+
+Matched case-insensitively against the whole path, never against one segment:
+a *segment* match would exclude ``Kunden/Spam-Filter`` and a user folder called
+``Trash`` nested under a project. iCloud names its two ``Junk`` and ``Deleted
+Messages``; Gmail's sit under ``[Gmail]``; Exchange over IMAP says ``Deleted
+Items``.
+
+A fallback and not a rule: it runs only where the server said nothing, so a
+server that does advertise the flags can always overrule this list by staying
+silent about a folder it does not consider spam.
+"""
+
 
 class FolderListing(BaseModel):
     """One row of a ``LIST`` reply, before it becomes a label.
@@ -95,6 +135,35 @@ class FolderListing(BaseModel):
     def selectable(self) -> bool:
         """Whether ``SELECT`` on this name would work at all."""
         return not any(flag.lower() == NOSELECT_FLAG.lower() for flag in self.flags)
+
+    def excluded(self) -> bool:
+        """Whether this is the server's spam or deleted folder.
+
+        Flags first and names only as a fallback, because the two answer
+        different questions. ``\\Junk`` is the server stating which folder *is*
+        its spam bucket; a name is this adapter guessing from a string somebody
+        chose. Reading the name first would exclude a user's own ``Junk``
+        folder on a server that had already said which one it meant.
+        """
+        if any(
+            flag.lower() == excluded.lower()
+            for flag in self.flags
+            for excluded in EXCLUDED_FLAGS
+        ):
+            return True
+        return self.name.strip().lower() in EXCLUDED_NAMES
+
+    def syncable(self) -> bool:
+        """Whether a walk should import this folder's messages.
+
+        Not the same question as :meth:`selectable`, and the difference is what
+        :meth:`~mailarc_imap.source.source.ImapSource.list_labels` reports
+        against what
+        :meth:`~mailarc_imap.source.source.ImapSource.list_messages` walks. A
+        folder list describes the mailbox and names everything in it, spam and
+        trash included; the import decides what to keep, and drops those two.
+        """
+        return self.selectable() and not self.excluded()
 
 
 class FolderState(BaseModel):
@@ -156,12 +225,6 @@ IMAP_DESCRIPTOR = ProviderDescriptor(
             label="App-specific password",
             secret=True,
         ),
-        CredentialField(
-            name="folder",
-            label=f"Folder (Gmail: {GMAIL_ALL_MAIL})",
-            required=False,
-            placeholder=DEFAULT_FOLDER,
-        ),
     ),
     supports_incremental=True,
 )
@@ -174,26 +237,39 @@ the five are optional and fall back to :data:`IMAPS_PORT` and
 "I did not type anything here" and a person adding an iCloud mailbox should
 have to fill in three boxes rather than five.
 
-**One folder per account, and that is the answer to the duplication question.**
-An IMAP UID identifies a message inside one folder and inside one
-``UIDVALIDITY``, and nothing else: the same message in ``INBOX`` and in
-``Archive`` has two unrelated UIDs, and IMAP will not say they are one message.
-An adapter that walked every folder would therefore need a cursor per folder
-and would archive a Gmail mailbox roughly five times over — once per label —
-which is worse than archiving none of it. So the mailbox this account syncs is
-a *field*, a second folder is a second account, and the cursor stays the single
-``UIDVALIDITY``/``UIDNEXT`` pair §10 asks for. Gmail users point it at
-:data:`GMAIL_ALL_MAIL`, which is the folder Google maintains for exactly this.
+**The whole account, always — there is no folder to pick.** An earlier shape of
+this adapter made the folder a credential field and synced one per account. It
+was wrong about what a person means by "archive my mailbox": they mean the
+mailbox, not one drawer of it, and making them add an account row per folder
+turned a property of the protocol into a chore. So a walk covers every syncable
+folder and the field is gone. A row that still has one stored is ignored rather
+than rejected — the credential model drops unknown keys — so nothing has to be
+re-entered.
 
-That also settles ``\\Junk`` and ``\\Trash`` without a rule about them. Gmail's
-``messages.list`` excludes spam and trash by default and
-``GmailSource.list_messages`` explains why — an archive of a mailbox is what
-the user sees in it. Here nothing is imported from a folder the user did not
-name, so the exclusion is already in force and a second one would only stop
-somebody deliberately archiving their own spam folder.
-:meth:`~mailarc_imap.source.source.ImapSource.list_labels` still reports both,
+What made the old shape defensible is still true and is handled rather than
+avoided: an IMAP UID identifies a message inside one folder and one
+``UIDVALIDITY`` and nothing else, so the same mail in ``INBOX`` and in
+``Archive`` has two unrelated UIDs. That is why a ``provider_message_id``
+carries the folder (:class:`~mailarc_imap.source.mapping.MessageAddress`) and
+why the cursor carries a mark *per folder* rather than one pair. Two folders
+sharing a ``UIDVALIDITY`` therefore cannot collide in the ledger, which is the
+failure that would otherwise silently skip most of a mailbox.
+
+The duplication that remains is Gmail's alone and is a cost, not a defect.
+:data:`GMAIL_ALL_MAIL` holds every message and each label folder holds the same
+messages under different UIDs, so a Gmail account walked this way downloads a
+message once per label it carries. The graph is unharmed — ``MessageArchiver``
+resolves by ``canonical_id``, so it stays one node collecting several labels —
+but the bytes come down repeatedly. iCloud and ordinary mail hosts keep a
+message in one folder, so this is a Gmail-over-IMAP problem, and Gmail has a
+better route in ``mailarc-google``.
+
+``\\Junk`` and ``\\Trash`` are the one exclusion, and it now has to be stated
+because nothing else states it any more: spam was never the user's mail and a
+deleted message is one they threw away. See :data:`EXCLUDED_FLAGS`.
+:meth:`~mailarc_imap.source.source.ImapSource.list_labels` still reports them,
 because that method describes the mailbox rather than the import, and a folder
-list that silently omitted two names would be a list nobody could pick from.
+list that silently omitted two names would be a list nobody could trust.
 
 **The username's label carries a warning rather than a name**, and it is not
 decoration. ``mailarc_ui.accounts.state`` verifies a new mailbox by calling

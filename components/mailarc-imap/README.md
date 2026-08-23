@@ -17,21 +17,34 @@ so that `mailarc_google.source` and `mailarc_m365.source` look identical.
 
 | Module | What lives there |
 | --- | --- |
-| `model.py` | IMAP's own shapes — the port, the two well-known hosts, what `EXAMINE` reports — and `IMAP_DESCRIPTOR`, where the one-folder-per-account decision is argued |
+| `model.py` | IMAP's own shapes — the port, the two well-known hosts, what `EXAMINE` reports — and `IMAP_DESCRIPTOR`, where the whole-account walk and the spam/trash exclusion are argued |
 | `config.py` | `ImapConfig`: two timeouts, a page size, a certificate authority. Never an account, and never a host |
 | `credentials.py` | `ImapCredentials`: what fills `mail_credentials.secret`, and the parsing that accepts the account form's all-strings JSON without quoting a password back |
-| `client.py` | The blocking IMAP conversation — one connection, one selected folder, one lock — and the only place a socket or a `NO` becomes one of the four errors |
+| `client.py` | The blocking IMAP conversation — one connection, one lock, and the folder named on every command — and the only place a socket or a `NO` becomes one of the four errors |
 | `mapping.py` | IMAP's numbers turned into domain value objects. The cursor and the message id are minted and read here and nowhere else |
 | `source.py` | `ImapSource`: the six port methods, made of the rest |
 
 ## The three decisions worth knowing before reading the code
 
-**One folder per account.** An IMAP UID identifies a message inside one folder
-and one `UIDVALIDITY`, and nothing else — the same message in `INBOX` and in
-`Archive` has two unrelated UIDs and IMAP will not say they are one message. So
-the folder is a credential field, a second folder is a second account, and Gmail
-users point it at `[Gmail]/All Mail`, the folder Google maintains for exactly
-this. Walking every folder instead would archive a Gmail mailbox once per label.
+**The whole account, always.** A walk covers every folder the server offers and
+there is no folder field. What made a folder field defensible is still true and
+is handled rather than avoided: an IMAP UID identifies a message inside one
+folder and one `UIDVALIDITY` and nothing else, so the same mail in `INBOX` and in
+`Archive` has two unrelated UIDs. That is why a `provider_message_id` carries the
+folder as well as the generation, and why the cursor holds a mark *per folder*
+rather than one pair — two folders sharing a `UIDVALIDITY` would otherwise
+collide in the ledger and most of a mailbox would be skipped as already archived.
+
+Spam and trash are the one exclusion: `\Junk` and `\Trash` where the server
+sends them, a name list where it does not. `list_labels` still reports both,
+because it describes the mailbox rather than the import.
+
+The cost that remains is Gmail's alone. `[Gmail]/All Mail` holds every message
+and each label folder holds the same messages under different UIDs, so a Gmail
+account walked over IMAP downloads a message once per label. The graph is
+unharmed — `MessageArchiver` resolves by `canonical_id`, so it stays one node
+collecting several labels — but the bytes come down repeatedly. `mailarc-google`
+is the better route for Gmail.
 
 **The cursor is `UIDVALIDITY:next-UID`,** in both kinds, minted and read in
 `mapping.py`. A stored `UIDVALIDITY` that no longer matches the folder's means

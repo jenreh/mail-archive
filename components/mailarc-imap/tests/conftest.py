@@ -64,7 +64,6 @@ def credentials(server: FakeImapServer) -> ImapCredentials:
         port=server.port,
         username=server.username,
         password=server.password,
-        folder="INBOX",
     )
 
 

@@ -42,6 +42,9 @@ from mailarc_imap.source import (
 )
 from mailarc_imap.source.client import BODY_PEEK, BODY_RESPONSE
 
+INBOX = "INBOX"
+"""The folder every test here works in; the fake server serves it by default."""
+
 
 @pytest.fixture
 async def client(
@@ -64,7 +67,7 @@ class TestTheHappyPath:
         server.mailbox().uidvalidity = 4711
         server.mailbox().add(7, eml(7))
 
-        state = await client.select()
+        state = await client.select(INBOX)
 
         assert state.uidvalidity == 4711
         assert state.uidnext == 8
@@ -74,7 +77,7 @@ class TestTheHappyPath:
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
         """``EXAMINE`` is the protocol-level promise that no flag will change."""
-        await client.select()
+        await client.select(INBOX)
 
         assert any("EXAMINE" in command for command in server.commands)
         assert not any("SELECT" in command for command in server.commands)
@@ -82,8 +85,8 @@ class TestTheHappyPath:
     async def test_it_connects_only_once_for_many_commands(
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
-        await client.select()
-        await client.select()
+        await client.select(INBOX)
+        await client.select(INBOX)
         await client.list_folders()
 
         assert sum("LOGIN" in command for command in server.commands) == 1
@@ -111,17 +114,17 @@ class TestTheHappyPath:
     ) -> None:
         for uid in (3, 9, 14):
             server.mailbox().add(uid, eml(uid))
-        await client.select()
+        await client.select(INBOX)
 
-        assert await client.search_from(1) == (3, 9, 14)
+        assert await client.search_from(INBOX, 1) == (3, 9, 14)
 
     async def test_a_fetch_brings_back_the_bytes_and_the_size(
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
         server.mailbox().add(5, eml(5))
-        await client.select()
+        await client.select(INBOX)
 
-        body = await client.fetch_body(5)
+        body = await client.fetch_body(INBOX, server.mailbox().uidvalidity, 5)
 
         assert body.raw == eml(5)
         assert body.size == len(eml(5))
@@ -138,29 +141,54 @@ class TestTheHappyPath:
         """
         server.mailbox().add(3, eml(3))
 
-        body = await client.fetch_body(3)
+        body = await client.fetch_body(INBOX, server.mailbox().uidvalidity, 3)
 
         assert body.raw == eml(3)
 
-    async def test_the_current_folder_opens_one_if_nothing_has_yet(
+    async def test_a_second_command_on_the_same_folder_does_not_re_examine(
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
-        """``fetch_raw`` asks for it before any listing has run."""
-        server.mailbox().uidvalidity = 99
+        """Eight fetch streams share one socket; re-examining per message would
+        cost a round trip each."""
+        server.mailbox().add(1, eml(1))
+        await client.select(INBOX)
+        before = len([c for c in server.commands if "EXAMINE" in c])
 
-        assert (await client.current_folder()).uidvalidity == 99
+        await client.search_from(INBOX, 1)
+        await client.fetch_body(INBOX, server.mailbox().uidvalidity, 1)
 
-    async def test_the_current_folder_costs_no_round_trip_afterwards(
+        after = len([c for c in server.commands if "EXAMINE" in c])
+        assert after == before
+
+    async def test_naming_another_folder_re_examines(
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
-        """Eight fetch streams a page would otherwise re-examine the folder eight times."""
-        await client.select()
-        before = len(server.commands)
+        """The correctness half of the same mechanism.
 
-        await client.current_folder()
-        await client.current_folder()
+        The engine runs eight streams over one socket, so a fetch that trusted
+        whichever folder happened to be selected would hand back another
+        folder's message under this one's id.
+        """
+        server.mailbox("Reisen").add(4, eml(4))
+        await client.select(INBOX)
+        before = len([c for c in server.commands if "EXAMINE" in c])
 
-        assert len(server.commands) == before
+        body = await client.fetch_body(
+            "Reisen", server.mailbox("Reisen").uidvalidity, 4
+        )
+
+        assert body.raw == eml(4)
+        assert len([c for c in server.commands if "EXAMINE" in c]) == before + 1
+
+    async def test_a_uid_listed_under_another_generation_is_permanent(
+        self, client: ImapClient, server: FakeImapServer
+    ) -> None:
+        """A renumbered folder mid-run: fetching anyway would archive some other
+        message's bytes under this one's id, which no later run could repair."""
+        server.mailbox().add(1, eml(1))
+
+        with pytest.raises(MailPermanentError, match="renumbered mid-run"):
+            await client.fetch_body(INBOX, server.mailbox().uidvalidity + 1, 1)
 
     async def test_a_folder_with_no_uidvalidity_cannot_be_walked(
         self, client: ImapClient, server: FakeImapServer
@@ -169,7 +197,7 @@ class TestTheHappyPath:
         server.omit_uidvalidity = True
 
         with pytest.raises(MailPermanentError, match="did not report UIDVALIDITY"):
-            await client.select()
+            await client.select(INBOX)
 
 
 class TestTheUnreadMailIsNotTouched:
@@ -179,8 +207,8 @@ class TestTheUnreadMailIsNotTouched:
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
         server.mailbox().add(1, eml(1))
-        await client.select()
-        await client.fetch_body(1)
+        await client.select(INBOX)
+        await client.fetch_body(INBOX, server.mailbox().uidvalidity, 1)
 
         fetches = [c for c in server.commands if "FETCH" in c]
         assert fetches
@@ -201,9 +229,9 @@ class TestTheSearchRangeQuirk:
     ) -> None:
         """The fake reproduces what every real server does. Read the next test."""
         server.mailbox().add(3, eml(3))
-        await client.select()
+        await client.select(INBOX)
 
-        await client.search_from(5)
+        await client.search_from(INBOX, 5)
 
         assert any("UID SEARCH UID 5:*" in command for command in server.commands)
 
@@ -212,18 +240,18 @@ class TestTheSearchRangeQuirk:
     ) -> None:
         """Without this, a delta at the top of a quiet mailbox never advances."""
         server.mailbox().add(3, eml(3))
-        await client.select()
+        await client.select(INBOX)
 
-        assert await client.search_from(5) == ()
+        assert await client.search_from(INBOX, 5) == ()
 
     async def test_results_come_back_sorted(
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
         for uid in (12, 2, 7):
             server.mailbox().add(uid, eml(uid))
-        await client.select()
+        await client.select(INBOX)
 
-        assert await client.search_from(1) == (2, 7, 12)
+        assert await client.search_from(INBOX, 1) == (2, 7, 12)
 
 
 class TestTheErrorTaxonomy:
@@ -235,7 +263,7 @@ class TestTheErrorTaxonomy:
         server.reject_login = True
 
         with pytest.raises(MailAuthError):
-            await client.select()
+            await client.select(INBOX)
 
     async def test_a_wrong_password_is_an_auth_error(
         self, config: ImapConfig, server: FakeImapServer
@@ -249,7 +277,7 @@ class TestTheErrorTaxonomy:
         built = ImapClient(wrong, config)
 
         with pytest.raises(MailAuthError):
-            await built.select()
+            await built.select(INBOX)
         await built.aclose()
 
     async def test_a_dropped_connection_is_transient(
@@ -259,7 +287,7 @@ class TestTheErrorTaxonomy:
         server.drop_after = 3
 
         with pytest.raises(MailTransientError):
-            await client.select()
+            await client.select(INBOX)
 
     async def test_a_connection_dropped_during_login_is_transient_too(
         self, client: ImapClient, server: FakeImapServer
@@ -278,7 +306,7 @@ class TestTheErrorTaxonomy:
         server.drop_after = 2
 
         with pytest.raises(MailTransientError) as raised:
-            await client.select()
+            await client.select(INBOX)
 
         assert not isinstance(raised.value, MailAuthError)
         assert "logging in" in str(raised.value)
@@ -316,7 +344,7 @@ class TestTheErrorTaxonomy:
         built = ImapClient(nowhere, config)
 
         with pytest.raises(MailTransientError):
-            await built.select()
+            await built.select(INBOX)
         await built.aclose()
 
     async def test_a_timeout_is_transient(self, config: ImapConfig) -> None:
@@ -334,7 +362,7 @@ class TestTheErrorTaxonomy:
 
         try:
             with pytest.raises(MailTransientError):
-                await built.select()
+                await built.select(INBOX)
         finally:
             await built.aclose()
             listener.close()
@@ -355,7 +383,7 @@ class TestTheErrorTaxonomy:
 
         try:
             with pytest.raises(MailTransientError) as raised:
-                await built.select()
+                await built.select(INBOX)
             assert isinstance(raised.value.__cause__, ssl.SSLError)
         finally:
             await built.aclose()
@@ -371,7 +399,7 @@ class TestTheErrorTaxonomy:
         )
 
         with pytest.raises(MailTransientError) as raised:
-            await built.select()
+            await built.select(INBOX)
         await built.aclose()
 
         assert isinstance(raised.value.__cause__, ssl.SSLError)
@@ -386,13 +414,12 @@ class TestTheErrorTaxonomy:
                 port=server.port,
                 username=server.username,
                 password=server.password,
-                folder="No Such Folder",
             ),
             config,
         )
 
         with pytest.raises(MailPermanentError):
-            await built.select()
+            await built.select("No Such Folder")
         await built.aclose()
 
     async def test_a_message_the_server_will_not_hand_over_is_permanent(
@@ -401,10 +428,10 @@ class TestTheErrorTaxonomy:
         """Listed, fetched, and answered with no body. Asking again changes nothing."""
         server.mailbox().add(4, eml(4))
         server.answer_without_body = True
-        await client.select()
+        await client.select(INBOX)
 
         with pytest.raises(MailPermanentError, match="came back without a body"):
-            await client.fetch_body(4)
+            await client.fetch_body(INBOX, server.mailbox().uidvalidity, 4)
 
     async def test_no_transient_error_invents_a_retry_after(
         self, client: ImapClient, server: FakeImapServer
@@ -419,7 +446,7 @@ class TestTheErrorTaxonomy:
         server.drop_after = 3
 
         with pytest.raises(MailTransientError) as raised:
-            await client.select()
+            await client.select(INBOX)
 
         assert raised.value.retry_after is None
 
@@ -428,11 +455,11 @@ class TestTheErrorTaxonomy:
     ) -> None:
         """Listed a moment ago, deleted since. The server simply answers nothing."""
         server.mailbox().add(4, eml(4))
-        await client.select()
+        await client.select(INBOX)
         del server.mailbox().messages[4]
 
         with pytest.raises(MailPermanentError, match="no longer in INBOX"):
-            await client.fetch_body(4)
+            await client.fetch_body(INBOX, server.mailbox().uidvalidity, 4)
 
 
 class TestClosing:
@@ -441,13 +468,13 @@ class TestClosing:
     async def test_it_logs_out(
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
-        await client.select()
+        await client.select(INBOX)
         await client.aclose()
 
         assert any("LOGOUT" in command for command in server.commands)
 
     async def test_twice_is_safe(self, client: ImapClient) -> None:
-        await client.select()
+        await client.select(INBOX)
         await client.aclose()
         await client.aclose()
 
@@ -466,22 +493,22 @@ class TestClosing:
         thousand jobs holds a thousand file descriptors.
         """
         server.refuse_logout = True
-        await client.select()
+        await client.select(INBOX)
 
         await client.aclose()
 
         with pytest.raises(MailPermanentError, match="already closed"):
-            await client.select()
+            await client.select(INBOX)
 
     async def test_a_closed_client_does_not_silently_reconnect(
         self, client: ImapClient, server: FakeImapServer
     ) -> None:
-        await client.select()
+        await client.select(INBOX)
         await client.aclose()
         before = len(server.commands)
 
         with pytest.raises(MailPermanentError, match="already closed"):
-            await client.select()
+            await client.select(INBOX)
 
         assert len(server.commands) == before
 

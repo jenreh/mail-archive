@@ -16,8 +16,6 @@ import pytest
 
 from mailarc_core.mail.model import MailProvider, ProviderDescriptor
 from mailarc_imap.source import (
-    DEFAULT_FOLDER,
-    GMAIL_ALL_MAIL,
     GMAIL_IMAP_HOST,
     ICLOUD_IMAP_HOST,
     IMAP_DESCRIPTOR,
@@ -48,7 +46,7 @@ class TestTheDescriptor:
 
         assert secret == {"password"}
 
-    def test_the_two_fields_with_defaults_are_the_optional_ones(self) -> None:
+    def test_the_port_is_the_one_optional_field(self) -> None:
         """``required=False`` is what lets the form send ``""`` and mean "default"."""
         optional = {
             field.name
@@ -56,7 +54,7 @@ class TestTheDescriptor:
             if not field.required
         }
 
-        assert optional == {"port", "folder"}
+        assert optional == {"port"}
 
     def test_the_placeholders_name_the_defaults(self) -> None:
         placeholders = {
@@ -64,18 +62,20 @@ class TestTheDescriptor:
         }
 
         assert placeholders["port"] == str(IMAPS_PORT)
-        assert placeholders["folder"] == DEFAULT_FOLDER
         assert placeholders["host"] == ICLOUD_IMAP_HOST
 
-    def test_the_gmail_folder_is_named_where_a_user_will_read_it(self) -> None:
-        """Pointing Gmail at ``INBOX`` archives the inbox and nothing else."""
-        folder = next(
-            field
-            for field in IMAP_DESCRIPTOR.credential_fields
-            if field.name == "folder"
-        )
+    def test_no_field_asks_for_a_folder(self) -> None:
+        """A walk covers the whole account, so there is nothing to pick.
 
-        assert GMAIL_ALL_MAIL in folder.label
+        The inverse of a test that used to check the folder field named
+        ``[Gmail]/All Mail`` in its label. Kept as an assertion rather than
+        deleted, because re-adding the field is exactly the regression that
+        would quietly go back to importing one drawer of a mailbox.
+        """
+        declared = {field.name for field in IMAP_DESCRIPTOR.credential_fields}
+
+        assert "folder" not in declared
+        assert declared == {"host", "port", "username", "password"}
 
     def test_the_username_field_warns_that_it_must_be_the_account_address(
         self,
@@ -119,6 +119,59 @@ class TestTheFolderListing:
         self, flags: tuple[bytes, ...], selectable: bool
     ) -> None:
         assert FolderListing(name="x", flags=flags).selectable() is selectable
+
+    @pytest.mark.parametrize(
+        ("name", "flags", "excluded"),
+        [
+            # The flag is the server saying which folder IS its spam bucket,
+            # and it wins whatever the name happens to be.
+            ("Aufbewahrung", (rb"\Junk",), True),
+            ("Aufbewahrung", (rb"\Trash",), True),
+            ("Aufbewahrung", (rb"\junk",), True),
+            # ... and the name is only consulted when the server said nothing.
+            ("Junk", (), True),
+            ("Deleted Messages", (), True),
+            ("deleted items", (), True),
+            ("[Gmail]/Spam", (), True),
+            ("[Gmail]/Trash", (), True),
+            (" Junk ", (), True),
+            # Neither flagged nor named: kept.
+            ("INBOX", (), False),
+            ("Reisen/Rechnungen", (), False),
+            ("Archive", (rb"\Archive",), False),
+            ("Sent Messages", (rb"\Sent",), False),
+            ("Drafts", (rb"\Drafts",), False),
+        ],
+    )
+    def test_spam_and_deleted_are_the_only_folders_dropped(
+        self, name: str, flags: tuple[bytes, ...], excluded: bool
+    ) -> None:
+        """Drafts and Sent stay: a draft is the user's writing, Sent is half of
+        every conversation."""
+        assert FolderListing(name=name, flags=flags).excluded() is excluded
+
+    def test_a_user_folder_called_junk_below_another_one_is_kept(self) -> None:
+        """The name list matches a whole path and never one segment.
+
+        Somebody who files a sender's marketing under ``Kunden/Junk`` meant to
+        keep it, and a segment match would silently drop the folder while the
+        account reported a clean import.
+        """
+        assert FolderListing(name="Kunden/Junk").excluded() is False
+
+    @pytest.mark.parametrize(
+        ("name", "flags", "syncable"),
+        [
+            ("INBOX", (), True),
+            ("Junk", (), False),
+            ("[Gmail]", (rb"\Noselect",), False),
+            ("Reisen", (rb"\HasChildren",), True),
+        ],
+    )
+    def test_a_walk_imports_what_is_selectable_and_not_excluded(
+        self, name: str, flags: tuple[bytes, ...], syncable: bool
+    ) -> None:
+        assert FolderListing(name=name, flags=flags).syncable() is syncable
 
 
 class TestTheConfig:

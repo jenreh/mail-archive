@@ -11,7 +11,7 @@ address, a credential that opens it, and a status.
 | --- | --- | --- |
 | **Folder of `.eml` files** | A directory path. Anything you exported from Thunderbird, `mbox` split into files, a maildir. | No — every run re-lists |
 | **Gmail** | An OAuth client of your own, once per installation. Then just your address. | Yes |
-| **IMAP** (iCloud, Gmail app passwords, any mail host) | A server, a port, a username, an app password and one folder. | Yes |
+| **IMAP** (iCloud, Gmail app passwords, any mail host) | A server, a port, a username and an app password. | Yes |
 | **Microsoft 365** | An Entra app registration, once per installation. Then a sign-in, or a tenant and a mailbox. | Yes |
 
 All four appear in the account form in that order, and the form itself is
@@ -125,24 +125,36 @@ authentication is on. Either way, an app password can be revoked on its own
 without touching the rest of your account, which is exactly what you want a mail
 archive holding.
 
-### One account is one folder
+### The whole account is imported
 
-This is the surprising part, and it is not a limitation that can be lifted.
+Every folder your server offers is archived, and there is nothing to pick. Each
+message is tagged with the folder it came from, whole — a message in
+`Reisen/Rechnungen` gets the tag `Reisen/Rechnungen`, the same way a nested
+Gmail label is stored.
 
-An IMAP UID identifies a message *inside one folder*: the same mail sitting in
-`INBOX` and in `Archive` has two unrelated UIDs, and IMAP offers no way to say
-they are the same message. So an adapter that walked every folder would archive a
-Gmail mailbox roughly once per label. Instead the folder is a field, and **a
-second folder is a second account** — two accounts showing the same address in
-the list is expected.
+**Spam and deleted mail are the exception and are never imported.** The archive
+uses the server's own marking for those two folders where it offers one (the
+`\Junk` and `\Trash` flags), and falls back to matching the usual names —
+`Junk`, `Spam`, `Bulk Mail`, `Trash`, `Deleted Messages`, `Deleted Items` —
+where it does not. A folder *you* made and nested somewhere, such as
+`Kunden/Junk`, is kept: only the server's own spam and trash folders are
+dropped. Drafts and Sent are kept too — a draft is something you wrote, and Sent
+is half of every conversation.
 
-On Gmail, point it at `[Gmail]/All Mail`. That is the one folder Google maintains
-which holds every message exactly once; `INBOX` there would archive your inbox
-and nothing else.
+The folder list shown on the account is everything the server has, spam and
+trash included. That describes your mailbox; it is not a claim that all of it is
+archived.
 
-Spam and Trash take care of themselves: nothing is imported from a folder you did
-not name. The folder list on the account shows everything the server has, because
-that is the list you pick from — not a promise that all of it is archived.
+::: tip Gmail over IMAP costs more than it should
+Gmail's per-label folders are *views*: a message labelled `Reisen` exists in
+`[Gmail]/All Mail` and in `Reisen`, with a different UID in each, and IMAP
+offers no way to say they are one message. Archiving a Gmail account this way
+therefore downloads each message once per label it carries. Your archive is
+unaffected — the message is recognised by its Message-ID and stays a single
+entry collecting several tags — but the transfer is larger than it needs to be.
+Connect Gmail as a **Gmail** account instead where you can; it has a real
+incremental sync and stores no password.
+:::
 
 ::: warning If your mail host's usernames are not email addresses
 After you press Connect the account is asked whose mailbox it is, and the answer
@@ -219,7 +231,7 @@ by the next full import instead.
 
 `mail_credentials.secret` is a single encrypted column, and its contents are
 deliberately structureless: each provider serialises its own model into it —
-Gmail a refresh token, IMAP a host, a username, a password and a folder,
+Gmail a refresh token, IMAP a host, a username and a password,
 Microsoft 365 either a refresh token or a tenant and a mailbox. That is why
 adding a provider needs no schema migration.
 

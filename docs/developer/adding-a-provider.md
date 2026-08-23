@@ -600,13 +600,28 @@ Where this page had guessed, and what turned out to be true:
 Two things that were **not** anticipated at all and are worth knowing before the
 third provider:
 
-**One IMAP account is one folder.** An IMAP UID identifies a message inside one
-folder and one `UIDVALIDITY` and nothing else, so an adapter walking every folder
-would need a cursor per folder and would archive a Gmail mailbox once per label.
-The folder is therefore a credential field and a second folder is a second
-account — which means two accounts can legitimately show the same address in the
-account list. That is a product consequence, not a bug, and the accounts page
-will eventually want to say something about it.
+**An IMAP cursor is a mark per folder, not one pair.** This was got wrong first
+and is worth stating as the corrected version. An IMAP UID identifies a message
+inside one folder and one `UIDVALIDITY` and nothing else, so the first shape of
+this adapter made the folder a credential field and synced one folder per
+account. That is a defensible reading of the protocol and the wrong reading of
+the product — a person asking to archive their mailbox means the mailbox, not
+one drawer of it.
+
+Walking the whole account instead costs two things and neither is in the engine.
+The `provider_message_id` has to carry the folder as well as the generation, or
+two folders sharing a `UIDVALIDITY` collide in the archived-messages ledger and
+most of the mailbox is skipped as already archived — silent, permanent, reported
+as success. And `SyncCursor.token` has to hold a mark per folder plus the folder
+in progress, which no pair of decimals can carry; `mailarc-imap` puts JSON in
+there and versions it. Both fit inside the port untouched, which is the point:
+the token being opaque is what made a wrong guess about IMAP recoverable without
+a core change.
+
+The duplication the folder field was avoiding is real but is Gmail's alone:
+`[Gmail]/All Mail` plus per-label folders means one download per label. The graph
+is unharmed because `MessageArchiver` resolves by `canonical_id`. iCloud and
+ordinary hosts keep a message in one folder.
 
 **Graph has no mailbox-wide message delta.** Every documented `messages/delta`
 URL carries a `mailFolders/{id}` segment, so `M365Config.delta_folder` exists and

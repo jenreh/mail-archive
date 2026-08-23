@@ -23,7 +23,9 @@ raised are :class:`~mailarc_core.mail.errors.MailPermanentError` for a
 reference this adapter did not write and cannot read, and never a silent skip.
 """
 
+import json
 import logging
+from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
@@ -45,13 +47,21 @@ from mailarc_imap.source.model import FetchedBody, FolderListing, FolderState
 
 logger = logging.getLogger(__name__)
 
-CURSOR_SEPARATOR = ":"
-"""Joins ``UIDVALIDITY`` to the next UID, and appears in neither half.
+CURSOR_VERSION = 2
+"""The shape of the token this adapter writes today.
 
-Both halves are decimal, so a colon belongs to neither alphabet and cannot show
-up inside one. It is the same character IMAP itself uses for a UID range, which
-is a coincidence worth naming: the token reads like ``1738:4201`` and means
-"generation 1738, resume at UID 4201", not a range.
+Version 1 was ``"<uidvalidity>:<next_uid>"`` — one folder, because an account
+synced one folder. A walk now covers the whole mailbox and needs a mark per
+folder plus the name of the one in progress, which no pair of decimals can
+carry, so the token is JSON and says which version it is.
+
+A version 1 token still in a checkpoint row reads back as ``None``, which is
+the same answer :func:`read_cursor` gives for any token it cannot use: a full
+walk starts from the top and a delta raises
+:class:`~mailarc_core.mail.errors.MailCursorExpired`, which the engine answers
+with a full walk. Either way the ledger filters the re-listing down to nothing
+re-fetched, so an account upgraded across this change costs one extra walk and
+loses nothing.
 """
 
 ID_SEPARATOR = ":"
@@ -74,6 +84,26 @@ class CursorPosition(BaseModel):
 
     uidvalidity: int
     next_uid: int
+
+
+class WalkPosition(BaseModel):
+    """Where a walk over a whole mailbox has got to.
+
+    ``folder`` is the one being listed right now; ``marks`` is what every
+    folder the walk has touched was left at. Both are needed and neither
+    implies the other: without the folder a resume would not know where to
+    carry on, and without the marks a resumed full walk would restart every
+    folder it had already finished.
+
+    A folder absent from ``marks`` has simply not been reached yet, and starts
+    at :data:`FIRST_UID`. That is what makes a folder created mid-walk harmless
+    — it joins the ordering, gets no mark, and is walked from the top.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    folder: str
+    marks: dict[str, CursorPosition] = {}
 
 
 class MessageAddress(BaseModel):
@@ -162,25 +192,43 @@ def folder_label(listing: FolderListing) -> LabelInfo:
     )
 
 
-def cursor(uidvalidity: int, next_uid: int, kind: SyncCursorKind) -> SyncCursor:
-    """The two numbers a resume needs, sealed into one opaque token.
+def cursor(position: WalkPosition, kind: SyncCursorKind) -> SyncCursor:
+    """A whole walk's place in a mailbox, sealed into one opaque token.
 
-    ``next_uid`` always means the same thing in both kinds — *the first UID
-    this run has not looked at yet* — which is what lets one format serve a
-    full walk and a delta. The kind is still carried, because it is the only
-    thing that can tell
-    :meth:`~mailarc_imap.source.source.ImapSource.list_messages` what a
-    mismatched ``uidvalidity`` should do about itself.
+    Two things go in, and the second is what the single-folder token could not
+    carry: the folder being walked *now*, and the mark of every folder this
+    walk has an opinion about. ``next_uid`` means the same in both kinds —
+    *the first UID this run has not looked at yet* — which is what lets one
+    format serve a full walk and a delta.
+
+    The kind rides on the :class:`~mailarc_core.mail.model.SyncCursor` rather
+    than in the token because the engine sets it, and it is the only thing that
+    can tell :meth:`~mailarc_imap.source.source.ImapSource.list_messages` what
+    a mismatched ``uidvalidity`` should do about itself.
+
+    JSON with sorted keys, so the same position always produces the same
+    string: a checkpoint row that rewrites itself every page for no reason is
+    a write nobody asked for and a diff nobody can read.
     """
     return SyncCursor(
         provider=MailProvider.IMAP,
-        token=f"{uidvalidity}{CURSOR_SEPARATOR}{next_uid}",
+        token=json.dumps(
+            {
+                "v": CURSOR_VERSION,
+                "at": position.folder,
+                "marks": {
+                    name: [mark.uidvalidity, mark.next_uid]
+                    for name, mark in sorted(position.marks.items())
+                },
+            },
+            sort_keys=True,
+        ),
         kind=kind,
     )
 
 
-def read_cursor(stored: SyncCursor) -> CursorPosition | None:
-    """The two numbers back out of one token, or ``None`` for a token that is not one.
+def read_cursor(stored: SyncCursor) -> WalkPosition | None:
+    """A walk's position back out of one token, or ``None`` if it is not one.
 
     ``None`` rather than an exception, because the caller has to make the same
     decision for an unreadable cursor as for one from a different
@@ -190,22 +238,39 @@ def read_cursor(stored: SyncCursor) -> CursorPosition | None:
     knows which of the two it is doing. Raising here would put half of it in
     this module and half in that one.
 
-    A token that is not this provider's is the case worth naming: cursors are
-    stored per account in a column no migration has ever touched, so a mailbox
-    that was a Gmail account before somebody re-added it as IMAP has a
-    ``historyId`` sitting where this expects a pair.
+    Three kinds of token arrive here and all three are ordinary rather than
+    exceptional: one this version wrote, a version 1 pair from before the walk
+    covered the whole account (:data:`CURSOR_VERSION`), and one belonging to
+    another provider entirely — cursors live in a column no migration has
+    touched, so a mailbox that was a Gmail account before somebody re-added it
+    as IMAP has a ``historyId`` sitting where this expects a walk.
     """
-    generation, separator, following = stored.token.partition(CURSOR_SEPARATOR)
-    if not separator:
-        logger.debug("An IMAP cursor without a separator: %r", stored.token)
-        return None
     try:
-        return CursorPosition(
-            uidvalidity=int(generation), next_uid=max(int(following), FIRST_UID)
-        )
+        payload = json.loads(stored.token)
     except ValueError:
-        logger.debug("An IMAP cursor that is not two numbers: %r", stored.token)
+        logger.debug("An IMAP cursor that is not JSON: %r", stored.token)
         return None
+    if not isinstance(payload, dict) or payload.get("v") != CURSOR_VERSION:
+        logger.debug("An IMAP cursor of another version: %r", stored.token)
+        return None
+    folder = payload.get("at")
+    raw_marks = payload.get("marks")
+    if not isinstance(folder, str) or not isinstance(raw_marks, dict):
+        logger.debug("An IMAP cursor missing its walk: %r", stored.token)
+        return None
+    marks: dict[str, CursorPosition] = {}
+    for name, pair in raw_marks.items():
+        if not isinstance(name, str) or not isinstance(pair, list) or len(pair) != 2:
+            logger.debug("An IMAP cursor with a malformed mark: %r", name)
+            return None
+        try:
+            marks[name] = CursorPosition(
+                uidvalidity=int(pair[0]), next_uid=max(int(pair[1]), FIRST_UID)
+            )
+        except TypeError, ValueError:
+            logger.debug("An IMAP cursor mark that is not two numbers: %r", name)
+            return None
+    return WalkPosition(folder=folder, marks=marks)
 
 
 def message_id(folder: str, uidvalidity: int, uid: int) -> str:
@@ -272,29 +337,48 @@ def message_page(
     *,
     limit: int,
     kind: SyncCursorKind,
+    marks: Mapping[str, CursorPosition],
+    next_folder: str | None,
 ) -> MessagePage:
-    """One slice of a UID search, with the resume point sealed in a cursor.
+    """One slice of one folder's UID search, with the walk's place sealed in.
 
     ``UID SEARCH`` has no server-side paging: it answers with every matching
     UID at once, which is one line and cheap even for a large mailbox, and the
     paging the port asks for is this slice. The next cursor names the UID after
     the last one handed over — never the last one itself, which would deliver
-    it twice — and it is ``None`` when the slice reached the end, because a
-    cursor that is never ``None`` leaves the engine's page loop spinning.
+    it twice.
 
-    ``estimated_total`` is what is left from here, which for the first page of
-    a walk is the whole mailbox and for later pages is less. The engine reports
-    a running maximum against what it has processed
-    (``ImportEngine._estimate``), so a shrinking number does not make the
-    progress row go backwards — and this is the only estimate there is.
+    The end of a *folder* is not the end of the *walk*, and that is the whole
+    difference from the single-folder version of this function. When the slice
+    exhausts a folder the cursor moves to ``next_folder`` and the finished
+    folder is left marked at its ``UIDNEXT`` — not at the last UID seen —
+    because ``UIDNEXT`` is the server's promise about what has not arrived yet,
+    and it is what makes the next delta resume above everything this walk saw
+    rather than re-listing the last message forever. ``None`` for
+    ``next_folder`` means there is nothing after this one, so the cursor is
+    ``None`` and the engine's page loop stops; a cursor that is never ``None``
+    leaves it spinning.
+
+    ``estimated_total`` is what is left in *this folder*, so it is an
+    understatement on every folder but the last. The engine reports a running
+    maximum against what it has processed (``ImportEngine._estimate``), so the
+    progress row climbs as folders are discovered instead of going backwards.
     """
     page = uids[:limit]
-    following = uids[len(page) :]
+    exhausted = len(page) == len(uids)
+    resume_at = state.uidnext if exhausted else page[-1] + 1
+    following = {
+        **marks,
+        state.folder: CursorPosition(
+            uidvalidity=state.uidvalidity, next_uid=max(resume_at, FIRST_UID)
+        ),
+    }
+    at = next_folder if exhausted else state.folder
     return MessagePage(
         refs=tuple(message_ref(state, uid) for uid in page),
         next_cursor=(
-            cursor(state.uidvalidity, page[-1] + 1, kind)
-            if following and page
+            cursor(WalkPosition(folder=at, marks=following), kind)
+            if at is not None
             else None
         ),
         estimated_total=len(uids),

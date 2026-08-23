@@ -151,7 +151,9 @@ def serve_mail(httpserver: Any, prefix: str = ME) -> None:
         ).respond_with_data(raw, content_type="text/plain")
 
 
-def listing(*identifiers: str, next_link: str | None = None) -> dict[str, Any]:
+def listing(
+    *identifiers: str, next_link: str | None = None, count: int | None = None
+) -> dict[str, Any]:
     body: dict[str, Any] = {
         "value": [
             {
@@ -165,6 +167,8 @@ def listing(*identifiers: str, next_link: str | None = None) -> dict[str, Any]:
     }
     if next_link:
         body["@odata.nextLink"] = next_link
+    if count is not None:
+        body["@odata.count"] = count
     return body
 
 
@@ -420,6 +424,43 @@ class TestTheFullWalk:
         assert query["$orderby"] == "receivedDateTime desc"
         assert query["$select"] == "id,conversationId,parentFolderId,categories"
         assert query["$top"] == "50"
+
+    async def test_the_first_page_asks_for_the_mailbox_size(
+        self, httpserver: Any
+    ) -> None:
+        """Without ``$count`` Graph sends no total and the progress bar has no
+        denominator — the one walk of the four that had none."""
+        httpserver.expect_request(f"{ME}/messages").respond_with_json(listing("AAMkA1"))
+        source = source_for(httpserver)
+
+        await source.list_messages(None, limit=50)
+        await source.aclose()
+
+        assert httpserver.log[0][0].args["$count"] == "true"
+
+    async def test_the_mailbox_size_reaches_the_page(self, httpserver: Any) -> None:
+        httpserver.expect_request(f"{ME}/messages").respond_with_json(
+            listing("AAMkA1", count=57)
+        )
+        source = source_for(httpserver)
+
+        page = await source.list_messages(None, limit=50)
+        await source.aclose()
+
+        assert page.estimated_total == 57
+
+    async def test_a_page_without_a_count_estimates_nothing(
+        self, httpserver: Any
+    ) -> None:
+        """``None`` rather than the page's own length: the engine reads it as
+        "keep the estimate you have", and a length would report 100%."""
+        httpserver.expect_request(f"{ME}/messages").respond_with_json(listing("AAMkA1"))
+        source = source_for(httpserver)
+
+        page = await source.list_messages(None, limit=50)
+        await source.aclose()
+
+        assert page.estimated_total is None
 
     async def test_the_page_size_is_the_smallest_of_the_three_limits(
         self, httpserver: Any

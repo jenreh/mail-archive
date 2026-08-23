@@ -30,7 +30,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mailarc_core.mail.errors import MailAuthError
-from mailarc_imap.source.model import DEFAULT_FOLDER, IMAPS_PORT
+from mailarc_imap.source.model import IMAPS_PORT
 
 MAX_PORT = 65535
 """The largest number a TCP port can be. Anything above it is a typo, not a port."""
@@ -46,10 +46,12 @@ class ImapCredentials(BaseModel):
     mailbox's, and putting a host in :class:`~mailarc_imap.source.config.ImapConfig`
     would mean a deployment could hold exactly one IMAP account.
 
-    ``folder`` is part of the credential for the same reason it is part of the
-    form: this adapter syncs one folder per account, because an IMAP UID means
-    nothing outside the folder it was issued in
-    (:data:`~mailarc_imap.source.model.IMAP_DESCRIPTOR` has the argument).
+    There is no ``folder``. A walk covers the whole account
+    (:data:`~mailarc_imap.source.model.IMAP_DESCRIPTOR` has the argument), so
+    the field the form used to ask for is gone. A row written before that
+    change still has one in its JSON and is read without complaint: pydantic
+    ignores unknown keys by default, which is exactly the migration behaviour
+    an opaque credential column exists to give.
 
     Frozen, like every other value object here, though nothing refreshes it.
     """
@@ -65,7 +67,6 @@ class ImapCredentials(BaseModel):
     is the one a human typed out of their password manager."""
 
     port: int = IMAPS_PORT
-    folder: str = DEFAULT_FOLDER
 
     @model_validator(mode="before")
     @classmethod
@@ -84,14 +85,14 @@ class ImapCredentials(BaseModel):
         """
         if not isinstance(value, dict):
             return value
-        optional = {"port", "folder"}
+        optional = {"port"}
         return {
             key: item
             for key, item in value.items()
             if not (key in optional and isinstance(item, str) and not item.strip())
         }
 
-    @field_validator("host", "username", "folder", mode="after")
+    @field_validator("host", "username", mode="after")
     @classmethod
     def _trimmed(cls, value: str) -> str:
         """A hostname with a space around it is the same hostname.

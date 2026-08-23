@@ -1,7 +1,11 @@
 # Architecture
 
-A uv workspace: one Reflex application on top of six first-party components,
+A uv workspace: one Reflex application on top of eight first-party components,
 one of which an installation may leave out.
+
+Three of the eight are mail providers — `mailarc-google`, `mailarc-imap`,
+`mailarc-m365` — and they are siblings, not a hierarchy: none imports another,
+and each hangs off `mailarc-core` alone.
 
 ![Component layering](../diagrams/architecture.svg)
 
@@ -10,12 +14,21 @@ one of which an installation may leave out.
 | Module | May import | May **not** import |
 | --- | --- | --- |
 | `mailarc-core` | appkit-commons, runic.ogm, pydantic, sqlalchemy | Reflex, any provider |
-| `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, Reflex |
-| `mailarc-sync` | `mailarc-core` | `mailarc_google`, Reflex |
+| `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, another provider, Reflex |
+| `mailarc-imap` | `mailarc-core`, imapclient | `mailarc-sync`, another provider, Reflex |
+| `mailarc-m365` | `mailarc-core`, httpx, msal | `mailarc-sync`, another provider, Reflex |
+| `mailarc-sync` | `mailarc-core` | any provider, Reflex |
 | `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex |
-| `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, `mailarc-google`, Reflex |
+| `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, any provider, Reflex |
 | `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit | `app` |
 | `app` | everything | — |
+
+"Another provider" is a rule with teeth now that there are three of them. A
+provider may not reach into a sibling for a shared helper, so `mailarc-m365`
+carries its own copy of the loopback redirect listener and of
+`retry_after_seconds` — `mailarc-google` has both, and the only place they could
+be shared is `mailarc-core`. Three copies is the point at which a shared home
+stops being speculative.
 
 Two rules carry it:
 
@@ -28,6 +41,11 @@ import engine testable without a browser in the room.
 Neither is a convention.
 [`components/mailarc-core/tests/test_isolation.py`](https://github.com/jenreh/mail-archive/blob/main/components/mailarc-core/tests/test_isolation.py)
 enforces both from a subprocess, along with the ban on `runic.rag`.
+
+One caveat about that file: it names its packages in three hand-written tuples
+rather than discovering them, so `mailarc_imap` and `mailarc_m365` are not yet in
+its probes. Both hold the rules today — each has an equivalent source-level check
+in its own suite — but the subprocess enforcement is one edit behind reality.
 
 ## Why there is no `runic.rag`
 
@@ -44,8 +62,8 @@ time, through the MCP server (`mail-archive-mcp`), and never writes.
 closure. It sits behind an extra:
 
 ```sh
-uv sync                 # 82 distributions — what the desktop bundle carries
-uv sync --extra mcp     # 125 — the web deployment, MCP server included
+uv sync                 # 85 distributions — what the desktop bundle carries
+uv sync --extra mcp     # 127 — the web deployment, MCP server included
 ```
 
 `fastmcp` is around sixty distributions and a desktop archive serves no MCP, so
@@ -65,11 +83,18 @@ nothing.
 It is also the only file allowed to name an implementation:
 
 ```python
-registry.register(GmailSource.DESCRIPTOR, GmailSource.create)
+registry.register(ImapSource.DESCRIPTOR, ImapSource.using(imap_config()))
 ```
 
 Everything below it asks by `MailProvider` and never learns a vendor name. That
 is what keeps `mailarc-sync` from having to know the providers.
+
+`using(config)` rather than `create`: the factory signature has no room for a
+configuration object and only this module may build one, so the adapter gets it
+closed over. The optional third argument is the consent runner — a browser step
+between typing a credential and owning a mailbox. Gmail has one, IMAP has none,
+and Microsoft 365 has one runner covering both a delegated sign-in that opens a
+browser and an app-only grant that opens nothing.
 
 ### How a decision reaches the browser half
 
@@ -158,12 +183,18 @@ Not a `CredentialStore`, not a factory protocol, not a repository interface.
 Each of those has exactly one implementation, and a port around one
 implementation is indirection, not architecture.
 
-`MailSourcePort` earns its place because there are genuinely several: Gmail,
-IMAP, Microsoft Graph, and the folder of `.eml` files the engine tests run
-against. That last one is not a mock — it is registered like any other provider,
-and importing a mailbox exported from Thunderbird is a real use of it. **A
-second implementation from day one is what makes the port a port rather than a
-description of Gmail.**
+`MailSourcePort` earns its place because there are genuinely several — four
+registered today: Gmail, IMAP, Microsoft Graph, and the folder of `.eml` files
+the engine tests run against. That last one is not a mock — it is registered like
+any other provider, and importing a mailbox exported from Thunderbird is a real
+use of it. **A second implementation from day one is what makes the port a port
+rather than a description of Gmail.**
+
+Adding the third and fourth was the test of that claim, and it passed: neither
+`mailarc-imap` nor `mailarc-m365` cost a line in `mailarc-core`, `mailarc-sync`,
+`mailarc-analytics` or `mailarc-ui`. See
+[adding a mail provider](adding-a-provider.md) for what they did cost, and for
+the places the port's shape was less obvious than it looked.
 
 The factory beside it is a type alias, not a `Protocol`:
 

@@ -20,6 +20,8 @@ dependencies = [
     "mailarc-sync",
     "mailarc-analytics",
     "mailarc-google",
+    "mailarc-imap",
+    "mailarc-m365",
     "mailarc-ui",
     "appkit-user>=1.10.2",
     "appkit-mantine>=1.10.2",
@@ -62,14 +64,19 @@ mailarc-core = { workspace = true }
 mailarc-sync = { workspace = true }
 mailarc-analytics = { workspace = true }
 mailarc-google = { workspace = true }
+mailarc-imap = { workspace = true }
+mailarc-m365 = { workspace = true }
 mailarc-mcp = { workspace = true }
 mailarc-ui = { workspace = true }
 
 [dependency-groups]
 # `uv sync` installs the root's dependency closure and nothing else, so a
-# workspace member no one depends on yet would not be importable. Five of the
-# six are in that closure: `mailarc-analytics` joined it when the `derive` job
-# and `task graph:rebuild-derived` gave the application a reason to import it.
+# workspace member no one depends on yet would not be importable. Seven of the
+# eight are in that closure: `mailarc-analytics` joined it when the `derive` job
+# and `task graph:rebuild-derived` gave the application a reason to import it,
+# and `mailarc-imap` and `mailarc-m365` were born in it because
+# `app/composition.py` registers a provider the moment the provider exists — a
+# mailbox nothing can build is not a feature an installation may decline.
 # `mailarc-mcp` is deliberately outside it and reachable only through the `mcp`
 # extra — which is also why `task install` asks for that extra, since the test
 # suite covers the component and a checkout that could not run it would be
@@ -287,6 +294,8 @@ known-local-folder = [
     "mailarc_sync",
     "mailarc_analytics",
     "mailarc_google",
+    "mailarc_imap",
+    "mailarc_m365",
     "mailarc_mcp",
     "mailarc_ui",
 ]
@@ -299,6 +308,8 @@ testpaths = [
     "components/mailarc-sync/tests",
     "components/mailarc-analytics/tests",
     "components/mailarc-google/tests",
+    "components/mailarc-imap/tests",
+    "components/mailarc-m365/tests",
     "components/mailarc-mcp/tests",
     "components/mailarc-ui/tests",
 ]
@@ -320,7 +331,11 @@ markers = [
 python-version = "3.14"
 python = ".venv.mac"
 # `scripts/` is never installed; its own tests add it to sys.path at import time.
-extra-paths = ["scripts"]
+# `components/mailarc-imap/tests` is on the list for the same reason and one
+# more: `tests/test_composition.py` borrows that component's in-process IMAP
+# server rather than growing a second one, and appends the directory to
+# `sys.path` itself — pytest resolves the import, ty needs telling.
+extra-paths = ["scripts", "components/mailarc-imap/tests"]
 
 [tool.ty.src]
 exclude = [
@@ -345,6 +360,8 @@ source = [
     "components/mailarc-sync/src/mailarc_sync",
     "components/mailarc-analytics/src/mailarc_analytics",
     "components/mailarc-google/src/mailarc_google",
+    "components/mailarc-imap/src/mailarc_imap",
+    "components/mailarc-m365/src/mailarc_m365",
     "components/mailarc-mcp/src/mailarc_mcp",
     "components/mailarc-ui/src/mailarc_ui",
 ]

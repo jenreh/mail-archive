@@ -137,14 +137,16 @@ Never hand-edit `pyproject.toml` for a dependency — `uv add` keeps `uv.lock`
 honest.
 
 `uv sync` installs the root's dependency closure and nothing else, so a
-workspace member nothing depends on yet is not importable. Five of the six are
-in that closure: `mailarc-analytics` moved out of the `dev` group and into
+workspace member nothing depends on yet is not importable. Seven of the eight
+are in that closure: `mailarc-analytics` moved out of the `dev` group and into
 `[project] dependencies` when the `derive` job and `task graph:rebuild-derived`
-gave the application a reason to import it.
+gave the application a reason to import it, and `mailarc-imap` and
+`mailarc-m365` were born in it because `app/composition.py` registers a provider
+the moment the provider exists.
 
 `mailarc-mcp` is deliberately outside it, behind `[project.optional-dependencies]
-mcp`. `uv sync` is the desktop bundle's shape (82 distributions) and
-`uv sync --extra mcp` the web deployment's (125) — `fastmcp` alone is around
+mcp`. `uv sync` is the desktop bundle's shape (85 distributions) and
+`uv sync --extra mcp` the web deployment's (127) — `fastmcp` alone is around
 sixty, and a desktop archive serves no MCP. `task install` and `task sync` ask
 for the extra, because a developer environment is the web one and the test suite
 covers the component; `task tauri:deps` prints both resolutions and fails if

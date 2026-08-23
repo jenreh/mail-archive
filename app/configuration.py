@@ -16,6 +16,8 @@ from mailarc_core import ArchiveConfig, GraphConfig
 from mailarc_core.database import sqlite
 from mailarc_core.mail.config import MailConfig
 from mailarc_google.source.config import GmailConfig
+from mailarc_imap.source.config import ImapConfig
+from mailarc_m365.source.config import M365Config
 from mailarc_sync.engine.config import SyncConfig
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,23 @@ class AppConfig(ApplicationConfig):
 
     mail: MailConfig = Field(default_factory=MailConfig)
     google: GmailConfig = Field(default_factory=GmailConfig)
+    imap: ImapConfig = Field(default_factory=ImapConfig)
+    m365: M365Config = Field(default_factory=M365Config)
+    """One field per provider component, for the reason ``semantic`` records above.
+
+    Neither of these is optional decoration. ``model_config['extra']`` is
+    ``ignore``, so an ``app.imap`` or ``app.m365`` block in
+    ``configuration/config.yaml`` — the documented way every other component on
+    this list is configured — would be dropped without a word if the field were
+    missing, and ``app/composition.py`` would hand each provider a config built
+    from the environment alone. For ``m365`` that is the difference between an
+    installation that has an Entra application and one that silently does not —
+    its ``client_id`` and ``client_secret`` are ``secret:`` references, and a
+    reference nothing reads is a registration nobody signs in with.
+
+    ``config.yaml`` ships both blocks commented out; the field is what makes
+    uncommenting them mean something.
+    """
 
 
 @lru_cache(maxsize=1)

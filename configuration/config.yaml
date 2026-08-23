@@ -48,6 +48,54 @@ app:
     client_id: secret:mn-google-client-id
     client_secret: secret:mn-google-client-secret
 
+  # IMAP has nothing here that a mailbox needs, and that is the whole shape of
+  # this provider: the host, the port, the username, the app password and the
+  # folder belong to the *account*, so they are credential fields and live
+  # encrypted in `mail_credentials.secret`. A second IMAP mailbox therefore
+  # needs no second setting, which is what an archive holding an iCloud account
+  # and a Gmail-app-password account requires.
+  #
+  # What is left is genuinely per-installation and every value below is the
+  # default — uncomment a line only to change it. There is deliberately no
+  # switch to turn TLS off: an app password in the clear is the credential
+  # itself.
+  #
+  #imap:
+  #  connect_timeout: 15    # seconds for the TCP connect and the TLS handshake
+  #  request_timeout: 120   # seconds for one command; a big attachment is one
+  #  page_size: 200         # UIDs per listing page, sliced out of UID SEARCH
+  #  tls_ca_file: ""        # a PEM bundle for a private CA; empty = the system's
+
+  # The Entra application every Microsoft 365 mailbox on this installation
+  # signs in through. It belongs to whoever deploys the application, exactly as
+  # the Google client above does, so it is configured once here and nobody
+  # adding a mailbox is asked to create an app registration.
+  #
+  # Commented out rather than shipped live, and the reason is mechanical: a
+  # `secret:` reference is resolved eagerly while the configuration is
+  # validated, and a key the secret provider does not hold fails the *whole*
+  # startup. Google's two are already in every existing `.env`; these two are
+  # not. So an installation that has an Entra registration uncomments both
+  # lines and puts the values in its `.env` (`.env.default` carries the
+  # placeholders); one that does not leaves them alone and the account page
+  # says Microsoft 365 is not set up.
+  #
+  # `client_secret` is app-only's alone — a client-credentials grant presents
+  # it to get a token for the tenant. A delegated (per-user) sign-in is a
+  # public client and must NOT have one, so a desktop installation sets only
+  # the id. Neither belongs in a committed file.
+  #
+  #m365:
+  #  client_id: secret:mn-m365-client-id
+  #  client_secret: secret:mn-m365-client-secret
+  #  # `allitems` is the search folder that spans the whole mailbox and the only
+  #  # well-known name that makes a delta mean "the mailbox". A tenant whose
+  #  # mailboxes answer `ErrorItemNotFound: ... Default folder AllItems not
+  #  # found` sets `inbox` or a folder id here, and accepts that mail filed
+  #  # elsewhere is picked up by a full import rather than by a delta.
+  #  delta_folder: allitems
+  #  default_tenant: common  # a single-organisation deployment names its own
+
   authentication:
     session_timeout: 25 # minutes
     auth_token_refresh_delta: 10 # minutes

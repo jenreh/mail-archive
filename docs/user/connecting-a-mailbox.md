@@ -7,16 +7,20 @@ address, a credential that opens it, and a status.
 
 ## Which mailboxes work today
 
-| Provider | State |
-| --- | --- |
-| **Folder of `.eml` files** | Works. Anything you exported from Thunderbird, `mbox` split into files, a maildir. |
-| **Gmail** | Built and tested, but not yet registered — see below. |
-| IMAP (iCloud, Gmail app passwords) | Planned |
-| Microsoft 365 | Planned |
+| Provider | What you need | Delta imports |
+| --- | --- | --- |
+| **Folder of `.eml` files** | A directory path. Anything you exported from Thunderbird, `mbox` split into files, a maildir. | No — every run re-lists |
+| **Gmail** | An OAuth client of your own, once per installation. Then just your address. | Yes |
+| **IMAP** (iCloud, Gmail app passwords, any mail host) | A server, a port, a username, an app password and one folder. | Yes |
+| **Microsoft 365** | An Entra app registration, once per installation. Then a sign-in, or a tenant and a mailbox. | Yes |
 
-The account form is generated from what the provider *declares* it needs, not
-from hand-written fields, so a provider gaining an implementation gains its form
-for free.
+All four appear in the account form in that order, and the form itself is
+generated from what the provider *declares* it needs — no hand-written fields —
+so the boxes you see are the boxes that provider actually uses.
+
+"Delta imports" is the difference between a scheduled run that asks only what
+changed and one that walks the whole mailbox again. It costs nothing to have; a
+folder of files simply has no way to offer it.
 
 ## A folder of `.eml` files
 
@@ -32,12 +36,6 @@ Files are listed in sorted order and paged, so an import over them exercises
 the same cursor logic a real provider does.
 
 ## Gmail
-
-> The Gmail adapter is complete — consent, token refresh, listing, and fetching
-> raw messages — but `GmailSource` is not yet registered in
-> `app/composition.py`, so Gmail does not appear in the account form. Until that
-> one line lands, everything below is the setup you will need rather than
-> something you can do in the UI today.
 
 ### You bring your own OAuth client
 
@@ -99,12 +97,135 @@ consent itself is fine. Grants made in Testing status expire after seven days
 and then ask for a reconnect.
 :::
 
+## IMAP
+
+The only provider that needs **nothing set up on the installation**. There is no
+client to register and no consent screen: an app password is complete the moment
+you type it, so pressing Connect goes straight to your mail server.
+
+Five boxes, two of them optional:
+
+| Field | Example | Notes |
+| --- | --- | --- |
+| IMAP server | `imap.mail.me.com` | iCloud. Gmail is `imap.gmail.com` |
+| Port | `993` | Leave empty for 993 |
+| Username | `you@icloud.com` | Must match the account's email address — see below |
+| App-specific password | | Not your account password |
+| Folder | `INBOX` | Leave empty for `INBOX` |
+
+**It is always TLS, on port 993.** There is no switch to turn that off and none
+to use `STARTTLS` on port 143 — an app password sent in the clear on a shared
+network *is* the credential. If you type 143, the connection is refused rather
+than quietly downgraded.
+
+**Use an app-specific password, not your real one.** iCloud refuses the Apple ID
+password outright ([appleid.apple.com](https://appleid.apple.com) → Sign-In and
+Security → App-Specific Passwords). Gmail requires one as soon as two-factor
+authentication is on. Either way, an app password can be revoked on its own
+without touching the rest of your account, which is exactly what you want a mail
+archive holding.
+
+### One account is one folder
+
+This is the surprising part, and it is not a limitation that can be lifted.
+
+An IMAP UID identifies a message *inside one folder*: the same mail sitting in
+`INBOX` and in `Archive` has two unrelated UIDs, and IMAP offers no way to say
+they are the same message. So an adapter that walked every folder would archive a
+Gmail mailbox roughly once per label. Instead the folder is a field, and **a
+second folder is a second account** — two accounts showing the same address in
+the list is expected.
+
+On Gmail, point it at `[Gmail]/All Mail`. That is the one folder Google maintains
+which holds every message exactly once; `INBOX` there would archive your inbox
+and nothing else.
+
+Spam and Trash take care of themselves: nothing is imported from a folder you did
+not name. The folder list on the account shows everything the server has, because
+that is the list you pick from — not a promise that all of it is archived.
+
+::: warning If your mail host's usernames are not email addresses
+After you press Connect the account is asked whose mailbox it is, and the answer
+has to match the address on the account. IMAP has no command for "who am I", so
+the only answer it can give is the username you typed. A host that issues `jens`
+rather than `jens@example.com` will therefore refuse a correctly filled form —
+and it discards the stored password on the way out. Use the address form of your
+username if the server accepts both.
+:::
+
+## Microsoft 365
+
+Like Gmail, this one needs a registration of your own — the app registration, its
+consent screen and its Graph quota belong to whoever runs the archive.
+
+### Register the application once
+
+1. Open the [Microsoft Entra admin center](https://entra.microsoft.com) →
+   **App registrations → New registration**.
+2. Under **Authentication → Add a platform**, pick **Mobile and desktop
+   applications** and add the redirect URI `http://localhost`. Entra accepts any
+   loopback *port* for that, which is what the sign-in uses; nothing else has to
+   be registered.
+3. Under **API permissions**, add the Microsoft Graph **delegated** permissions
+   `Mail.Read` and `User.Read`. `Mail.Read` reads the mailbox; `User.Read` is the
+   least-privilege way to ask which account actually signed in.
+4. Copy the **Application (client) ID**.
+
+Then put it where the archive can find it. `app.m365` ships **commented out** in
+`configuration/config.yaml`, because a `secret:` reference to a key you do not
+have stops the application from starting at all. So: add the values to your
+`.env` (`.env.default` has the placeholder lines), then uncomment the block.
+
+```yaml
+  m365:
+    client_id: secret:mn-m365-client-id
+    client_secret: secret:mn-m365-client-secret
+```
+
+### Two ways to sign in
+
+The account form asks for a **sign-in mode**. Leave it empty unless you know you
+want the other one.
+
+**Delegated** (empty box) is the ordinary case: you sign in as yourself in your
+own browser, Microsoft redirects back to a throwaway loopback port, and the
+archive stores a refresh token. Work, school and personal accounts all work,
+because the tenant defaults to `common`. Nobody's administrator is involved.
+
+**App-only** (`app-only`) is for a shared or departmental mailbox nobody signs in
+to. There is no browser step at all — permission was granted once in the tenant,
+by an administrator, before the mailbox was ever added. It needs three more
+things:
+
+- the **Directory (tenant) ID**, filled into the form. Not `common`: a
+  client-credentials token is issued *by* one tenant.
+- the **Mailbox** address to read, filled into the form.
+- a **client secret** on the registration, in `mn-m365-client-secret`, plus the
+  Graph **`Mail.Read` application permission** with admin consent. A delegated
+  sign-in must *not* have a secret — a desktop installation leaves it as the
+  placeholder.
+
+### Where the incremental import looks
+
+Microsoft Graph has no mailbox-wide "what changed" feed; every one of them is
+scoped to a folder. The archive uses `allitems`, the search folder that spans the
+whole mailbox, which is why scheduled runs see everything. Some older hybrid and
+single-tenant configurations do not have it and answer `Default folder AllItems
+not found` on the first delta — such a deployment sets `app.m365.delta_folder` to
+`inbox`, and accepts that mail filed elsewhere by a server-side rule is picked up
+by the next full import instead.
+
 ## How the credential is stored
 
 `mail_credentials.secret` is a single encrypted column, and its contents are
 deliberately structureless: each provider serialises its own model into it —
-Gmail its client id, client secret and refresh token; IMAP a host and a
-password. That is why adding a provider needs no schema migration.
+Gmail a refresh token, IMAP a host, a username, a password and a folder,
+Microsoft 365 either a refresh token or a tenant and a mailbox. That is why
+adding a provider needs no schema migration.
+
+None of them stores the OAuth client or the Entra client secret: those belong to
+the installation and are configured once, so rotating one does not mean editing
+every account.
 
 The column is encrypted at rest with the Fernet key from `mn-db-encryption-key`.
 Lose that key and every stored credential becomes unreadable; the archive itself

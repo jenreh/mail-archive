@@ -88,6 +88,10 @@ Built and tested:
   and the mapping from Google's JSON into the domain, registered as a provider
   an account can pick, with pages that mount the account, import and review
   states.
+- Two more mail providers behind the same port: **IMAP** — any host, over TLS,
+  with a `UIDVALIDITY`/`UIDNEXT` cursor and no consent step at all — and
+  **Microsoft 365** over Graph, delegated or app-only, whose cursor is a whole
+  `deltaLink`. Neither cost a line in the engine, the core or the UI.
 - The three deterministic analyses — who is written to together, which mails
   belong to one project, which mails are written again and again with the same
   wording — and `task graph:rebuild-derived`, which throws all three away and

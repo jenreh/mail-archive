@@ -47,6 +47,10 @@ from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY
 from mailarc_google import GmailSource
 from mailarc_google.source.config import GmailConfig
 from mailarc_google.source.oauth import run_consent_async
+from mailarc_imap import ImapSource
+from mailarc_imap.source.config import ImapConfig
+from mailarc_m365 import M365Source, consent_runner
+from mailarc_m365.source.config import M365Config
 from mailarc_sync.engine import (
     FAKE_DESCRIPTOR,
     FakeMailSource,
@@ -330,6 +334,14 @@ def google_config() -> GmailConfig:
     return _registered(GmailConfig)
 
 
+def imap_config() -> ImapConfig:
+    return _registered(ImapConfig)
+
+
+def m365_config() -> M365Config:
+    return _registered(M365Config)
+
+
 @lru_cache(maxsize=1)
 def graph_server() -> FalkorDBServer:
     """The application-wide graph server handle.
@@ -377,6 +389,31 @@ def provider_registry() -> ProviderRegistry:
 
     The registry is a singleton because it is a list of decisions, not state:
     building a second one would give two answers to "which providers exist".
+
+    Registration order is the order the account form lists, so the first entry
+    is what a new user is offered; new providers are appended and nothing above
+    them moves.
+
+    Every one is registered with ``using(config)`` rather than ``create``, and
+    that is the rule this module exists for: ``create`` builds a fresh config
+    off the environment, which would leave the one module allowed to build a
+    component from configuration out of the loop — and for Microsoft 365 that
+    config carries the installation's Entra client secret.
+
+    **The consent argument is where the three real providers differ, and each
+    answer is a fact about the provider rather than a convention.** Gmail has a
+    browser round trip and nothing else, so it gets one. IMAP gets *none*: an
+    app password is complete the moment it is typed, and this is the path that
+    proves a provider with no consent runner works end to end — the account
+    form writes ``mail_credentials.secret`` itself, as JSON over the
+    descriptor's own fields. Microsoft 365 gets one runner for both of its
+    modes, and the asymmetry lives inside it: a delegated sign-in opens a
+    browser, an app-only grant was consented once by an administrator in the
+    tenant and only has its tenant, mailbox and client secret checked. That
+    branch belongs in the component, which owns the credential model that
+    tells the two apart; registering no runner would tell the account page that
+    Microsoft 365 has no second step, which is false for the mode most people
+    use.
     """
     registry = ProviderRegistry()
     registry.register(FAKE_DESCRIPTOR, FakeMailSource.create)
@@ -384,6 +421,12 @@ def provider_registry() -> ProviderRegistry:
         GmailSource.DESCRIPTOR,
         GmailSource.using(google_config()),
         consent=gmail_consent,
+    )
+    registry.register(ImapSource.DESCRIPTOR, ImapSource.using(imap_config()))
+    registry.register(
+        M365Source.DESCRIPTOR,
+        M365Source.using(m365_config()),
+        consent=consent_runner(m365_config()),
     )
     return registry
 

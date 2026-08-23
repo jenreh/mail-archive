@@ -8,6 +8,8 @@ members = [
     "mailarc-analytics",
     "mailarc-core",
     "mailarc-google",
+    "mailarc-imap",
+    "mailarc-m365",
     "mailarc-mcp",
     "mailarc-sync",
     "mailarc-ui",
@@ -960,6 +962,15 @@ wheels = [
 ]
 
 [[package]]
+name = "imapclient"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/79/8138f8c91e791f49cf4c2269b1eaaaddb93013d162e92ddc249b84d38105/imapclient-3.1.0.tar.gz", hash = "sha256:b0413a516ffcc4b4d69f2c611c0e95da57968edf5a5c78ac82d1bf882305facc", size = 199675, upload-time = "2026-01-17T18:50:12.186Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8a/a8/a0f86ed51f792d9e6afcc062db2766033be7d1028d1fd5deaf38b075430a/imapclient-3.1.0-py2.py3-none-any.whl", hash = "sha256:34c192ffe82936e940a998ac89c474296942cd7c4f6c208f0fccfcd972946038", size = 182536, upload-time = "2026-01-17T18:49:09.105Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1114,6 +1125,8 @@ dependencies = [
     { name = "mailarc-analytics" },
     { name = "mailarc-core" },
     { name = "mailarc-google" },
+    { name = "mailarc-imap" },
+    { name = "mailarc-m365" },
     { name = "mailarc-sync" },
     { name = "mailarc-ui" },
     { name = "reflex" },
@@ -1149,6 +1162,8 @@ requires-dist = [
     { name = "mailarc-analytics", editable = "components/mailarc-analytics" },
     { name = "mailarc-core", editable = "components/mailarc-core" },
     { name = "mailarc-google", editable = "components/mailarc-google" },
+    { name = "mailarc-imap", editable = "components/mailarc-imap" },
+    { name = "mailarc-m365", editable = "components/mailarc-m365" },
     { name = "mailarc-mcp", marker = "extra == 'mcp'", editable = "components/mailarc-mcp" },
     { name = "mailarc-sync", editable = "components/mailarc-sync" },
     { name = "mailarc-ui", editable = "components/mailarc-ui" },
@@ -1225,6 +1240,38 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = ">=1.4.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mailarc-core", editable = "components/mailarc-core" },
+]
+
+[[package]]
+name = "mailarc-imap"
+version = "1.0.0"
+source = { editable = "components/mailarc-imap" }
+dependencies = [
+    { name = "imapclient" },
+    { name = "mailarc-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "imapclient", specifier = ">=3.1.0" },
+    { name = "mailarc-core", editable = "components/mailarc-core" },
+]
+
+[[package]]
+name = "mailarc-m365"
+version = "1.0.0"
+source = { editable = "components/mailarc-m365" }
+dependencies = [
+    { name = "httpx" },
+    { name = "mailarc-core" },
+    { name = "msal" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "mailarc-core", editable = "components/mailarc-core" },
+    { name = "msal", specifier = ">=1.37.0" },
 ]
 
 [[package]]
@@ -1373,6 +1420,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/de/1d/f4da6f02cdffe04d6362210b807146a26044c88d839208aec273bb0d9184/more_itertools-11.1.0.tar.gz", hash = "sha256:48e8f4d9e7e5878571ecf6f2b4e57634f93cd474cc8cfbd2376f2d11b396e30d", size = 145772, upload-time = "2026-05-22T14:14:29.909Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/3d/1087453384dbde46a8c7f9356eead2c58be8a7bf156bca40243377c85715/more_itertools-11.1.0-py3-none-any.whl", hash = "sha256:4b65538ae22f6fed0ce4874efd317463a7489796a0939fa66824dd542125a192", size = 72226, upload-time = "2026-05-22T14:14:28.824Z" },
+]
+
+[[package]]
+name = "msal"
+version = "1.37.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9a/99/d840198ecf6e8057bbc937f129ae940404485d736cda73253bbff9537f01/msal-1.37.0.tar.gz", hash = "sha256:1b1672a33ee467c1d70b341bb16cafd51bb3c817147a95b93263794b03971bec", size = 182444, upload-time = "2026-05-29T19:49:05.561Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/b0/d807279f4b55d16d1f120d5ac4344c6e39b56732e2a224d40bded7fd67ad/msal-1.37.0-py3-none-any.whl", hash = "sha256:dd17e95a7c71bce75e8108113438ba7c4a086b3bcad4f57a8c09b7af3d753c2d", size = 123725, upload-time = "2026-05-29T19:49:04.335Z" },
 ]
 
 [[package]]

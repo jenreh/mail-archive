@@ -66,6 +66,8 @@ its own:
 | `APP_MAIL_` | `MailConfig` | Parser behaviour |
 | `APP_SYNC_` | `SyncConfig` | Engine and worker |
 | `APP_GOOGLE_` | `GmailConfig` | Gmail endpoints and paging |
+| `APP_IMAP_` | `ImapConfig` | IMAP timeouts, paging and certificate authority |
+| `APP_M365_` | `M365Config` | The Entra application, Graph endpoints and paging |
 
 ## Every setting
 
@@ -165,6 +167,52 @@ own unit. Leave it on for the desktop app, where there is nobody else to do it.
 Not one of these names a mailbox. Which account, whose credentials and how far
 the last run got are **state in SQLite**, not configuration — a second Gmail
 account must not need a second config.
+
+### IMAP — `app.imap` / `APP_IMAP_`
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `connect_timeout` | `15.0` | Seconds for the TCP connect and the TLS handshake together. Short: a host that has not answered by then is a typo or a network that is down |
+| `request_timeout` | `120.0` | Seconds for one IMAP command. Generous, because a `UID SEARCH` over a huge mailbox and a large attachment are each one unchunked answer |
+| `page_size` | `200` | UIDs per listing page. `UID SEARCH` has no server-side paging, so this is the slice taken off its answer |
+| `tls_ca_file` | `""` | A PEM bundle for a private certificate authority. Empty means the platform trust store |
+
+Shorter than the others, and deliberately so: the server, the port, the username,
+the app password and the folder belong to the **mailbox**, so they are credential
+fields and live encrypted in the database. That is what lets one archive hold an
+iCloud account and a Gmail-app-password account at the same time.
+
+**There is no setting to turn TLS off.** An app password in the clear is the
+credential itself, so port 143 with `STARTTLS` is a downgrade this adapter does
+not offer.
+
+### Microsoft 365 — `app.m365` / `APP_M365_`
+
+Shipped **commented out** in `configuration/config.yaml`: `client_id` and
+`client_secret` are `secret:` references, those are resolved while the
+configuration is validated, and a key the secret provider does not hold stops the
+application starting. Put the values in your `.env` first (`.env.default` carries
+the placeholders), then uncomment the block.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `client_id` | `""` | The Entra application this installation signs in as. Empty means Microsoft 365 is not set up |
+| `client_secret` | unset | App-only only. A delegated sign-in is a public client and must not carry one |
+| `api_base_url` | `https://graph.microsoft.com/v1.0` | Also the origin fence: a stored cursor is a whole URL, and one from anywhere else is refused |
+| `authority_host` | `https://login.microsoftonline.com` | A setting only so a test can serve it |
+| `default_tenant` | `common` | Accepts work, school and personal accounts. A single-organisation deployment names its own |
+| `delta_folder` | `allitems` | Graph has no mailbox-wide delta; every one is scoped to a folder. `inbox` for a tenant whose mailboxes have no `AllItems` |
+| `loopback_port` | `0` | `0` lets the OS pick. Entra accepts any loopback port for a public client |
+| `consent_timeout` | `300.0` | Seconds the sign-in waits for the browser to come back |
+| `request_timeout` | `60.0` | Longer than Gmail's: `$value` returns the whole MIME message in one body |
+| `token_timeout` | `30.0` | Seconds MSAL may spend at the token endpoint |
+| `page_size` | `100` | Message references per listing call; Graph's own ceiling is 1000 |
+| `watermark_page_size` | `500` | Larger, because nothing consumes those pages — the drain only wants the link at the end |
+| `watermark_max_pages` | `200` | A bound, not a target. Stopping early is not a failure: the mark simply lands mid-chain and the next run carries on |
+
+`delta_folder` is the one apparent exception to "no setting names a mailbox", and
+it is not one: it names a folder *inside every* mailbox, the same one for all of
+them.
 
 ### Semantic — `app.semantic` / `APP_SEMANTIC_`
 

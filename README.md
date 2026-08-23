@@ -72,9 +72,21 @@ components/mailarc-core/        everything that works without a browser
       blobs.py                  BlobStore — content-addressed originals on disk
       repository.py             MessageRepository — the listing, via runic's query builder
       reader.py                 ArchiveReader — summaries out of the graph, bytes off disk
+components/mailarc-sync/        the import engine, the job queue and the worker loop
+components/mailarc-analytics/   derived nodes, analysis queries, embeddings
+components/mailarc-google/      Gmail, behind the mail source port
+components/mailarc-imap/        any IMAP mailbox — iCloud, an app password, a mail host
+components/mailarc-m365/        Microsoft 365 over Graph, delegated or app-only
+components/mailarc-mcp/         the read-only MCP tools — optional, behind the `mcp` extra
+components/mailarc-ui/          the Reflex states and components
 scripts/                        build-time tooling (vendoring FalkorDB, icons)
 src-tauri/                      the macOS desktop shell
 ```
+
+The three provider components are siblings: none imports another, each hangs off
+`mailarc-core` alone, and only `app/composition.py` is allowed to name one. That
+is what lets a mailbox kind be added without touching the engine — see
+[adding a mail provider](docs/developer/adding-a-provider.md).
 
 Graph data is read and written through runic's OGM (`graph.session(config)`)
 against its `GraphDriver` protocol, so `app.graph.backend` chooses the

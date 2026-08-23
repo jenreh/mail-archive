@@ -127,8 +127,9 @@ Full rules in **python-coding** skill. Key:
 
 ## 6) Architecture Layers
 
-A uv workspace: a Reflex application on top of six first-party components, one
-of which an installation may leave out.
+A uv workspace: a Reflex application on top of eight first-party components, one
+of which an installation may leave out. Three of them are mail providers and
+they are siblings — none imports another.
 
 ```sh
 mail-archive/
@@ -143,6 +144,10 @@ mail-archive/
 │   ├── mailarc-sync/          engine, job queue, worker loop, provider registry
 │   ├── mailarc-analytics/     derived nodes, analysis queries, embeddings
 │   ├── mailarc-google/        Gmail, behind the mail source port
+│   ├── mailarc-imap/          any IMAP mailbox — the provider with NO consent
+│   │                          runner; the account form writes its secret
+│   ├── mailarc-m365/          Microsoft 365 over Graph — delegated (browser)
+│   │                          and app-only (no browser), one runner for both
 │   ├── mailarc-mcp/           the six read-only MCP tools — OPTIONAL, see below
 │   └── mailarc-ui/            Reflex states + components
 ├── scripts/                   build-time tooling (never runs on a user machine)
@@ -154,12 +159,19 @@ The hierarchy *is* the import table — read it as the layering:
 | Module | may import | may **not** import |
 | --- | --- | --- |
 | `mailarc-core` | appkit-commons, runic.ogm, pydantic, sqlalchemy | Reflex, any provider |
-| `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, Reflex |
-| `mailarc-sync` | `mailarc-core` | `mailarc_google`, Reflex |
+| `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, another provider, Reflex |
+| `mailarc-imap` | `mailarc-core`, imapclient | `mailarc-sync`, another provider, Reflex |
+| `mailarc-m365` | `mailarc-core`, httpx, msal | `mailarc-sync`, another provider, Reflex |
+| `mailarc-sync` | `mailarc-core` | any provider, Reflex |
 | `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex |
-| `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, `mailarc_google`, Reflex |
+| `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, any provider, Reflex |
 | `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-user | `app` |
 | `app` | everything | — |
+
+**A provider may not reach into a sibling**, which is why `mailarc-m365` holds
+its own copy of the loopback redirect listener and of `retry_after_seconds`:
+`mailarc-google` has both, and the only place they could be shared is
+`mailarc-core`. Three copies is where a shared home stops being speculative.
 
 **No module imports `runic.rag`, `app` included.** Email already carries an
 exact graph in its headers — senders, recipients, threads, labels — so an LLM
@@ -172,11 +184,20 @@ Key rules:
 - **`mailarc-ui` is the only component allowed to see Reflex** or an `appkit`
   UI package; every other one must stay usable from a CLI, a worker or a test.
   `components/mailarc-core/tests/test_isolation.py` enforces that exemption and
-  the `runic.rag` ban from a subprocess.
+  the `runic.rag` ban from a subprocess — but it names its packages in three
+  hand-written tuples rather than discovering them, so `mailarc_imap` and
+  `mailarc_m365` are **not yet in its probes**. Both hold the rules today (each
+  has an equivalent check in its own suite); the subprocess enforcement is one
+  edit behind.
 - `app` is the only place that knows concrete implementations:
   `registry.register(GmailSource.DESCRIPTOR, …)` happens in
   `app/composition.py`, and the worker entrypoint is `app/worker.py` — else
-  `mailarc-sync` would have to know the providers.
+  `mailarc-sync` would have to know the providers. Every provider is registered
+  with `Source.using(config())` — never `create`, which would read a config off
+  the environment and cut this module out — plus a consent runner where the
+  provider has a browser step. **A component config must also be a field on
+  `AppConfig`**, or its `app.<name>` block in `configuration/config.yaml` is
+  dropped in silence (`model_config['extra']` is `ignore`).
 - Inside a component: one package per capability, with fixed file roles.
   `__init__.py` is the public surface, `model.py` holds value objects and knows
   no I/O, `config.py` the `BaseConfig`, `ports.py` only once a second

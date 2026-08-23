@@ -60,14 +60,22 @@ tests/                                  the application — composition, worker,
 components/mailarc-core/tests/          mail/ archive/ database/ graph/  + test_isolation.py
 components/mailarc-sync/tests/          engine/ jobs/
 components/mailarc-google/tests/
+components/mailarc-imap/tests/          + imap_server.py and tls.py, a real IMAP server
+components/mailarc-m365/tests/
 components/mailarc-ui/tests/
 components/mailarc-analytics/tests/
 components/mailarc-mcp/tests/          needs the `mcp` extra — `task install` has it
 ```
 
-All seven trees are listed in `[tool.pytest.ini_options] testpaths`, and all six
+All nine trees are listed in `[tool.pytest.ini_options] testpaths`, and all eight
 source trees in `[tool.coverage.run] source`. Adding a component means adding it
 to both.
+
+One tree is borrowed from: `tests/test_composition.py` imports
+`components/mailarc-imap/tests/imap_server.py` rather than growing a second IMAP
+server, and appends that directory to `sys.path` itself — which is also why it is
+in `[tool.ty.environment] extra-paths`. It is the only such crossing in the
+repository, and it exists because IMAP has no `pytest-httpserver`.
 
 `components/mailarc-mcp/` is the one an installation may leave out (`uv sync`
 without `--extra mcp` — the desktop bundle's shape), so `task install` asks for
@@ -156,6 +164,15 @@ deliberately exempt.
 already carries an exact graph in its headers; nothing a model invents may join
 that ground truth.
 
+Both tests name their packages in hand-written tuples rather than discovering
+them, so **`mailarc_imap` and `mailarc_m365` are not in either list yet.** Both
+hold the rules, and each carries its own probe: `mailarc-imap` parses the source
+of every module in the package and asserts the bans against what it finds,
+`mailarc-m365` imports the package in a subprocess and reads `sys.modules`. A
+source check catches a written import but not a transitive one, so the central
+file is still the one that matters — it is one edit behind, and the components'
+READMEs say so rather than claiming enforcement they do not have.
+
 Try it: add `import reflex` to `mailarc_sync/__init__.py` and watch it fail.
 
 [`tests/test_worker.py`](https://github.com/jenreh/mail-archive/blob/main/tests/test_worker.py) does the same job for the
@@ -167,7 +184,21 @@ pull Reflex in, rather than trusting that it does not.
 **No test may talk to the real provider.** Use `pytest-httpserver`, which is
 already a dev dependency. The Gmail suite is the model — it covers a 429 with
 `Retry-After`, an expired token, and a malformed token response, and never
-leaves the machine.
+leaves the machine. `mailarc-m365` does the same against a local Graph, with MSAL
+replaced at `refresh_async` so no token request can leave either.
+
+`pytest-httpserver` is no help for a protocol that is not HTTP. `mailarc-imap`
+runs a real IMAP4rev1 server on a loopback socket, over TLS with a throwaway
+certificate the adapter genuinely verifies — the adapter offers no way to switch
+verification off, so a suite that skipped it would never exercise that path. Its
+failure paths are knobs on that server: refuse the login, drop the socket
+mid-command, answer `EXAMINE` without a `UIDVALIDITY`, put a folder name on the
+wire that is not valid modified UTF-7.
+
+`tests/test_composition.py` then holds the whole registry to its descriptors: it
+builds every registered provider from a fixture secret, calls `watermark()`, and
+asserts that the set of fixture secrets equals the set of registered providers —
+so a provider wired in without one fails loudly rather than being skipped.
 
 See [adding a mail provider](adding-a-provider.md#testing-it) for the checklist.
 

@@ -54,16 +54,16 @@ snapshot = False
 LABEL = "Message"
 PROPERTY = "embedding"
 
-DIMENSION = 768
+DIMENSION = 1536
 """Floats per vector — and the number that cannot be changed in place.
 
 Must equal :attr:`mailarc_analytics.semantic.config.SemanticConfig.dimension`.
-768 and not 1536 because only 768 is reachable from both providers: the local
+1536 and not 768 because only 1536 is reachable from both providers: the local
 ``nomic-embed-text`` is 768 natively and needs no account, while OpenAI's
 ``text-embedding-3-small`` is 1536 natively and can be *asked* for 768 through
 its ``dimensions`` parameter — which the adapter always does, for exactly this
-reason. Choosing 1536 would have made the no-account path impossible and
-doubled the memory (measured 14 KB per message against 7.3 KB).
+reason. Choosing 768 would have made the OpenAI path impossible and
+halved the memory (measured 7.3 KB per message against 14 KB).
 """
 
 SIMILARITY = "cosine"

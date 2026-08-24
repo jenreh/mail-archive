@@ -95,12 +95,19 @@ class SemanticConfig(BaseConfig):
     """Floats per vector. **Must equal the graph migration's ``DIMENSION``.**
 
     768 rather than 1536 because the local path is the one that has to work
-    without an account: ``nomic-embed-text`` is 768 natively, while
+    without an account: ``nomic-embed-text`` is 768 natively *and takes no
+    ``dimensions`` parameter*, so 768 is the only length it can answer, while
     ``text-embedding-3-small`` is 1536 natively and can be *asked* for 768
     through the API's ``dimensions`` parameter — so 768 is the only length both
-    providers can produce. It also halves what the index costs: measured on the
-    vendored FalkorDB, 7.3 KB per message at 768 against 14 KB at 1536, which
-    is 0.73 GB against 1.4 GB for a hundred thousand messages.
+    providers can produce, and raising it to 1536 would buy OpenAI nothing it
+    does not already have while costing Ollama everything. It also halves what
+    the index costs: measured on the vendored FalkorDB, 7.3 KB per message at
+    768 against 14 KB at 1536, which is 0.73 GB against 1.4 GB for a hundred
+    thousand messages.
+
+    The number a *fresh* archive starts at, not a ceiling: an installation that
+    wants OpenAI's native 1536 raises it on the settings page, which rebuilds
+    the index at the new length rather than leaving the two disagreeing.
     """
 
     base_url: str = ""

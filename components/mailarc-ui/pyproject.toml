@@ -13,7 +13,7 @@ dependencies = [
     "mailarc-core",
     "mailarc-sync",
     "mailarc-analytics",
-    "reflex>=0.9.5",
+    "reflex>=0.9.8.post1",
     "appkit-mantine>=1.10.2",
     "appkit-user>=1.10.2",
 ]

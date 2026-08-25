@@ -48,7 +48,15 @@ of these.
 
 class Reply(BaseModel):
     """One statement's answer in the shape every driver promises: a header and
-    a list of lists, with no entity mapping anywhere near it."""
+    a list of lists, with no entity mapping anywhere near it.
+
+    Still written as a header plus rows although
+    :func:`~mailarc_analytics.queries.rows.rows_of` now answers with dicts: the
+    header is what the store really sends, the zip is what the session really
+    does, and describing an answer column by column is what makes a test row
+    readable. :meth:`Scripted.all_rows` does the zip, exactly where runic does
+    it.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -67,14 +75,25 @@ class Scripted:
     two different moments.
     """
 
-    def __init__(self, answers: Mapping[str, Reply] | None = None) -> None:
+    def __init__(self, answers: Mapping[Any, Reply] | None = None) -> None:
         self._answers = dict(answers or {})
-        self.asked: list[tuple[str, dict[str, Any]]] = []
+        self.asked: list[tuple[Any, dict[str, Any]]] = []
         self.opened = 0
 
-    def execute(self, statement: str, params: dict[str, Any] | None = None) -> Reply:
+    def all_rows(
+        self, statement: Any, params: Mapping[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """The one member the façade reaches for, and the shape runic answers in.
+
+        ``all_rows`` and not ``execute``: a catalogue statement is a
+        query-builder object that only the session can bind — handing one to
+        the driver raises ``TypeError: can only concatenate str`` — so this is
+        the call every read in ``reports.py`` makes, and modelling anything
+        else would let a test pass over a call the store would refuse.
+        """
         self.asked.append((statement, dict(params or {})))
-        return self._answers.get(statement, Reply())
+        reply = self._answers.get(statement, Reply())
+        return [dict(zip(reply.columns, row, strict=True)) for row in reply.rows]
 
     @contextmanager
     def open(self) -> Iterator[Session]:
@@ -82,16 +101,16 @@ class Scripted:
         yield cast(Session, self)
 
     @property
-    def statements(self) -> list[str]:
+    def statements(self) -> list[Any]:
         return [statement for statement, _ in self.asked]
 
-    def parameters(self, statement: str) -> dict[str, Any]:
+    def parameters(self, statement: Any) -> dict[str, Any]:
         """What the one call to *statement* bound."""
         return next(params for asked, params in self.asked if asked is statement)
 
 
 def _reader(
-    answers: Mapping[str, Reply] | None = None,
+    answers: Mapping[Any, Reply] | None = None,
 ) -> tuple[Scripted, AnalyticsReader]:
     fake = Scripted(answers)
     return fake, AnalyticsReader(fake.open)

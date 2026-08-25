@@ -1,11 +1,20 @@
 """Every catalogue statement, compiled and run by the backend it was written for.
 
-A Cypher string is only checked by a server. Everything the pure catalogue test
-can say — that nothing is interpolated, that no ground-truth label is merged,
-that the spec's ``a.address`` became ``a.id`` — it says by reading text, and
-none of it would catch a missing comma, a property FalkorDB spells differently
-or an aggregation whose grouping key is a list. So each of the thirty-three
-entries is run here with its parameters bound and its result read.
+A statement is only checked by a server. Everything the pure catalogue test can
+say — that nothing is interpolated, that no ground-truth label is merged, that
+the spec's ``a.address`` became ``a.id`` — it says by reading the compiled
+Cypher, and none of it would catch a property FalkorDB spells differently, an
+aggregation whose grouping key is a list, or a traversal that chained where it
+should have branched. So every entry is run here with its parameters bound and
+its result read.
+
+Bound and never built, which is also what this file checks by doing it: a
+catalogue statement declares its parameters rather than spelling them into its
+text, so it is run through :func:`~mailarc_analytics.queries.rows.rows_of` —
+``session.all_rows`` for the query-builder entries and ``session.execute`` for
+the one that is still raw Cypher. Handing a builder to the driver raises
+``TypeError``, and handing it ``statement.build()`` reaches the store without
+the declared parameters; neither is a way to run one.
 
 The archive underneath is the planted corpus, so the reads have something to
 find and the ``MERGE`` statements have real ``Message`` and ``Address`` nodes to
@@ -21,6 +30,7 @@ from runic.ogm import Session
 
 from mailarc_analytics.queries import catalog
 from mailarc_analytics.queries.catalog import CATALOG, parameters_of
+from mailarc_analytics.queries.rows import rows_of
 from mailarc_core.graph import client
 from mailarc_core.graph.config import GraphConfig
 
@@ -154,47 +164,75 @@ when only the schema was missing.
 """
 
 
+FULLTEXT_INDEX = (
+    "CALL db.idx.fulltext.createNodeIndex('Message', 'subject', 'body_text')"
+)
+"""The index the baseline migration creates, issued here for the same reason
+:data:`VECTOR_INDEX` is: without it ``db.idx.fulltext.queryNodes`` answers with
+no rows at all rather than raising, which is exactly what a full-text statement
+that had stopped working would look like."""
+
+
 def _prepare(session: Session) -> None:
-    """The three derived nodes the edge upserts have to find, and the index the
-    KNN needs.
+    """Everything a statement needs to find something: the derived nodes the
+    edge upserts have to match, the two indexes the search procedures read, and
+    one stored vector for the KNN.
 
     The upsert statements ``MATCH`` both endpoints instead of merging them, so
     running one against a graph without them writes nothing and would let a
-    broken statement pass by writing nothing for the right reason.
+    broken statement pass by writing nothing for the right reason. The same
+    argument covers the rest: a statement that comes back empty proves only
+    that it parsed, so the graph is planted until every read has a row to
+    return and the column names below are read off a real one.
     """
     session.execute(VECTOR_INDEX, {})
+    session.execute(FULLTEXT_INDEX, {})
     for name in ("MERGE_GROUPS", "MERGE_TOPICS", "MERGE_TEMPLATES"):
-        session.execute(CATALOG[name], _bind(name))
+        rows_of(session, CATALOG[name], _bind(name))
+    for name in ("MERGE_ADDRESSED_GROUP", "MERGE_ABOUT", "MERGE_INSTANCE_OF"):
+        rows_of(session, CATALOG[name], _bind(name))
+    rows_of(session, CATALOG["MERGE_CO_ADDRESSED"], _bind("MERGE_CO_ADDRESSED"))
+    rows_of(session, CATALOG["WRITE_EMBEDDINGS"], _bind("WRITE_EMBEDDINGS"))
 
 
-DDL = frozenset({"CREATE_VECTOR_INDEX", "DROP_VECTOR_INDEX", "CLEAR_EMBEDDINGS"})
-"""The three that change the graph's shape rather than read or upsert it.
+NOT_IN_THE_SWEEP = frozenset({"CLEAR_EMBEDDINGS"})
+"""The one entry that changes the graph's shape rather than reading or
+upserting it.
 
-Excluded from the sweep below because running them in it would be dishonest in
-both directions: ``DROP_VECTOR_INDEX`` would take away the index the KNN
-statements in the same sweep need, and ``CREATE_VECTOR_INDEX`` would fail on
-the index ``_prepare`` has already built. They get their own test, which
-exercises the sequence they are actually used in.
+Excluded because running it in the sweep would take every vector away from the
+KNN statements beside it, and then a statement that had stopped finding
+anything would still pass. It is exercised where it is used, in
+``tests/semantic/test_semantic_indexing_local.py``, as the middle step of a
+re-index.
+
+``CREATE_VECTOR_INDEX`` and ``DROP_VECTOR_INDEX`` used to be named here too.
+They are functions now rather than statements — runic 0.5 emits vector-index
+DDL through ``IndexOperations`` — so they are not in ``CATALOG`` at all and
+there is nothing left to exclude. The same file tests them, in the drop /
+clear / create order ``rebuild_index`` runs them in.
 """
 
 
-@pytest.mark.parametrize("name", sorted(set(CATALOG) - DDL))
+@pytest.mark.parametrize("name", sorted(set(CATALOG) - NOT_IN_THE_SWEEP))
 def test_every_statement_runs_with_its_parameters_bound(
     archived: GraphConfig, name: str
 ) -> None:
-    """Compiles, executes and comes back — for all thirty-three of them.
+    """Compiles, executes and comes back — for every entry in the catalogue.
 
-    The parameters come from the statement's own text through
-    :func:`~mailarc_analytics.queries.catalog.parameters_of`, so a statement
-    that gains one is bound here automatically or fails loudly with a missing
-    key rather than running with a null.
+    The parameters come from the statement itself through
+    :func:`~mailarc_analytics.queries.catalog.parameters_of`, which asks a
+    builder what it declared and reads the one raw statement's text, so a
+    statement that gains one is bound here automatically. A binding that left
+    one out would raise ``ValueError: statement is missing values for declared
+    parameter(s)`` rather than run with a null — which is the security property
+    the catalogue exists for, exercised here on every entry at once.
     """
     with client.session(archived) as graph:
         _prepare(graph)
 
-        result = graph.execute(CATALOG[name], _bind(name))
+        rows = rows_of(graph, CATALOG[name], _bind(name))
 
-        assert result.rows is not None
+        assert isinstance(rows, list)
 
 
 @pytest.mark.parametrize(
@@ -249,14 +287,25 @@ def test_every_statement_runs_with_its_parameters_bound(
 def test_a_reading_statement_returns_the_columns_it_names(
     archived: GraphConfig, name: str, columns: list[str]
 ) -> None:
-    """The reader zips these names onto the rows, so a renamed column would
-    reach it as a ``KeyError`` a long way from the statement."""
+    """Every consumer reads ``row["together"]``, so a renamed column would
+    reach it as a ``KeyError`` a long way from the statement.
+
+    Read off a **real row** rather than off the result header, which is what
+    ``all_rows`` leaves a caller: it answers with column-keyed dicts and a
+    statement that matched nothing has no keys to show. That makes the
+    assertion stronger than it was — an empty answer no longer passes it — and
+    it is why ``_prepare`` plants enough for every one of these to find
+    something. It is also the assertion that catches a computed column whose
+    ``.as_()`` went missing: without one the row is keyed by the raw Cypher,
+    ``collect(DISTINCT s.id)`` instead of ``senders``.
+    """
     with client.session(archived) as graph:
         _prepare(graph)
 
-        result = graph.execute(CATALOG[name], _bind(name))
+        rows = rows_of(graph, CATALOG[name], _bind(name))
 
-        assert list(result.columns) == columns
+        assert rows, "a statement that returns nothing cannot show its columns"
+        assert list(rows[0]) == columns
 
 
 def test_a_recipient_in_both_to_and_cc_is_counted_once(config: GraphConfig) -> None:
@@ -291,15 +340,13 @@ def test_a_recipient_in_both_to_and_cc_is_counted_once(config: GraphConfig) -> N
             "RETURN count(m) AS counted, count(DISTINCT m) AS distinct_counted, "
             "collect(id(r2)) AS rels"
         )
-        rows = graph.execute(catalog.CO_RECIPIENTS, {"limit": 10}).rows
+        rows = rows_of(graph, catalog.CO_RECIPIENTS, {"limit": 10})
 
     counted, distinct_counted, rels = referenced.rows[0]
 
     assert len(rels) == 2, "the duplicate pairing is not in the graph"
     assert [int(counted), int(distinct_counted)] == [2, 1]
-    assert [[left, right, int(together)] for left, right, together in rows] == [
-        ["a@example.test", "b@example.test", 1]
-    ]
+    assert _pairs(rows) == [["a@example.test", "b@example.test", 1]]
 
 
 def test_a_message_the_rebuild_skips_is_not_counted_as_truth(
@@ -326,14 +373,12 @@ def test_a_message_the_rebuild_skips_is_not_counted_as_truth(
             "(blank)-[:SENT_TO]->(a), (blank)-[:SENT_TO]->(b)"
         )
 
-        readable = graph.execute(catalog.COUNT_MESSAGES).rows[0][0]
-        skipped = graph.execute(catalog.COUNT_UNIDENTIFIED).rows[0][0]
-        rows = graph.execute(catalog.CO_RECIPIENTS, {"limit": 10}).rows
+        readable = rows_of(graph, catalog.COUNT_MESSAGES)[0]["total"]
+        skipped = rows_of(graph, catalog.COUNT_UNIDENTIFIED)[0]["total"]
+        rows = rows_of(graph, catalog.CO_RECIPIENTS, {"limit": 10})
 
     assert [int(readable), int(skipped)] == [1, 2], "the planted graph is the point"
-    assert [[left, right, int(together)] for left, right, together in rows] == [
-        ["a@example.test", "b@example.test", 1]
-    ]
+    assert _pairs(rows) == [["a@example.test", "b@example.test", 1]]
 
 
 def test_an_edge_with_no_count_cannot_take_the_top_slot(
@@ -360,12 +405,10 @@ def test_an_edge_with_no_count_cannot_take_the_top_slot(
             "MATCH (a:Address)-[r:CO_ADDRESSED]-(b:Address) WHERE a.id < b.id "
             "RETURN a.id, b.id, r.count AS together ORDER BY together DESC LIMIT 1"
         ).rows
-        listed = graph.execute(catalog.TOP_CO_ADDRESSED, {"limit": 10}).rows
+        listed = rows_of(graph, catalog.TOP_CO_ADDRESSED, {"limit": 10})
 
     assert unfiltered[0][2] is None, "the control: NULL really does sort first"
-    assert [[left, right, int(together)] for left, right, together, *_ in listed] == [
-        ["a@example.test", "b@example.test", 5]
-    ]
+    assert _pairs(listed) == [["a@example.test", "b@example.test", 5]]
 
 
 def test_the_three_spellings_of_a1s_count_agree_on_this_statement(
@@ -385,13 +428,24 @@ def test_the_three_spellings_of_a1s_count_agree_on_this_statement(
     not for the two spellings, and mentioning ``m.id`` in the ``WHERE`` is part
     of what makes it hold. So this pins the whole statement rather than the
     reasoning about it, and goes red if either the text or the backend moves.
+
+    The one spelling is varied in the statement's **compiled** Cypher, because
+    a statement is a builder now and there is no text on it to edit. Compiling
+    it is also what makes the variants honest: they differ from the catalogue
+    entry in three characters and in nothing else. They are run raw, which
+    needs the auto-bound literals ``build()`` hands back — the empty-string
+    comparison is ``$p0`` — merged into the binding beside ``$limit``, since
+    the store is being given text rather than a statement that knows its own
+    parameters. That merging is exactly the step ``rows_of`` exists to make
+    unnecessary everywhere else.
     """
     spellings = ("count(m)", "count(*)", "count(DISTINCT m)")
+    cypher, bound = catalog.CO_RECIPIENTS.build()
     answers = []
     with client.session(archived) as graph:
         for spelling in spellings:
             rows = graph.execute(
-                catalog.CO_RECIPIENTS.replace("count(m)", spelling), {"limit": 500}
+                cypher.replace("count(m)", spelling), {**bound, "limit": 500}
             ).rows
             answers.append(
                 sorted((left, right, int(together)) for left, right, together in rows)
@@ -413,10 +467,10 @@ def test_the_upserts_really_are_upserts_on_this_backend(
 
     with client.session(archived) as graph:
         for name in writes:
-            graph.execute(CATALOG[name], _bind(name))
+            rows_of(graph, CATALOG[name], _bind(name))
         after_first = _counted(graph)
         for name in writes:
-            graph.execute(CATALOG[name], _bind(name))
+            rows_of(graph, CATALOG[name], _bind(name))
 
         assert _counted(graph) == after_first
 
@@ -437,11 +491,11 @@ def test_every_delete_drains_and_then_stops(archived: GraphConfig) -> None:
 
     with client.session(archived) as graph:
         for name in sorted(ROWS):
-            graph.execute(CATALOG[name], _bind(name))
+            rows_of(graph, CATALOG[name], _bind(name))
 
         removed = {
             name: [
-                int(graph.execute(CATALOG[name], _bind(name)).rows[0][0])
+                int(rows_of(graph, CATALOG[name], _bind(name))[0]["removed"])
                 for _ in range(2)
             ]
             for name in deletes
@@ -459,8 +513,18 @@ def test_every_delete_drains_and_then_stops(archived: GraphConfig) -> None:
 def _counted(session: Session) -> dict[str, int]:
     """The four derived counts, straight out of the catalogue."""
     return {
-        "Group": int(session.execute(catalog.COUNT_GROUPS).rows[0][0]),
-        "Topic": int(session.execute(catalog.COUNT_TOPICS).rows[0][0]),
-        "Template": int(session.execute(catalog.COUNT_TEMPLATES).rows[0][0]),
-        "CO_ADDRESSED": int(session.execute(catalog.COUNT_CO_ADDRESSED).rows[0][0]),
+        "Group": int(rows_of(session, catalog.COUNT_GROUPS)[0]["total"]),
+        "Topic": int(rows_of(session, catalog.COUNT_TOPICS)[0]["total"]),
+        "Template": int(rows_of(session, catalog.COUNT_TEMPLATES)[0]["total"]),
+        "CO_ADDRESSED": int(rows_of(session, catalog.COUNT_CO_ADDRESSED)[0]["total"]),
     }
+
+
+def _pairs(rows: list[dict[str, Any]]) -> list[list[Any]]:
+    """The three columns both A1 readings share, by name.
+
+    Named rather than sliced: ``all_rows`` keys a row by its column, so a test
+    that unpacked positionally would be asserting the order of a projection
+    instead of the columns a consumer actually reads.
+    """
+    return [[row["left_id"], row["right_id"], int(row["together"])] for row in rows]

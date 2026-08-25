@@ -40,14 +40,16 @@ from runic.ogm import Session
 
 from mailarc_analytics.derived.config import AnalyticsConfig
 from mailarc_analytics.derived.model import (
+    AddressedGroup,
+    CoAddressed,
     CoAddressedPair,
     CorrespondentFindings,
+    Group,
     GroupFacts,
     MessageFacts,
 )
 from mailarc_analytics.derived.writes import merge_rows
 from mailarc_analytics.queries import catalog
-from mailarc_analytics.queries.catalog import as_graph_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +99,12 @@ def write_correspondents(session: Session, findings: CorrespondentFindings) -> N
                 "id": group.id,
                 "size": group.size,
                 "message_count": group.message_count,
-                "first_seen": as_graph_datetime(group.first_seen),
-                "last_seen": as_graph_datetime(group.last_seen),
+                "first_seen": group.first_seen,
+                "last_seen": group.last_seen,
             }
             for group in findings.groups
         ),
+        model=Group,
     )
     merge_rows(
         session,
@@ -111,6 +114,7 @@ def write_correspondents(session: Session, findings: CorrespondentFindings) -> N
             for group in findings.groups
             for member in group.members
         ),
+        model=AddressedGroup,
     )
     merge_rows(
         session,
@@ -120,11 +124,12 @@ def write_correspondents(session: Session, findings: CorrespondentFindings) -> N
                 "left": pair.left,
                 "right": pair.right,
                 "count": pair.count,
-                "first_seen": as_graph_datetime(pair.first_seen),
-                "last_seen": as_graph_datetime(pair.last_seen),
+                "first_seen": pair.first_seen,
+                "last_seen": pair.last_seen,
             }
             for pair in findings.pairs
         ),
+        model=CoAddressed,
     )
     logger.info(
         "Wrote %d groups and %d co-addressed pairs",

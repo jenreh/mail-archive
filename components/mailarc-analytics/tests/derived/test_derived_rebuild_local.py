@@ -107,6 +107,17 @@ def _rebuild(config: GraphConfig) -> DerivedCounts:
         return rebuild_derived(graph, CONFIG)
 
 
+def _pair(row: dict[str, object]) -> tuple[object, object, object]:
+    """The three columns the two A1 readings have in common.
+
+    Named rather than sliced. Both statements are query-builder objects now and
+    ``rows_of`` keys every row by its column, so the comparison says which
+    three columns it is comparing instead of trusting them to stay in the first
+    three positions of both projections.
+    """
+    return row["left_id"], row["right_id"], row["together"]
+
+
 class TestWhatOneRebuildFinds:
     """Exactly what was planted — five findings out of thirty-three messages."""
 
@@ -139,15 +150,15 @@ class TestWhatOneRebuildFinds:
         _rebuild(archived)
 
         with client.session(archived) as graph:
-            rows = graph.execute(catalog.TOPIC_BREAKDOWN, {"limit": 10}).rows
+            rows = rows_of(graph, catalog.TOPIC_BREAKDOWN, {"limit": 10})
 
         assert rows == [
-            [
-                "topic:8ddcd22af04394667b0b8bfef1d1a97e",
-                "angebot datenmigration",
-                "ref",
-                5,
-            ]
+            {
+                "id": "topic:8ddcd22af04394667b0b8bfef1d1a97e",
+                "label": "angebot datenmigration",
+                "method": "ref",
+                "messages": 5,
+            }
         ]
 
     def test_the_templates_are_reported_one_direction_at_a_time(
@@ -158,19 +169,19 @@ class TestWhatOneRebuildFinds:
         _rebuild(archived)
 
         with client.session(archived) as graph:
-            sent = graph.execute(
-                catalog.TOP_TEMPLATES, {"direction": "sent", "limit": 10}
-            ).rows
-            received = graph.execute(
-                catalog.TOP_TEMPLATES, {"direction": "received", "limit": 10}
-            ).rows
+            sent = rows_of(
+                graph, catalog.TOP_TEMPLATES, {"direction": "sent", "limit": 10}
+            )
+            received = rows_of(
+                graph, catalog.TOP_TEMPLATES, {"direction": "received", "limit": 10}
+            )
 
-        assert [(row[0], row[1], row[2]) for row in sent] == [
-            ("template:1e164feec6258562:sent", 12, 0.641072)
-        ]
-        assert [(row[0], row[1], row[2]) for row in received] == [
-            ("template:132b71d16ae83c39:received", 10, 0.279724)
-        ]
+        assert [
+            (row["id"], row["occurrences"], row["automation_score"]) for row in sent
+        ] == [("template:1e164feec6258562:sent", 12, 0.641072)]
+        assert [
+            (row["id"], row["occurrences"], row["automation_score"]) for row in received
+        ] == [("template:132b71d16ae83c39:received", 10, 0.279724)]
 
     def test_the_recurring_groups_answer_uses_the_configured_thresholds(
         self, archived: GraphConfig
@@ -180,16 +191,17 @@ class TestWhatOneRebuildFinds:
         _rebuild(archived)
 
         with client.session(archived) as graph:
-            rows = graph.execute(
+            rows = rows_of(
+                graph,
                 catalog.RECURRING_GROUPS,
                 {
                     "min_size": CONFIG.min_group_size,
                     "min_messages": CONFIG.min_group_messages,
                     "limit": 10,
                 },
-            ).rows
+            )
 
-        assert [(row[0], row[1], row[2]) for row in rows] == [
+        assert [(row["id"], row["size"], row["message_count"]) for row in rows] == [
             (corpus.circle_of("p1"), 3, 5),
             (corpus.circle_of("b1"), 3, 2),
         ]
@@ -205,10 +217,12 @@ class TestWhatOneRebuildFinds:
         _rebuild(archived)
 
         with client.session(archived) as graph:
-            defined = graph.execute(catalog.CO_RECIPIENTS, {"limit": 50}).rows
-            stored = graph.execute(catalog.TOP_CO_ADDRESSED, {"limit": 50}).rows
+            defined = rows_of(graph, catalog.CO_RECIPIENTS, {"limit": 50})
+            stored = rows_of(graph, catalog.TOP_CO_ADDRESSED, {"limit": 50})
 
-        assert sorted(row[:3] for row in defined) == sorted(row[:3] for row in stored)
+        assert sorted(_pair(row) for row in defined) == sorted(
+            _pair(row) for row in stored
+        )
         assert len(stored) == 3
 
 
@@ -312,12 +326,12 @@ class TestTheDeleteHalf:
         _rebuild(archived)
 
         with client.session(archived) as graph:
-            rows = graph.execute(catalog.TOP_CO_ADDRESSED, {"limit": 50}).rows
+            rows = rows_of(graph, catalog.TOP_CO_ADDRESSED, {"limit": 50})
 
-        assert corpus.REVISION not in {row[0] for row in rows} | {
-            row[1] for row in rows
+        assert corpus.REVISION not in {row["left_id"] for row in rows} | {
+            row["right_id"] for row in rows
         }
-        assert STALE_COUNT not in {row[2] for row in rows}
+        assert STALE_COUNT not in {row["together"] for row in rows}
 
     def test_stale_derived_nodes_are_gone_and_counted(
         self, archived: GraphConfig
@@ -385,13 +399,13 @@ class TestTheSignTrapEndToEnd:
             stored = graph.execute(
                 "MATCH (m:Message) WHERE m.simhash < 0 RETURN count(m)"
             ).rows[0][0]
-            rows = graph.execute(
-                catalog.TOP_TEMPLATES, {"direction": "sent", "limit": 10}
-            ).rows
+            rows = rows_of(
+                graph, catalog.TOP_TEMPLATES, {"direction": "sent", "limit": 10}
+            )
 
         assert stored == 3
         assert counts.templates == 1
-        assert [(row[0], row[1]) for row in rows] == [
+        assert [(row["id"], row["occurrences"]) for row in rows] == [
             ("template:a0b86145044638a0:sent", 3)
         ]
 
@@ -440,13 +454,13 @@ class TestTheSignTrapEndToEnd:
                 row[0] < 0
                 for row in graph.execute("MATCH (m:Message) RETURN m.simhash").rows
             }
-            rows = graph.execute(
-                catalog.TOP_TEMPLATES, {"direction": "sent", "limit": 10}
-            ).rows
+            rows = rows_of(
+                graph, catalog.TOP_TEMPLATES, {"direction": "sent", "limit": 10}
+            )
 
         assert signs == {True, False}
         assert counts.templates == 1
-        assert [(row[0], row[1]) for row in rows] == [
+        assert [(row["id"], row["occurrences"]) for row in rows] == [
             ("template:a0b86145044638a0:sent", 3)
         ]
 

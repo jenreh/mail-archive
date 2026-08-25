@@ -29,11 +29,16 @@ for a hundred thousand messages would put hundreds of megabytes of Python
 strings beside a FalkorDB that runs in the same process tree — for the sake of
 a few hundred texts that end up in a template.
 
-Every statement comes from :mod:`mailarc_analytics.queries.catalog`.
-:mod:`mailarc_core.archive.repository` states the house rule that graph reads
-go through runic's query builder; the catalogue's module docstring argues the
-four cases where the builder cannot carry the statement, and A1's
-``[:SENT_TO|COPIED_TO]`` alternation is one of them.
+Every statement comes from :mod:`mailarc_analytics.queries.catalog` and every
+one of them is now a query-builder statement, run through
+:func:`~mailarc_analytics.queries.rows.rows_of` — which is
+``session.all_rows(statement, params)`` for a builder and the zip for the one
+raw entry this package still has. :mod:`mailarc_core.archive.repository` states
+the house rule that graph reads go through the builder, and the catalogue used
+to argue four exceptions to it; runic 0.5 closed all four, A1's
+``[:SENT_TO|COPIED_TO]`` alternation included — it is
+``traverse(types=[…])`` now. The zip is still here for one statement, and its
+docstring names the condition that retires it.
 
 Synchronous, because every runic driver blocks. An async caller wraps a call in
 ``asyncio.to_thread`` the way the graph status reader does.
@@ -49,6 +54,8 @@ from runic.ogm import Session
 from mailarc_analytics.derived.config import AnalyticsConfig
 from mailarc_analytics.derived.model import MessageFacts
 from mailarc_analytics.queries import catalog
+from mailarc_analytics.queries.catalog import Statement
+from mailarc_analytics.queries.rows import rows_of
 from mailarc_core.archive.model import to_unsigned_64
 
 logger = logging.getLogger(__name__)
@@ -78,7 +85,7 @@ def read_account_addresses(session: Session) -> frozenset[str]:
     """
     found = {
         str(row["address"]).strip().lower()
-        for row in _rows(session, catalog.ACCOUNT_ADDRESSES, {})
+        for row in rows_of(session, catalog.ACCOUNT_ADDRESSES)
         if row.get("address")
     }
     logger.debug("Archive owns %d addresses", len(found))
@@ -92,7 +99,7 @@ def count_unidentified(session: Session) -> int:
     reads filter those nodes out in Cypher and a caller comparing counts would
     only learn that something was missing, not what.
     """
-    rows = _rows(session, catalog.COUNT_UNIDENTIFIED, {})
+    rows = rows_of(session, catalog.COUNT_UNIDENTIFIED)
     total = int(rows[0]["total"]) if rows else 0
     if total:
         logger.warning("Skipping %d Message nodes without a canonical id", total)
@@ -116,7 +123,7 @@ def count_messages(session: Session) -> int:
     one population from the other would break the day a third kind of node
     turns up.
     """
-    rows = _rows(session, catalog.COUNT_MESSAGES, {})
+    rows = rows_of(session, catalog.COUNT_MESSAGES)
     return int(rows[0]["total"]) if rows else 0
 
 
@@ -166,7 +173,7 @@ def read_bodies(session: Session, ids: Sequence[str]) -> dict[str, str]:
     """
     found: dict[str, str] = {}
     for batch in _batched(ids, BODY_BATCH):
-        for row in _rows(session, catalog.MESSAGE_BODIES, {"ids": list(batch)}):
+        for row in rows_of(session, catalog.MESSAGE_BODIES, {"ids": list(batch)}):
             body = row.get("body_clean")
             if body:
                 found[str(row["id"])] = str(body)
@@ -217,7 +224,9 @@ def _participants(
     return tuple(sorted(everyone))
 
 
-def _paged(session: Session, statement: str, ceiling: int) -> Iterator[dict[str, Any]]:
+def _paged(
+    session: Session, statement: Statement, ceiling: int
+) -> Iterator[dict[str, Any]]:
     """Walk an ordered statement page by page, stopping at *ceiling* if set.
 
     The page boundary is the last id seen, not a running offset. ``SKIP`` is
@@ -236,27 +245,12 @@ def _paged(session: Session, statement: str, ceiling: int) -> Iterator[dict[str,
         limit = PAGE_SIZE if ceiling <= 0 else min(PAGE_SIZE, ceiling - read)
         if limit <= 0:
             return
-        page = _rows(session, statement, {"after": after, "limit": limit})
+        page = rows_of(session, statement, {"after": after, "limit": limit})
         yield from page
         read += len(page)
         if len(page) < limit:
             return
         after = str(page[-1]["id"])
-
-
-def _rows(
-    session: Session, statement: str, params: Mapping[str, Any]
-) -> list[dict[str, Any]]:
-    """One catalogue statement's rows, each keyed by its column name.
-
-    A raw statement gets none of runic's entity mapping: the driver hands back
-    a list of lists and the header separately. Zipping them here means every
-    caller above reads ``row["simhash"]`` instead of counting columns, and a
-    statement that gains a column breaks nothing.
-    """
-    result = session.execute(statement, dict(params))
-    columns = result.columns
-    return [dict(zip(columns, row, strict=True)) for row in result.rows or []]
 
 
 def _batched(items: Sequence[str], size: int) -> Iterator[Sequence[str]]:
@@ -299,11 +293,14 @@ def _text_set(values: Any) -> tuple[str, ...]:
 def _as_datetime(value: Any) -> datetime | None:
     """A stored timestamp as an **aware** ``datetime``, or ``None``.
 
-    The graph hands back the ISO-8601 string runic's mapper wrote, because raw
-    Cypher goes past the converter that would have decoded it. A value that
-    does not parse costs this message its date and nothing else — every
-    analysis already handles an undated message, and a rebuild that died over
-    one malformed property would be worse than one that reports it.
+    The graph hands back the ISO-8601 string runic's mapper wrote, because a
+    *projected* column goes past the converter that would have decoded it: the
+    statement is a builder now and ``all_rows`` decodes a column only where a
+    whole node or edge comes back under a mapped alias, which was measured
+    rather than assumed. A value that does not parse costs this message its
+    date and nothing else — every analysis already handles an undated message,
+    and a rebuild that died over one malformed property would be worse than one
+    that reports it.
 
     A value that parses but carries no offset is the gap between those two
     cases, and the expensive one: every ``min``, ``max``, ``sorted`` and

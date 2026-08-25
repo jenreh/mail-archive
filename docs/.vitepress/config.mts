@@ -7,6 +7,9 @@ export default defineConfig({
   lang: 'en-GB',
   cleanUrls: true,
   lastUpdated: true,
+  sitemap: {
+    hostname: 'https://mailarc.rehpoehler.de'
+  },
 
   // Without this the built site asks for /favicon.ico on every page and gets a
   // 404. The file lives in docs/public/, which VitePress copies verbatim.

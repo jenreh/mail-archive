@@ -53,7 +53,7 @@ import logging
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 
-from runic.ogm import FieldDescriptor, Session, select
+from runic.ogm import Session, alias, select
 
 from mailarc_analytics import AnalyticsReader
 from mailarc_analytics.semantic import SemanticSearch
@@ -84,27 +84,16 @@ nothing. The caller owns that decision, which in the application means
 """
 
 
-def _field(owner: type, name: str) -> FieldDescriptor:
-    """The query builder's descriptor for a mapped field, looked up by name.
+MESSAGE = alias(Message, "m")
+THREAD = alias(Thread, "t")
+"""The two named variables these reads share.
 
-    The same detour :mod:`mailarc_core.archive.repository` takes and for the
-    same reason: ``Message.thread`` *is* the descriptor at runtime but is
-    annotated with the value it yields on an instance, so handing it to
-    ``traverse`` or ``order_by`` does not type-check. Going through ``getattr``
-    with a check means a renamed field fails at import rather than at query
-    time.
-    """
-    descriptor = getattr(owner, name)
-    if not isinstance(descriptor, FieldDescriptor):
-        raise TypeError(f"{owner.__name__}.{name} is not a mapped field")
-    return descriptor
-
-
-MESSAGE_ID = _field(Message, "id")
-MESSAGE_SENDER = _field(Message, "sender")
-MESSAGE_THREAD = _field(Message, "thread")
-MESSAGE_SENT_AT = _field(Message, "sent_at")
-THREAD_ID = _field(Thread, "id")
+runic 0.5 replaced ``.alias("m")`` chaining with handles, and with it the
+``_field()`` detour this module used to carry: a handle's attribute is a typed
+expression, so ``MESSAGE.id.in_(keys)`` type-checks where
+``Message.id.in_(keys)`` does not, and ``MESSAGE.thread`` supplies the relation
+*and* anchors the pattern to ``m``. A renamed field still fails at import.
+"""
 
 
 class ArchiveAccess:
@@ -214,14 +203,12 @@ def _thread_members(session: Session, thread_id: str, limit: int) -> list[Messag
     thread cannot appear here with a null on the other side.
     """
     statement = (
-        select(Message)
-        .alias("m")
-        .traverse(MESSAGE_THREAD, optional=False)
-        .alias("t")
-        .where(THREAD_ID == thread_id, on="t")
-        .order_by(MESSAGE_SENT_AT)
+        select(MESSAGE)
+        .traverse(MESSAGE.thread, to=THREAD, optional=False)
+        .where(THREAD.id == thread_id)
+        .order_by(MESSAGE.sent_at)
         .limit(limit)
-        .return_target("m")
+        .return_target(MESSAGE)
     )
     return session.scalars(statement)
 
@@ -241,12 +228,10 @@ def _senders_of(session: Session, ids: Iterable[str]) -> dict[str, Address]:
     if not keys:
         return {}
     statement = (
-        select(Message)
-        .alias("m")
-        .where(MESSAGE_ID.in_(keys))
-        .traverse(MESSAGE_SENDER, optional=False)
-        .alias("s")
-        .return_nodes("m", "s")
+        select(MESSAGE)
+        .where(MESSAGE.id.in_(keys))
+        .traverse(MESSAGE.sender, to="s", optional=False)
+        .return_nodes(MESSAGE, "s")
     )
     found: dict[str, Address] = {}
     for message, sender in session.all_with_edges(statement):

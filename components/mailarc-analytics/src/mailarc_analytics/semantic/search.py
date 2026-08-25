@@ -40,6 +40,7 @@ from typing import Any
 from runic.ogm import Session
 
 from mailarc_analytics.queries import catalog
+from mailarc_analytics.queries.catalog import Statement
 from mailarc_analytics.queries.rows import (
     as_datetime,
     as_float,
@@ -472,7 +473,7 @@ class SemanticSearch:
 
 
 def _asked(
-    session: Session, statement: str, params: Mapping[str, Any], *, terms: str
+    session: Session, statement: Statement, params: Mapping[str, Any], *, terms: str
 ) -> list[dict[str, Any]]:
     """Run a full-text statement, translating what the store refuses.
 

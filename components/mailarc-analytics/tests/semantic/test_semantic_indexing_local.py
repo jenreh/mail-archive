@@ -310,7 +310,8 @@ class TestRebuildingTheIndexAtANewLength:
     def test_it_resizes_the_index(self, migrated: GraphConfig) -> None:
         with client.session(migrated) as graph:
             before = vector_index(graph)
-        assert before is not None and before.dimension == DIMENSION
+        assert before is not None
+        assert before.dimension == DIMENSION
 
         rebuild_index(sessions(migrated), DIMENSION + 4)
 
@@ -370,12 +371,20 @@ class TestRebuildingTheIndexAtANewLength:
 
         with client.session(migrated) as graph:
             still = vector_index(graph)
-        assert still is not None and still.dimension == DIMENSION
+        assert still is not None
+        assert still.dimension == DIMENSION
 
     def test_it_builds_one_where_there_was_none(self, migrated: GraphConfig) -> None:
-        """A graph whose index was dropped is repaired rather than refused."""
+        """A graph whose index was dropped is repaired rather than refused.
+
+        ``DROP_VECTOR_INDEX`` is a function now — runic 0.5 emits vector-index
+        DDL through ``IndexOperations`` rather than as Cypher a caller can hold
+        — so it is *called* with the session where it used to be executed
+        against it. What it does to the graph is unchanged, which is what the
+        next two lines still measure.
+        """
         with client.session(migrated) as graph:
-            graph.execute(catalog.DROP_VECTOR_INDEX, {})
+            catalog.DROP_VECTOR_INDEX(graph)
             assert vector_index(graph) is None
 
         rebuild_index(sessions(migrated), DIMENSION)

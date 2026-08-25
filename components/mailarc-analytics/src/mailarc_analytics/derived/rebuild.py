@@ -16,10 +16,12 @@ Three things make it so, and all three are checkable:
 2. Those four constants are matched against :data:`_DERIVED_NODE_DELETE` and
    :data:`_DERIVED_EDGE_DELETE` **at import time**. A node deletion has to read
    ``MATCH (n:Group|Topic|Template) … DETACH DELETE n``; an edge deletion has to
-   read ``MATCH (:Address)-[r:CO_ADDRESSED]->(:Address) … DELETE r`` — deleting
-   a *relationship* variable, never a node one. Anything else and this module
-   refuses to import, so an edit that would delete a ``Message`` fails before a
-   session is ever opened rather than after.
+   read ``MATCH (a:Address) MATCH (a)-[r:CO_ADDRESSED]->(b:Address) … DELETE r``
+   — deleting a *relationship* variable, never a node one. Anything else and
+   this module refuses to import, so an edit that would delete a ``Message``
+   fails before a session is ever opened rather than after. The match is
+   against each statement's compiled Cypher, since a catalogue statement is a
+   query-builder object rather than a string.
 3. Every write below is a ``MERGE`` from the same catalogue, and the derived
    labels are the only labels those statements name. There is no ``DETACH
    DELETE`` over an unlabelled pattern anywhere in this package.
@@ -58,6 +60,8 @@ from mailarc_analytics.derived.model import (
     SimilarityEdge,
 )
 from mailarc_analytics.queries import catalog
+from mailarc_analytics.queries.catalog import Statement
+from mailarc_analytics.queries.rows import as_int, rows_of
 
 logger = logging.getLogger(__name__)
 
@@ -82,28 +86,65 @@ _DERIVED_NODE_DELETE = re.compile(
 
 Deliberately exact. A delete statement is the one thing here that could destroy
 an archive, so it is read character by character rather than trusted to contain
-the right label — and the whitespace is normalised first so that reformatting
-the catalogue is not mistaken for tampering with it.
+the right label — and the layout is normalised first (see :func:`_normalised`)
+so that reformatting the catalogue is not mistaken for tampering with it.
 """
 
 _DERIVED_EDGE_DELETE = re.compile(
-    r"MATCH \(:Address\)-\[r:CO_ADDRESSED\]->\(:Address\) "
+    r"MATCH \(a:Address\) "
+    r"MATCH \(a\)-\[r:CO_ADDRESSED\]->\(b:Address\) "
     r"WITH r LIMIT \$batch "
     r"DELETE r "
     r"RETURN count\(r\) AS removed"
 )
 """The only shape an edge deletion may have: ``DELETE`` on a relationship
-variable, both endpoints anonymous and kept."""
+variable, both endpoints ``Address`` and both kept.
+
+The endpoints are **named** ``a`` and ``b`` where they used to be anonymous,
+and the pattern arrives as two ``MATCH`` clauses rather than one. That is what
+``traverse()`` emits for a declared relation and it changes nothing the guard
+is for — the deleted variable is still ``r``, there is still no ``DETACH``, and
+a statement that deleted ``a`` or ``b`` would fail this match as surely as
+before. The regex is exact for the reason it always was: a delete is the one
+thing in this package that could destroy an archive, so it is read character by
+character rather than trusted to contain the right label.
+"""
 
 
-def _verified(statement: str, shape: re.Pattern[str]) -> str:
-    """Return *statement* if it matches *shape*; raise at import time if not."""
-    if not shape.fullmatch(" ".join(statement.split())):
-        raise ValueError(f"Refusing a delete statement of an unknown shape: {shape}")
+def _normalised(cypher: str) -> str:
+    """Return *cypher* as one line, with the compiler's backticks removed.
+
+    Neither difference carries meaning. runic compiles a statement over several
+    lines and backtick-quotes every identifier it emits — ``AS `removed``` —
+    so that a model may declare a field named after a Cypher keyword. Both are
+    the compiler's formatting, not the statement's shape, and normalising them
+    away is what lets the guards below stay written as the Cypher a reader
+    would type. A backtick can only wrap an identifier, so dropping it cannot
+    hide a clause the shape would otherwise reject.
+    """
+    return " ".join(cypher.replace("`", "").split())
+
+
+def _verified(statement: Statement, shape: re.Pattern[str]) -> Statement:
+    """Return *statement* if it matches *shape*; raise at import time if not.
+
+    The shape is matched against the statement's **compiled Cypher**, not
+    against a Python object: a catalogue statement is a
+    :class:`~runic.ogm.QueryBuilder` now, and what has to be checked is the text
+    the store will run. ``build()`` is enough here — it needs no session,
+    because a delete has no dialect-supplied function in it — and the emitted
+    Cypher is what this module refuses to import over.
+    """
+    cypher = statement if isinstance(statement, str) else statement.build()[0]
+    if not shape.fullmatch(_normalised(cypher)):
+        raise ValueError(
+            f"Refusing a delete statement of an unknown shape: {cypher!r} "
+            f"does not match {shape.pattern!r}"
+        )
     return statement
 
 
-_NODE_DELETIONS: tuple[str, ...] = tuple(
+_NODE_DELETIONS: tuple[Statement, ...] = tuple(
     _verified(statement, _DERIVED_NODE_DELETE)
     for statement in (
         catalog.DELETE_GROUPS,
@@ -113,7 +154,7 @@ _NODE_DELETIONS: tuple[str, ...] = tuple(
 )
 """Every derived label, checked. The three the spec names and no other."""
 
-_EDGE_DELETIONS: tuple[str, ...] = (
+_EDGE_DELETIONS: tuple[Statement, ...] = (
     _verified(catalog.DELETE_CO_ADDRESSED, _DERIVED_EDGE_DELETE),
 )
 """The one derived edge type that outlives its endpoints, checked."""
@@ -232,18 +273,24 @@ def _delete_derived(session: Session) -> tuple[int, int]:
     return nodes, edges
 
 
-def _drain(session: Session, statement: str) -> int:
+def _drain(session: Session, statement: Statement) -> int:
     """Run one batched delete until it reports nothing left to remove.
 
-    The statement's own ``RETURN count(…)`` is the loop condition rather than
-    the driver's write statistics: those live on a private attribute of the
-    raw result and come back as a float.
+    The statement's own ``RETURN count(…) AS removed`` is the loop condition
+    rather than the driver's write statistics: those live on a private
+    attribute of the raw result and come back as a float. Read by *name* now
+    rather than by position — ``rows_of`` keys every row by its column, and a
+    delete that gained a second column would otherwise start counting the wrong
+    one.
+
+    Bound and never built. A catalogue statement declares ``$batch``, so it
+    goes through ``session.all_rows``; ``session.execute(*statement.build())``
+    would reach the store without the declared parameter and be refused.
     """
     total = 0
     while True:
-        result = session.execute(statement, {"batch": DELETE_BATCH})
-        rows = result.rows or []
-        removed = int(rows[0][0]) if rows and rows[0] else 0
+        rows = rows_of(session, statement, {"batch": DELETE_BATCH})
+        removed = as_int(rows[0]["removed"]) if rows else 0
         if removed == 0:
             return total
         total += removed

@@ -36,8 +36,9 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime
 from enum import StrEnum
 from types import MappingProxyType
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from runic.ogm import Edge, Field, Node, Relation
 
 from mailarc_core.archive.model import Message, to_unsigned_64
@@ -222,9 +223,34 @@ class CoAddressedPair(BaseModel):
     Unordered in meaning but ordered in storage: ``left`` is always the smaller
     id, so one pair is one edge and a rebuild cannot write it twice under two
     names. Reads must use the undirected pattern.
+
+    **The ordering is enforced here rather than trusted to every caller**, and
+    that is what makes a directed ``MERGE`` correct. FalkorDB refuses an
+    undirected one — runic 0.5 raises ``NotImplementedError`` rather than
+    emitting ``MERGE (a)-[r:CO_ADDRESSED]-(b)`` — so the edge is stored
+    ``smaller -> larger`` and the pattern that finds it again is the pair in
+    that same order. A reversed pair reaching the store would grow a second
+    edge for a pair that already has one, and every count over it would be
+    wrong by however many pairs somebody handed over backwards; measured on a
+    planted graph, three pairs written both ways round came back as six edges.
+    :func:`~mailarc_analytics.derived.correspondents.build_correspondents`
+    already produces them in order — it walks a *sorted* address set — so this
+    validator changes nothing about a rebuild and closes the one hole a
+    hand-built finding could reach through.
     """
 
     model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _order_the_pair(cls, data: Any) -> Any:
+        """Put the smaller id in ``left``, whichever way it was handed over."""
+        if not isinstance(data, Mapping):
+            return data
+        left, right = data.get("left"), data.get("right")
+        if isinstance(left, str) and isinstance(right, str) and right < left:
+            return {**data, "left": right, "right": left}
+        return data
 
     left: str
     right: str
@@ -543,8 +569,19 @@ class CoAddressed(Edge, type="CO_ADDRESSED"):
     canonical order (lower id first) and every read matches without an arrow.
     runic's own ``relate`` cannot help here: the FalkorDB dialect downgrades
     ``direction="BOTH"`` to ``OUTGOING`` silently, which would eventually store
-    both directions of the same pair. The undirected ``MERGE`` in the catalog
-    is what keeps it one edge.
+    both directions of the same pair.
+
+    **The canonical order is what keeps it one edge**, and it is now the only
+    thing that does. The catalogue's ``MERGE`` used to carry no arrow and
+    tolerated a pair handed over backwards; FalkorDB refuses an undirected
+    ``MERGE`` and runic 0.5 says so out loud rather than emitting one, so
+    :data:`~mailarc_analytics.queries.catalog.MERGE_CO_ADDRESSED` writes
+    ``smaller -> larger``. That stores exactly what the undirected form already
+    stored — measured on a planted graph, the old statement had put every
+    arrow smaller-to-larger too, because the caller ordered the pair — so no
+    archive needs migrating.
+    :class:`~mailarc_analytics.derived.model.CoAddressedPair` enforces the
+    ordering rather than leaving it to whoever builds a finding.
     """
 
     count: int | None = Field(default=None)

@@ -32,6 +32,7 @@ from mailarc_analytics import (
     write_topics,
 )
 from mailarc_analytics.queries import catalog
+from mailarc_analytics.queries.rows import rows_of
 from mailarc_core.graph import client
 from mailarc_core.graph.config import GraphConfig
 
@@ -43,9 +44,18 @@ DERIVED_EDGES = ("CO_ADDRESSED", "ADDRESSED_GROUP", "ABOUT", "INSTANCE_OF")
 
 
 def _derived(session: Session) -> dict[str, int]:
-    """Every derived label and edge type, counted the way the catalogue does."""
+    """Every derived label and edge type, counted the way the catalogue does.
+
+    The three node counts go through ``rows_of``, which is how the package runs
+    a catalogue statement: they are query-builder objects and the driver cannot
+    be handed one. The four edge counts stay hand-written Cypher — they are the
+    test's own question about what is in the store, not a claim about the
+    catalogue.
+    """
     counted = {
-        name: int(session.execute(catalog.CATALOG[f"COUNT_{name.upper()}S"]).rows[0][0])
+        name: int(
+            rows_of(session, catalog.CATALOG[f"COUNT_{name.upper()}S"])[0]["total"]
+        )
         for name in ("Group", "Topic", "Template")
     }
     counted |= {
@@ -179,9 +189,11 @@ class TestTheUndirectedEdge:
 
         with client.session(archived) as graph:
             write_correspondents(graph, reversed_only)
-            rows = graph.execute(catalog.TOP_CO_ADDRESSED, {"limit": 10}).rows
+            rows = rows_of(graph, catalog.TOP_CO_ADDRESSED, {"limit": 10})
 
-        assert [row[:3] for row in rows] == [[corpus.ANNA, corpus.THOMAS, 4]]
+        assert [[row["left_id"], row["right_id"], row["together"]] for row in rows] == [
+            [corpus.ANNA, corpus.THOMAS, 4]
+        ]
 
 
 class TestTheEdgesMatchTheirEndpoints:
@@ -205,7 +217,8 @@ class TestTheEdgesMatchTheirEndpoints:
         )
 
         with client.session(archived) as graph:
-            graph.execute(
+            rows_of(
+                graph,
                 catalog.MERGE_ADDRESSED_GROUP,
                 {
                     "rows": [

@@ -45,6 +45,30 @@ covered by the same decision that let the package exist, while a new file
 anywhere else is not.
 """
 
+DETERMINISTIC = ("mailarc_analytics.derived", "mailarc_analytics.queries")
+"""This package's own two model-free trees, by import prefix.
+
+A name under one of these is not a dependency on anything: every file in both
+is scanned by the tests below, so importing one cannot smuggle a model in — if
+it named an embedder, *that file* would be the offender. The exemption exists
+because :data:`SEMANTIC` matches on substrings and one of the catalogue's
+statement modules is called ``embedding``: it holds the five statements the
+embed job binds, no model within reach of it, and the ban would otherwise be
+firing on a file name. ``mailarc_analytics.semantic`` does not start with
+either prefix, so every way of reaching the embedder is still caught.
+"""
+
+
+def _reaches_for_a_model(name: str) -> bool:
+    """Whether an imported name means a model got involved.
+
+    A first-party name inside :data:`DETERMINISTIC` never does; anything
+    carrying one of :data:`SEMANTIC`'s markers does.
+    """
+    if name.startswith(DETERMINISTIC):
+        return False
+    return any(marker in name.lower() for marker in SEMANTIC)
+
 
 def _imported(path: Path) -> set[str]:
     """Every module name this file imports, dotted form, aliases resolved out.
@@ -104,9 +128,7 @@ def test_no_module_in_the_package_imports_anything_semantic() -> None:
     """
     offenders = {
         path.relative_to(SOURCE).as_posix(): sorted(
-            name
-            for name in _imported(path)
-            if any(marker in name.lower() for marker in SEMANTIC)
+            name for name in _imported(path) if _reaches_for_a_model(name)
         )
         for path in sorted(SOURCE.rglob("*.py"))
         if not path.relative_to(SOURCE).as_posix().startswith(EXEMPT)
@@ -130,9 +152,7 @@ def test_the_deterministic_analyses_are_the_ones_that_stay_clean() -> None:
     ]
     offenders = {
         path.relative_to(SOURCE).as_posix(): sorted(
-            name
-            for name in _imported(path)
-            if any(marker in name.lower() for marker in SEMANTIC)
+            name for name in _imported(path) if _reaches_for_a_model(name)
         )
         for path in deterministic
     }

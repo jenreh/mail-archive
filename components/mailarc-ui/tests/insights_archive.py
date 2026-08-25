@@ -43,7 +43,13 @@ what a page over an archive nobody rebuilt is allowed to ask for."""
 
 
 class FakeResult:
-    """What ``Session.execute`` hands back: a header and a list of lists."""
+    """What ``Session.execute`` hands back: a header and a list of lists.
+
+    Still how an answer is written down although
+    :meth:`FakeGraph.all_rows` hands back dicts: the header is what the store
+    really sends, the zip is what the session really does, and a scripted
+    answer reads better column by column.
+    """
 
     def __init__(self, columns: list[str], rows: list[list[Any]]) -> None:
         self.columns = columns
@@ -60,12 +66,12 @@ class FakeGraph:
     """
 
     def __init__(self) -> None:
-        self.answers: dict[str, FakeResult] = {}
+        self.answers: dict[Any, FakeResult] = {}
         self.templates: dict[str, FakeResult] = {}
-        self.asked: list[str] = []
+        self.asked: list[Any] = []
         self.params: list[dict[str, Any]] = []
-        self.failing: set[str] = set()
-        self.failing_from: dict[str, int] = {}
+        self.failing: set[Any] = set()
+        self.failing_from: dict[Any, int] = {}
         """Statement -> the execution number it starts failing at, counting
         from one.
 
@@ -76,12 +82,12 @@ class FakeGraph:
         round trips and a failure between them is exactly the case the
         listing's own error string exists for.
         """
-        self.executions: dict[str, int] = {}
+        self.executions: dict[Any, int] = {}
 
-    def count(self, statement: str, total: int) -> None:
+    def count(self, statement: Any, total: int) -> None:
         self.answers[statement] = FakeResult(["total"], [[total]])
 
-    def rows(self, statement: str, columns: list[str], rows: list[list[Any]]) -> None:
+    def rows(self, statement: Any, columns: list[str], rows: list[list[Any]]) -> None:
         self.answers[statement] = FakeResult(columns, rows)
 
     def template_rows(
@@ -105,7 +111,28 @@ class FakeGraph:
     def __exit__(self, *_exc: object) -> None:
         return None
 
+    def all_rows(
+        self, statement: Any, params: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """How a catalogue statement is run: bound by the session, keyed by
+        column.
+
+        Every statement the insights pages reach for is a query-builder object
+        that only the session can bind — the driver cannot be handed one — so
+        this is the member :func:`~mailarc_analytics.queries.rows.rows_of`
+        calls for all of them. :meth:`execute` stays below for the one entry
+        that is still raw Cypher, and both answer from the same script.
+        """
+        answer = self._answer(statement, params or {})
+        return [dict(zip(answer.columns, row, strict=True)) for row in answer.rows]
+
     def execute(self, statement: str, params: dict[str, Any]) -> FakeResult:
+        """How the one raw statement is run: a header and a list of lists."""
+        return self._answer(statement, params)
+
+    def _answer(self, statement: Any, params: dict[str, Any]) -> FakeResult:
+        """The scripted answer for *statement*, recorded, counted and possibly
+        made to fail."""
         self.asked.append(statement)
         self.params.append(params)
         self.executions[statement] = self.executions.get(statement, 0) + 1

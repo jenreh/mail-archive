@@ -25,6 +25,7 @@ from runic.ogm import Session
 
 from mailarc_analytics import AnalyticsReader, TemplateDirection, rebuild_derived
 from mailarc_analytics.queries import catalog
+from mailarc_analytics.queries.rows import rows_of
 from mailarc_core.graph import client
 from mailarc_core.graph.config import GraphConfig
 
@@ -89,14 +90,23 @@ def _invent_pair(session: Session, left: str, right: str, count: int) -> None:
     Hand-rolled Cypher would plant an edge no write path can produce, and then
     the cross-check would only be catching something that cannot happen. This
     is what a bug in A1 would leave behind.
+
+    Run through ``rows_of`` — the statement is a query-builder object and only
+    the session can bind it — and with the pair put in the order the write path
+    guarantees. ``CoAddressedPair`` orders every finding smaller-id-first
+    because the ``MERGE`` is directed, so a helper that wrote them the other way
+    round would be planting an edge a rebuild cannot produce, which is the one
+    thing this helper exists not to do.
     """
-    session.execute(
+    smaller, larger = sorted((left, right))
+    rows_of(
+        session,
         catalog.MERGE_CO_ADDRESSED,
         {
             "rows": [
                 {
-                    "left": left,
-                    "right": right,
+                    "left": smaller,
+                    "right": larger,
                     "count": count,
                     "first_seen": None,
                     "last_seen": None,

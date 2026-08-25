@@ -152,6 +152,35 @@ class Address(Node, labels=["Address"]):
     nobody ruled on reads ``False``.
     """
 
+    co_addressed: list["Address"] = Relation(  # noqa: UP037 - see below
+        relationship="CO_ADDRESSED", direction="OUTGOING", target="Address"
+    )
+    """The addresses this one gets written to together with — a *derived* edge.
+
+    Declared here, written elsewhere. Nothing in this component ever creates a
+    ``CO_ADDRESSED`` edge: the analytics rebuild computes it from ``SENT_TO``
+    and ``COPIED_TO`` and deletes every one of them again on the next run. It
+    is declared on a ground-truth node for the same reason
+    ``Message.embedding`` and ``Message.embedding_model`` are — a later phase
+    fills it in, and a query needs the declaration before it can walk the edge
+    at all.
+
+    ``OUTGOING``, although co-addressing means something undirected. **The
+    writer orders every pair smaller id first**, and that ordering is the whole
+    reason one pair is one edge: hand the same pair in reversed and the graph
+    grows a second edge for it. A pattern without an arrow matches each stored
+    edge from both ends, so a read either filters ``a.id < b.id`` — which is
+    what the top-pairs listing does — or counts everything twice, which is why
+    the counting statement carries an arrow.
+
+    The annotation stays a string, and ruff's ``UP037`` is wrong to want it
+    unquoted: ``Address`` is not bound yet while its own class body runs and
+    runic reads the annotations from ``__init_subclass__``, so the unquoted
+    form raises ``NameError`` before the module finishes importing —
+    measured, not assumed. The same landmine ``Message.replies_to`` dodges
+    with ``Any``; a quoted forward reference survives it here and says more.
+    """
+
 
 class Thread(Node, labels=["Thread"]):
     """A provider conversation, keyed ``{account}:{provider_thread_id}``.

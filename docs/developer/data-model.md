@@ -214,10 +214,12 @@ even when the archive had not moved.
 | `ABOUT` | Message → Topic | `score`, `method` |
 | `INSTANCE_OF` | Message → Template | `distance` |
 
-`CO_ADDRESSED` is undirected, and its `MERGE` pattern carries no arrow, so the
-same pair handed in either order finds the one edge instead of growing a second.
-Which way round it ended up stored is an accident of who was written to first —
-so every read has to match it without an arrow too. Bcc'd addresses are
+`CO_ADDRESSED` is undirected in meaning and directed in storage. FalkorDB
+refuses an undirected `MERGE`, so the pair is ordered before it is written —
+smaller id first, enforced by `CoAddressedPair` — and that ordering is what
+makes one pair one edge instead of two. Which way round an edge ended up stored
+is still an accident of who was written to first, so every read matches it
+without an arrow. Bcc'd addresses are
 deliberately left out of it: a blind copy was written to *without* the other
 recipients knowing, and an edge saying otherwise would be wrong about the one
 thing Bcc means.

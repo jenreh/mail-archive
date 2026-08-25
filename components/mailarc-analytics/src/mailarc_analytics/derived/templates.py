@@ -65,7 +65,9 @@ from runic.ogm import Session
 
 from mailarc_analytics.derived.config import AnalyticsConfig
 from mailarc_analytics.derived.model import (
+    InstanceOf,
     MessageFacts,
+    Template,
     TemplateCluster,
     TemplateDirection,
     TemplateGroup,
@@ -76,7 +78,6 @@ from mailarc_analytics.derived.model import (
 from mailarc_analytics.derived.partition import DisjointSet
 from mailarc_analytics.derived.writes import merge_rows
 from mailarc_analytics.queries import catalog
-from mailarc_analytics.queries.catalog import as_graph_datetime
 from mailarc_core.archive.model import to_unsigned_64
 from mailarc_core.mail.parsing import SIMHASH_BITS, hamming_distance
 
@@ -201,11 +202,12 @@ def write_templates(session: Session, clusters: Sequence[TemplateCluster]) -> No
                 "occurrences": template.occurrences,
                 "automation_score": template.automation_score,
                 "direction": template.direction.value,
-                "first_seen": as_graph_datetime(template.first_seen),
-                "last_seen": as_graph_datetime(template.last_seen),
+                "first_seen": template.first_seen,
+                "last_seen": template.last_seen,
             }
             for template in clusters
         ),
+        model=Template,
     )
     merge_rows(
         session,
@@ -219,6 +221,7 @@ def write_templates(session: Session, clusters: Sequence[TemplateCluster]) -> No
             for template in clusters
             for member in template.members
         ),
+        model=InstanceOf,
     )
     logger.info("Wrote %d templates", len(clusters))
 

@@ -92,7 +92,7 @@ def graph_answers(
     written: int | None = None,
 ) -> dict[str, list[list[dict[str, Any]]]]:
     """A scripted archive: an index, a count, some pages, and a write result."""
-    answers: dict[str, list[list[dict[str, Any]]]] = {
+    answers: dict[Any, list[list[dict[str, Any]]]] = {
         catalog.VECTOR_INDEX_OPTIONS: once([index_row(dimension)]),
         catalog.COUNT_NEEDING_EMBEDDING: once([{"total": total}]),
     }

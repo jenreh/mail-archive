@@ -104,7 +104,7 @@ that looks exactly like a complete search over a small one.
 | `Template` | its representative's unsigned SimHash plus the direction | A3 |
 
 ```
-(Address)-[:CO_ADDRESSED {count, first_seen, last_seen}]-(Address)   # no arrow
+(Address)-[:CO_ADDRESSED {count, first_seen, last_seen}]->(Address)  # ordered pair
 (Message)-[:ADDRESSED_GROUP]->(Group)
 (Message)-[:ABOUT {score, method}]->(Topic)
 (Message)-[:INSTANCE_OF {distance}]->(Template)
@@ -117,8 +117,10 @@ the set of messages in it, so the digest of that set is the only key under
 which a rebuild is a no-op.
 
 **`CO_ADDRESSED` is undirected in meaning and directed in storage,** because
-every Cypher edge is. Exactly one edge is written per unordered pair, smaller
-address id first, and every read has to match it without an arrow.
+every Cypher edge is and FalkorDB refuses an undirected `MERGE` outright.
+Exactly one edge is written per unordered pair, smaller address id first —
+`CoAddressedPair` orders it, so the invariant is enforced rather than agreed —
+and every read has to match it without an arrow.
 
 ## Rules
 

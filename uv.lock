@@ -1219,7 +1219,7 @@ requires-dist = [
     { name = "appkit-commons", specifier = ">=1.13.6" },
     { name = "falkordb", specifier = ">=1.7.0" },
     { name = "pydantic", specifier = ">=2.13" },
-    { name = "runic-py", specifier = ">=0.4.6" },
+    { name = "runic-py", specifier = ">=0.6.0" },
     { name = "sqlalchemy", specifier = ">=2.0.49" },
 ]
 
@@ -2372,7 +2372,7 @@ wheels = [
 
 [[package]]
 name = "runic-py"
-version = "0.4.6"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mako" },
@@ -2380,9 +2380,9 @@ dependencies = [
     { name = "shellingham" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/04/36ab5ded7b38729cc4a8d91a5566c62514e7bbacf36a46900f6157c682fc/runic_py-0.4.6.tar.gz", hash = "sha256:9e5f9279e595ab65c10403734a7f503e744a31d9a20df6464a71c84e52b652ea", size = 158922, upload-time = "2026-08-06T10:29:10.417Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8d/10/205186d1f07d498a4d044b18772f86c50280988316c704516ccc087705cf/runic_py-0.6.0.tar.gz", hash = "sha256:fe5fef73c04c00588ba9a191f40b1257d167ee13d18ea42a843aa89ab0c0d0cb", size = 201211, upload-time = "2026-08-24T13:24:13.739Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/ee/a906b04fca52b66cd81addbf880e38a83eb952db4a46b387cee3662462d3/runic_py-0.4.6-py3-none-any.whl", hash = "sha256:78a8535e317aa3bba4c932e4d080bc1b606b4f5f541a2a7ccf1bc41205e91ddf", size = 209135, upload-time = "2026-08-06T10:29:08.823Z" },
+    { url = "https://files.pythonhosted.org/packages/86/e9/7358707fd8012b0265c1dee86336e46ed6566881090ee03a4eabf8a12b04/runic_py-0.6.0-py3-none-any.whl", hash = "sha256:7de8c46aca24f2cc5dd2c09e3d75c14971437e8dac85509c2dc60e83251202d3", size = 260710, upload-time = "2026-08-24T13:24:12.164Z" },
 ]
 
 [[package]]

@@ -4,12 +4,17 @@ façade that runs it.
 ``catalog``
     Every statement the derived layer runs, plus :data:`~catalog.CATALOG`, the
     name-to-statement mapping a test iterates, and
-    :func:`~catalog.parameters_of`, which reads a statement's parameters off
-    its text.
+    :func:`~catalog.parameters_of`, which asks a statement what parameters it
+    declared. The statements themselves are query-builder objects and live in
+    ``catalog``'s own package, one module per family.
 ``rows``
-    The other half of the calling convention: raw Cypher goes past runic's
-    mapper, so a result set comes back as a header and a list of lists with
-    every value in whatever shape the driver made of it.
+    The other half of the calling convention:
+    :func:`~mailarc_analytics.queries.rows.rows_of` runs a statement of either
+    kind and answers with column-keyed dicts — ``session.all_rows`` for a
+    builder, which binds its declared parameters, and the header-and-rows zip
+    for the one entry that is still raw Cypher. A *projected* column gets none
+    of runic's converters either way, so the four ``as_*`` coercions here are
+    still what read a stored timestamp, count or score back.
 ``model``
     What a report answers with — frozen value objects, one per statement's
     columns, plus the cross-check's verdict.

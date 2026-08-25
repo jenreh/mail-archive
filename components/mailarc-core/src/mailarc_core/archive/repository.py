@@ -12,31 +12,23 @@ backend stays :attr:`~mailarc_core.graph.config.GraphConfig.backend`'s choice.
 
 import logging
 
-from runic.ogm import FieldDescriptor, Repository, Session, select
+from runic.ogm import Repository, Session, alias, select
 
 from mailarc_core.archive.model import Address, Label, Message
 
 logger = logging.getLogger(__name__)
 
+MESSAGE = alias(Message, "m")
+"""The listing's root variable, named once and referenced by both reads.
 
-def _field(name: str) -> FieldDescriptor:
-    """The descriptor the query builder wants, looked up by name.
-
-    ``Message.sender`` *is* the descriptor at runtime but is annotated with
-    the value it yields on an instance, so passing it straight to ``traverse``
-    or ``order_by`` does not type-check. The same detour the writer takes, and
-    for the same reason: a renamed field fails at import, not at query time.
-    """
-    descriptor = getattr(Message, name)
-    if not isinstance(descriptor, FieldDescriptor):
-        raise TypeError(f"Message.{name} is not a mapped field")
-    return descriptor
-
-
-ID = _field("id")
-SENDER = _field("sender")
-LABELS = _field("labels")
-SENT_AT = _field("sent_at")
+runic 0.5 replaced ``.alias("m")`` chaining with handles: ``select(MESSAGE)``
+names the root, ``MESSAGE.id`` reads ``m.id``, and ``MESSAGE.sender`` supplies
+the relation *and* anchors the pattern to ``m``. It also replaces the
+``_field()`` detour this module used to carry — a handle's attribute returns a
+typed expression, so ``MESSAGE.id.is_not_null()`` type-checks where
+``Message.id.is_not_null()`` does not, and a renamed field still fails at
+import rather than at query time.
+"""
 
 
 class MessageRepository(Repository[Message]):
@@ -53,7 +45,7 @@ class MessageRepository(Repository[Message]):
 
     def count(self) -> int:
         """How many archived messages there are — the listing's total."""
-        return self._session.count(select(Message).where(ID.is_not_null()))
+        return self._session.count(select(MESSAGE).where(MESSAGE.id.is_not_null()))
 
     def find_recent(
         self, *, limit: int = 50, offset: int = 0
@@ -67,15 +59,13 @@ class MessageRepository(Repository[Message]):
         wherever the backend puts nulls.
         """
         statement = (
-            select(Message)
-            .alias("m")
-            .where(ID.is_not_null())
-            .traverse(SENDER, optional=True)
-            .alias("s")
-            .order_by(SENT_AT, desc=True)
+            select(MESSAGE)
+            .where(MESSAGE.id.is_not_null())
+            .traverse(MESSAGE.sender, to="s", optional=True)
+            .order_by(MESSAGE.sent_at, desc=True)
             .skip(offset)
             .limit(limit)
-            .return_nodes("m", "s")
+            .return_nodes(MESSAGE, "s")
         )
         rows = self._session.all_with_edges(statement)
         logger.debug("Listed %d messages from offset %d", len(rows), offset)
@@ -93,12 +83,10 @@ class MessageRepository(Repository[Message]):
         if not ids:
             return {}
         statement = (
-            select(Message)
-            .alias("m")
-            .where(ID.in_(ids))
-            .traverse(LABELS, optional=False)
-            .alias("l")
-            .return_nodes("m", "l")
+            select(MESSAGE)
+            .where(MESSAGE.id.in_(ids))
+            .traverse(MESSAGE.labels, to="l", optional=False)
+            .return_nodes(MESSAGE, "l")
         )
         found: dict[str, list[Label]] = {}
         for message, label in self._session.all_with_edges(statement):

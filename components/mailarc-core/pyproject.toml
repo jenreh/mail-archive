@@ -13,7 +13,7 @@ dependencies = [
     "appkit-commons>=1.13.6",
     "falkordb>=1.7.0",
     "pydantic>=2.13",
-    "runic-py>=0.4.6",
+    "runic-py>=0.6.0",
     "sqlalchemy>=2.0.49",
 ]
 

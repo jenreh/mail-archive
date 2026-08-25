@@ -32,6 +32,7 @@ from runic.ogm import Session
 
 from mailarc_analytics.derived.model import TemplateDirection
 from mailarc_analytics.queries import catalog
+from mailarc_analytics.queries.catalog import Statement
 from mailarc_analytics.queries.model import (
     ArchiveTotals,
     CoAddressedAgreement,
@@ -239,9 +240,16 @@ class AnalyticsReader:
         One direction per call and never both, because §6.3 asks for them
         apart: only what you write yourself is automatable, and the scores are
         calibrated within a direction and mean nothing across one. The
-        direction is bound as its ``str`` value rather than as the enum, for
-        the reason :func:`~mailarc_analytics.queries.catalog.as_graph_datetime`
-        exists — a raw statement's parameters reach the driver unconverted.
+        direction is bound as its ``str`` value rather than as the enum, and
+        the reason moved with the statements. It used to be that a raw
+        statement's parameters reached the driver unconverted. It is now that a
+        *bound parameter* is not converted either: ``Template.direction`` is a
+        mapped field, but the field's converter runs on the way into a node
+        property, not over a value handed to ``bind()`` — measured. An enum
+        member happens to work anyway, because
+        :class:`~mailarc_analytics.derived.model.TemplateDirection` is a
+        ``StrEnum`` and the member *is* the string, which is exactly why
+        passing it would prove nothing and the ``.value`` stays explicit.
         """
         with self._graph_session() as graph:
             rows = rows_of(
@@ -290,7 +298,7 @@ def _co_addressed(session: Session, limit: int) -> tuple[CoAddressedRow, ...]:
     )
 
 
-def _count(session: Session, statement: str) -> int:
+def _count(session: Session, statement: Statement) -> int:
     """One of the catalogue's counting statements, as a number.
 
     An empty result is zero rather than an error: a count over a label no
@@ -304,10 +312,13 @@ def _count(session: Session, statement: str) -> int:
 def _limit(value: int) -> int:
     """A row ceiling the statements can actually be bound to.
 
-    Every one of them ends in ``LIMIT $limit``, and ``LIMIT 0`` is legal Cypher
-    that returns nothing — so a caller's stray zero would render as an empty
-    archive rather than as the mistake it is. One row is the smallest answer
-    that still says something.
+    Every one of them binds ``$limit`` into a trailing ``LIMIT``, and
+    ``LIMIT 0`` is legal Cypher that returns nothing — so a caller's stray zero
+    would render as an empty archive rather than as the mistake it is. One row
+    is the smallest answer that still says something. The statements became
+    query-builder objects and that stayed exactly true:
+    ``.limit(param("limit"))`` compiles to the same clause and the caller's
+    number still reaches the store, which was measured rather than assumed.
 
     Clamped at the top as well as the bottom. This module is a public surface —
     ``AnalyticsReader`` and both limits are exported from ``mailarc_analytics``,

@@ -269,11 +269,15 @@ class EmbeddedMessage(BaseModel):
         """The bound-parameter row
         :data:`~mailarc_analytics.queries.catalog.WRITE_EMBEDDINGS` expects.
 
-        A plain ``list`` and not a :class:`~runic.ogm.Vector`: a raw statement
-        goes past runic's mapper, so the ``vecf32()`` in the statement is what
-        turns the list into a vector, and a ``Vector`` handed to the driver
-        would arrive as the list it already is anyway. Same argument as
-        :func:`~mailarc_analytics.queries.catalog.as_graph_datetime`.
+        A plain ``list`` and not a :class:`~runic.ogm.Vector`. The reason has
+        moved and the conclusion has not: values inside an ``UNWIND`` payload
+        never pass through runic's mapper, and ``encode_rows`` converts only
+        keys that are *declared field names* — ``vector`` is not one, the
+        property is ``embedding`` — so this row would be passed through
+        untouched even if it were encoded. What turns the list into a vector is
+        the ``vecf32()`` the statement's own converter puts in front of it, and
+        a ``Vector`` handed to the driver would arrive as the list it already
+        is anyway.
         """
         return {"id": self.id, "vector": list(self.vector)}
 

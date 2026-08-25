@@ -78,8 +78,10 @@ from runic.ogm import Session
 from mailarc_analytics.derived.config import AnalyticsConfig
 from mailarc_analytics.derived.model import (
     SIGNAL_WEIGHTS,
+    About,
     MessageFacts,
     SimilarityEdge,
+    Topic,
     TopicCluster,
     TopicFindings,
     TopicMember,
@@ -89,7 +91,6 @@ from mailarc_analytics.derived.model import (
 from mailarc_analytics.derived.partition import DisjointSet
 from mailarc_analytics.derived.writes import merge_rows
 from mailarc_analytics.queries import catalog
-from mailarc_analytics.queries.catalog import as_graph_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -177,11 +178,12 @@ def write_topics(session: Session, clusters: Sequence[TopicCluster]) -> None:
                 "method": topic.method,
                 "score": topic.score,
                 "message_count": topic.message_count,
-                "first_seen": as_graph_datetime(topic.first_seen),
-                "last_seen": as_graph_datetime(topic.last_seen),
+                "first_seen": topic.first_seen,
+                "last_seen": topic.last_seen,
             }
             for topic in clusters
         ),
+        model=Topic,
     )
     merge_rows(
         session,
@@ -196,6 +198,7 @@ def write_topics(session: Session, clusters: Sequence[TopicCluster]) -> None:
             for topic in clusters
             for member in topic.members
         ),
+        model=About,
     )
     logger.info("Wrote %d topics", len(clusters))
 

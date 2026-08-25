@@ -333,6 +333,16 @@ def rebuild_index(graph_session: GraphSessionFactory, dimension: int) -> int:
     to change the index, and a revision with a constant in it cannot express
     "whatever this installation chose".
 
+    The two DDL names are **functions** now rather than statements, which is
+    what the call sites below say: runic 0.5 emits vector-index DDL through
+    ``IndexOperations`` instead of as Cypher a caller can hold, so
+    ``catalog.DROP_VECTOR_INDEX(graph)`` replaces
+    ``graph.execute(catalog.DROP_VECTOR_INDEX, {})`` and the five settings that
+    used to be ``$parameters`` are keyword arguments a type checker enforces.
+    They are the same five values and they still come from the four constants
+    above — a call site that forgot one would be a ``TypeError`` here rather
+    than an index quietly built with the adapter's own ``efRuntime`` of ten.
+
     Three steps, in this order and for a reason. The index goes first, because
     FalkorDB will not resize one in place. The vectors go second, and this is
     the step it is tempting to skip: :data:`catalog.MESSAGES_NEEDING_EMBEDDING`
@@ -359,18 +369,16 @@ def rebuild_index(graph_session: GraphSessionFactory, dimension: int) -> int:
     with graph_session() as graph:
         existing = vector_index(graph)
         if existing is not None:
-            graph.execute(catalog.DROP_VECTOR_INDEX, {})
+            catalog.DROP_VECTOR_INDEX(graph)
         rows = rows_of(graph, catalog.CLEAR_EMBEDDINGS)
         cleared = as_int(rows[0].get("cleared")) if rows else 0
-        graph.execute(
-            catalog.CREATE_VECTOR_INDEX,
-            {
-                "dimension": dimension,
-                "similarity": INDEX_SIMILARITY,
-                "m": INDEX_M,
-                "ef_construction": INDEX_EF_CONSTRUCTION,
-                "ef_runtime": INDEX_EF_RUNTIME,
-            },
+        catalog.CREATE_VECTOR_INDEX(
+            graph,
+            dimension=dimension,
+            similarity=INDEX_SIMILARITY,
+            m=INDEX_M,
+            ef_construction=INDEX_EF_CONSTRUCTION,
+            ef_runtime=INDEX_EF_RUNTIME,
         )
     logger.info(
         "Vector index rebuilt at %d dimensions; %d vectors cleared", dimension, cleared

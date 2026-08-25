@@ -122,29 +122,50 @@ class RecordingSession:
 
     def __init__(
         self,
-        answers: Mapping[str, Sequence[Sequence[Mapping[str, Any]]]],
-        errors: Mapping[str, Exception] | None = None,
+        answers: Mapping[Any, Sequence[Sequence[Mapping[str, Any]]]],
+        errors: Mapping[Any, Exception] | None = None,
     ) -> None:
         self._answers = {name: list(queue) for name, queue in answers.items()}
         self._errors = dict(errors or {})
-        self._calls: dict[str, int] = {}
-        self.executed: list[tuple[str, dict[str, Any]]] = []
+        self._calls: dict[Any, int] = {}
+        self.executed: list[tuple[Any, dict[str, Any]]] = []
+
+    def all_rows(
+        self, statement: Any, params: Mapping[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """How a query-builder statement is run — the path almost every
+        catalogue entry takes now.
+
+        Answers with the column-keyed dicts a real session hands back, so the
+        script is written the way the caller reads it. ``execute`` stays below
+        for the one entry that is still raw Cypher; a statement sent down the
+        wrong path here would be a statement the store would refuse, so the two
+        are modelled apart rather than merged.
+        """
+        return [dict(row) for row in self._next(statement, params)]
 
     def execute(self, statement: str, params: Mapping[str, Any]) -> Any:
-        self.executed.append((statement, dict(params)))
+        """How the one raw statement is run: a header and a list of lists."""
+        return _Result(self._next(statement, params))
+
+    def _next(
+        self, statement: Any, params: Mapping[str, Any] | None
+    ) -> Sequence[Mapping[str, Any]]:
+        """The next scripted answer for *statement*, recorded and counted."""
+        self.executed.append((statement, dict(params or {})))
         failure = self._errors.get(statement)
         if failure is not None:
             raise failure
         queue = self._answers.get(statement, [[]])
         index = min(self._calls.get(statement, 0), len(queue) - 1)
         self._calls[statement] = self._calls.get(statement, 0) + 1
-        return _Result(queue[index])
+        return queue[index]
 
-    def statements(self) -> list[str]:
+    def statements(self) -> list[Any]:
         return [statement for statement, _ in self.executed]
 
-    def params_for(self, statement: str) -> list[dict[str, Any]]:
-        return [args for one, args in self.executed if one == statement]
+    def params_for(self, statement: Any) -> list[dict[str, Any]]:
+        return [args for one, args in self.executed if one is statement]
 
 
 class _Result:
@@ -159,8 +180,8 @@ def as_session(recording: RecordingSession) -> Session:
     """The recording session, typed as what the functions under test expect.
 
     The same shape ``tests/queries/test_queries_rows.py`` uses: a stub answers
-    ``execute`` and nothing else, and a cast at the seam is cheaper than
-    faking a whole runic ``Session``.
+    the two members ``rows_of`` reaches for and nothing else, and a cast at the
+    seam is cheaper than faking a whole runic ``Session``.
     """
     return cast(Session, recording)
 

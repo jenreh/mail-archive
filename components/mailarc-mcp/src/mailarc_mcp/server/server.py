@@ -502,8 +502,15 @@ def _rows(limit: int) -> int:
     The caller cannot know this archive's size and a validation error would
     cost a round trip to teach it a bound; clamping answers the question it
     meant to ask. Zero has to be clamped as well as the big numbers: every
-    catalogue statement ends in ``LIMIT $limit`` and ``LIMIT 0`` is legal
-    Cypher returning nothing, which would read as an empty archive.
+    listing behind these tools binds ``$limit`` into a trailing ``LIMIT``, and
+    ``LIMIT 0`` is legal Cypher returning nothing, which would read as an empty
+    archive.
+
+    That the statements became query-builder objects changed nothing here —
+    ``.limit(param("limit"))`` compiles to the same ``LIMIT $limit`` and the
+    value still reaches the store as the caller's number. Measured: bound to
+    zero, every listing comes back empty; bound to one, it comes back with a
+    row.
     """
     return min(max(1, limit), MAX_ROWS)
 

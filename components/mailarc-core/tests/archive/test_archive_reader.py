@@ -43,6 +43,11 @@ class FakeSession:
     the Cypher the repository built and check the limit and offset reached it.
     It answers two statements: the listing with ``rows``, the label lookup —
     told apart by the edge it walks — with ``labels``.
+
+    What it records is the compiled Cypher with the compiler's backticks
+    dropped. runic quotes every identifier it emits — ``m.`id``` — so that a
+    model may declare a field named after a Cypher keyword; that is escaping,
+    not shape, and the assertions here are about shape.
     """
 
     def __init__(
@@ -60,8 +65,13 @@ class FakeSession:
     def __exit__(self, *_exc: object) -> None:
         return None
 
-    def all_with_edges(self, statement) -> list[tuple[Message, Address | Label | None]]:
+    @staticmethod
+    def _cypher(statement) -> str:
         cypher, _ = statement.build()
+        return cypher.replace("`", "")
+
+    def all_with_edges(self, statement) -> list[tuple[Message, Address | Label | None]]:
+        cypher = self._cypher(statement)
         self.statements.append(cypher)
         if "LABELED" in cypher:
             return self.labels
@@ -69,8 +79,7 @@ class FakeSession:
 
     def count(self, statement) -> int:
         """What ``MessageRepository.count`` runs: a filtered ``select``."""
-        cypher, _ = statement.build()
-        self.statements.append(cypher)
+        self.statements.append(self._cypher(statement))
         return len(self.rows)
 
 
@@ -257,7 +266,7 @@ class TestTheListing:
 
         assert reader(session, blobs).count_messages() == 2
         [cypher] = session.statements
-        assert "WHERE n.id IS NOT NULL" in cypher
+        assert "WHERE m.id IS NOT NULL" in cypher
 
 
 class TestTheRawMessage:

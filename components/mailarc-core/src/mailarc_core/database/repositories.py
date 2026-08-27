@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from appkit_commons.database.base_repository import BaseRepository
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,31 @@ from mailarc_core.database.entities import (
 )
 
 logger = logging.getLogger(__name__)
+
+FAILURE_LIMIT = 20
+"""How many recent failures a panel asks for when it does not say."""
+
+MAX_FAILURE_ROWS = 500
+"""The ceiling on both recent-failure listings.
+
+:meth:`FailedMessageRepository.find_recent` and
+:meth:`SyncJobRepository.find_recent_failed` share it because they share their
+reader: the notification panel puts their answers on one list. Clamped at the
+top as well as the bottom for the reason ``mailarc_analytics``' ``_limit`` is:
+the ledger of skipped messages grows with every import and has no natural size,
+so an unbounded ``find_recent(limit=10_000_000)`` would pull the whole table
+into a list to render twenty lines of it. A panel is a panel.
+"""
+
+
+def _capped(value: int) -> int:
+    """A page size a listing can actually be bound to.
+
+    ``LIMIT 0`` is legal SQL that returns nothing, so a caller's stray nought
+    would render a healthy archive rather than the mistake it is. One row is
+    the smallest answer that still says something.
+    """
+    return min(max(1, value), MAX_FAILURE_ROWS)
 
 
 class ApiKeyNotStored(Exception):
@@ -256,6 +281,59 @@ class SyncJobRepository(BaseRepository[MailSyncJobEntity, AsyncSession]):
         )
         return list(result.scalars().all())
 
+    async def find_recent_failed(
+        self, session: AsyncSession, *, limit: int = FAILURE_LIMIT
+    ) -> list[MailSyncJobEntity]:
+        """The newest failed jobs first — what a notification panel reads.
+
+        Its own finder rather than :meth:`find_by_state`, and the difference is
+        the whole point: ``find_by_state`` carries no ``LIMIT`` and orders by
+        id **ascending**, so a panel wanting eight lines out of it loaded every
+        job that ever failed, oldest first, and discarded all but the newest
+        few — on a page a signed-out visitor can open.
+
+        ``finished_at`` descending with the id as the tie-break, and **nulls
+        are kept**: a job killed mid-write never wrote a finish time, and a
+        listing that dropped it would hide the worst failure there is. Where
+        that column is null the id carries the order, which is the arrival
+        order of the queue.
+
+        ``limit`` goes through :func:`_capped`, like every other listing here.
+        """
+        result = await session.execute(
+            select(MailSyncJobEntity)
+            .where(MailSyncJobEntity.state == SyncJobState.FAILED)
+            .order_by(
+                MailSyncJobEntity.finished_at.desc().nulls_last(),
+                MailSyncJobEntity.id.desc(),
+            )
+            .limit(_capped(limit))
+        )
+        return list(result.scalars().all())
+
+    async def count_by_state(self, session: AsyncSession) -> dict[str, int]:
+        """How many jobs sit in each state, counted by the database.
+
+        One ``GROUP BY`` rather than the ``len(await find_queued(session))``
+        this replaces: a dashboard wants five numbers, and loading five sets of
+        entity rows to measure their length reads the whole job table over the
+        wire to throw all of it away. It also gets worse exactly where it
+        matters — a long-running archive has tens of thousands of succeeded
+        jobs behind the one number nobody looks at.
+
+        A state with no jobs is **absent** from the mapping, because ``GROUP
+        BY`` cannot invent a row for it. Callers read it with ``.get(state,
+        0)``; making this method fill in the five known states would have it
+        answer a question about :class:`SyncJobState` rather than about the
+        table.
+        """
+        result = await session.execute(
+            select(MailSyncJobEntity.state, func.count()).group_by(
+                MailSyncJobEntity.state
+            )
+        )
+        return dict(result.tuples().all())
+
     async def find_running_for_account(
         self, session: AsyncSession, account_id: int
     ) -> list[MailSyncJobEntity]:
@@ -369,6 +447,30 @@ class FailedMessageRepository(BaseRepository[MailFailedMessageEntity, AsyncSessi
             reason,
         )
         return row
+
+    async def find_recent(
+        self, session: AsyncSession, *, limit: int = FAILURE_LIMIT
+    ) -> list[MailFailedMessageEntity]:
+        """The newest failures first — what a notification panel reads.
+
+        Ordered by ``occurred_at`` descending, with the id as the tie-break:
+        the column is written by :meth:`record` from one clock, and a batch
+        that skips several messages inside the same tick would otherwise come
+        back in whatever order the database felt like. Newest-first is what
+        makes the top of the list worth reading.
+
+        ``limit`` goes through :func:`_capped`, so neither a stray nought nor
+        a caller asking for the whole ledger gets what it literally asked for.
+        """
+        result = await session.execute(
+            select(MailFailedMessageEntity)
+            .order_by(
+                MailFailedMessageEntity.occurred_at.desc(),
+                MailFailedMessageEntity.id.desc(),
+            )
+            .limit(_capped(limit))
+        )
+        return list(result.scalars().all())
 
 
 class SemanticSettingsRepository(BaseRepository[SemanticSettingsEntity, AsyncSession]):

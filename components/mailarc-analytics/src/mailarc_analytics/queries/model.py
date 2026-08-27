@@ -178,6 +178,49 @@ class ArchiveTotals(BaseModel):
         return self.groups + self.topics + self.templates + self.co_addressed
 
 
+class ArchivedDay(BaseModel):
+    """One day of the archive's growth — what arrived, and how much of it.
+
+    Two series in one row, because they are read from one statement and drawn
+    on one time axis: a page that asked for messages and bytes separately would
+    be asking the same aggregation twice and could get two different moments.
+
+    The odd one out among these rows in one way: **a day the archive did
+    nothing still gets one.**
+    :meth:`~mailarc_analytics.queries.reports.AnalyticsReader.archived_per_day`
+    fills the gaps its statement leaves, so a chart draws a flat line over a
+    quiet week rather than a hole that reads as missing data. That is why every
+    field but the key defaults to zero — a filled day is one constructor call
+    and not a second row type.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    day: str
+    """``YYYY-MM-DD``, in **UTC**, exactly as the statement cut it out of
+    ``ArchivedFrom.archived_at``.
+
+    A string and not a :class:`~datetime.date`, for the same reason every other
+    row here carries the column its statement named: this is what the store
+    answered, and it is also what a chart plots along its x-axis. The reader
+    parses it to place the day inside a window and hands the key back
+    untouched.
+    """
+
+    messages: int = 0
+    """Copies archived on this day — one per ``ARCHIVED_FROM`` edge, so a mail
+    that reached two accounts counts twice. The chart is of what the archive
+    did, and importing the same mail into a second account is work it did."""
+
+    bytes: int = 0
+    """``Message.size_bytes`` summed over those copies.
+
+    A whole number here although FalkorDB's ``sum()`` answers with a float:
+    :func:`~mailarc_analytics.queries.rows.as_int` is what makes it one, and a
+    page rendering ``3139.0`` bytes is what it prevents.
+    """
+
+
 class ComparedPair(BaseModel):
     """One unordered pair, with what each side of the cross-check said about it.
 

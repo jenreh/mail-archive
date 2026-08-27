@@ -1,0 +1,693 @@
+/* mail-archive — the design tokens, and the handful of classes that need them.
+ *
+ * Loaded after `css/appkit.css` (see `mailarc_ui/styles.py`), so anything here
+ * wins a tie against appkit's own rules.
+ *
+ * The rule this file exists to enforce: **no component hard-codes a colour**.
+ * A Reflex component that carries `#f4f4f3` in a `style=` dict is a colour
+ * that cannot follow the colour scheme, cannot be re-tuned in one place, and
+ * is invisible to anyone reading the stylesheet. Everything visual that a
+ * component needs is either a `var(--ma-…)` it names or a class it wears.
+ *
+ * Geometry is stated once, on `:root`, and never restated in the dark block —
+ * a radius does not change with the colour scheme, and a second copy is a
+ * second thing to forget.
+ *
+ * ── Why every component selector below is written twice ──────────────────────
+ *
+ * `.ma-card-title.ma-card-title` and not `.ma-card-title`, on every rule that
+ * targets one. It is not a typo and it is not superstition: it was measured.
+ *
+ * Mantine styles its components with one generated class each — `.m_b6d8b162`
+ * on `Text`, and so on — and ships them as `<style>` elements the JavaScript
+ * bundle injects into the document. This file arrives as a `<link>` in the
+ * head, so it is *earlier*, and a single class here has exactly the same
+ * specificity as a single class there. At equal specificity the later rule
+ * wins, and the later rule is always Mantine's.
+ *
+ * Observed on the running application before this change: `.ma-page-title` set
+ * `font-size: 24px`, and the page title computed to `16px` from
+ * `.m_b6d8b162 { font-size: var(--text-fz, var(--mantine-font-size-md)) }`.
+ * Every typographic rule in this file was silently doing nothing, while the
+ * rules Mantine sets nothing for — a gradient, a border radius — worked, which
+ * is what made it look like a handful of individual mistakes.
+ *
+ * Repeating the class doubles the weight to 0-2-0 without changing which
+ * elements match, and beats Mantine's single class whatever the order. The
+ * alternative, `!important`, wins the same argument by refusing to have it,
+ * and leaves nothing a page can override locally.
+ *
+ * `:root`, `body` and the dark block are left alone: nothing competes for
+ * those, and a custom property is inherited rather than matched.
+ */
+
+:root {
+  /* surfaces */
+  --ma-surface: #ffffff;         /* the main area, and every raised panel */
+  --ma-nav-bg: #f7f6f4;          /* the sidebar, which is NOT the main area */
+  --ma-card-bg: #fbfaf9;         /* the card itself — barely off the main area */
+  --ma-surface-hover: #f7f7f6;   /* an inactive nav row under the pointer */
+  --ma-border: #edebe8;          /* every hairline */
+  --ma-border-strong: #e8e6e3;
+
+  /* text */
+  --ma-text: #1a1a1a;
+  --ma-text-dim: #8a8a8a;
+  --ma-text-mute: #a3a3a3;
+
+  /* the KPI banner gradient — left orange, right amber */
+  --ma-kpi-from: #ee7a0f;
+  --ma-kpi-mid: #f2941f;
+  --ma-kpi-to: #f6b324;
+  --ma-kpi-tile: rgba(255, 255, 255, 0.14);    /* tile overlay */
+  --ma-kpi-label: rgba(255, 255, 255, 0.88);
+  --ma-kpi-value: #ffffff;
+
+  /* data colours */
+  --ma-chart-line: #c9503a;   /* both area charts, the stroke */
+  --ma-chart-fill: #f2a68f;   /* the gradient the area fades from */
+  --ma-meter-warm: #e4788a;   /* "System statistics" bars (rose) */
+  --ma-meter-cool: #8e7cf5;   /* "Disk statistics" bars (violet) */
+  --ma-meter-track: #edecea;
+  --ma-ok: #22c55e;           /* the services checklist tick */
+  --ma-info-bg: #fde7eb;      /* notification dot background */
+  --ma-info-fg: #e8637c;      /* notification dot glyph */
+
+  /* icon chips inside stat rows */
+  --ma-chip-warm-bg: #fdf0d5; /* amber tint, System statistics */
+  --ma-chip-warm-fg: #e0a020;
+  --ma-chip-cool-bg: #e9effe; /* blue tint, Disk statistics */
+  --ma-chip-cool-fg: #4f7ef0;
+  --ma-chip-bg: #f0efec;      /* the untinted chip a card heading wears */
+  --ma-chip-fg: #1a1a1a;
+
+  /* geometry */
+  --ma-radius-card: 14px;
+  --ma-radius-panel: 12px;
+  --ma-radius-chip: 8px;
+  --ma-shadow-card: 0 1px 2px rgba(16, 16, 16, 0.03);
+  --ma-shadow-pill: 0 1px 2px rgba(16, 16, 16, 0.08);
+}
+
+/* Dark mode: the same names, colours only.
+ *
+ * Mantine stamps `data-mantine-color-scheme` on the document element, so this
+ * is the one selector both halves of the UI agree on — Reflex's own `.dark`
+ * class sits on the same element but says nothing about Mantine's components.
+ *
+ * The KPI gradient keeps its hue and loses some of its light: an orange band
+ * at full saturation on a near-black page is the only thing on the screen and
+ * reads as an alarm rather than as a summary.
+ */
+[data-mantine-color-scheme="dark"] {
+  /* The same three-step figure/ground as the light palette, and it has to be
+   * *wider* here: two levels apart reads as one flat surface on a dark screen,
+   * where the eye has far less contrast to work with than it does between
+   * #ffffff and #f7f7f5. Card recessed, panel raised, shell between them.
+   */
+  --ma-surface: #1e1e1e;
+  --ma-nav-bg: #171717;
+  --ma-card-bg: #161616;
+  --ma-surface-hover: #232323;
+  --ma-border: #2a2a2a;
+  --ma-border-strong: #3a3a3a;
+
+  --ma-text: #f2f2f2;
+  --ma-text-dim: #8f8f8f;
+  --ma-text-mute: #6f6f6f;
+
+  --ma-kpi-from: #c2570f;
+  --ma-kpi-mid: #cf7228;
+  --ma-kpi-to: #c98b17;
+  --ma-kpi-tile: rgba(255, 255, 255, 0.10);
+  --ma-kpi-label: rgba(255, 255, 255, 0.76);
+  --ma-kpi-value: #ffffff;
+
+  --ma-chart-line: #e2795f;
+  --ma-chart-fill: #8a4130;
+  --ma-meter-warm: #e96a7e;
+  --ma-meter-cool: #9179ff;
+  --ma-meter-track: #2c2c2c;
+  --ma-ok: #34d97a;
+  --ma-info-bg: #3a1e24;
+  --ma-info-fg: #fb7185;
+
+  --ma-chip-warm-bg: #3a2c10;
+  --ma-chip-warm-fg: #f0b429;
+  --ma-chip-cool-bg: #1b2540;
+  --ma-chip-cool-fg: #8fb0ff;
+  --ma-chip-bg: #262626;
+  --ma-chip-fg: #f2f2f2;
+}
+
+/* ── The page frame ──────────────────────────────────────────────────────── */
+
+/* The application fills the window.
+ *
+ * It was briefly built as a rounded card floating on a tinted canvas, which is
+ * a misreading of the reference: what looks like a border and a rounded corner
+ * there is the *operating system's window*, not a surface the application
+ * draws. An application that draws its own inset frame inside a real window
+ * ends up with two frames, and on a maximised browser tab the inner one is
+ * simply a margin nothing explains.
+ *
+ * So there is no margin, no radius and no shadow at this level. What separates
+ * the two halves of the layout is the sidebar's own tint and the hairline down
+ * its right edge — see `.ma-navbar`.
+ *
+ * `html body` and the doubled class both matter: `rx.theme(has_background=True)`
+ * — which `theme_wrapper` sets and every page goes through — makes Radix paint
+ * an opaque `--color-background` on its own `.radix-themes` wrapper, and there
+ * are two of them nested between `body` and the shell, so whatever `body` is,
+ * those cover it.
+ */
+html body,
+.radix-themes.radix-themes,
+.ma-shell.ma-shell {
+  background-color: var(--ma-surface);
+}
+
+.ma-shell.ma-shell {
+  min-height: 100dvh;
+}
+
+/* `/admin/review` is a two-column reader that scrolls inside itself. */
+.ma-main-viewport.ma-main-viewport {
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* ── The sidebar ─────────────────────────────────────────────────────────── */
+
+/* The sidebar is a tinted column, and that tint is the whole of the separation
+ * between it and the main area — there is no card, no radius and no shadow.
+ * The hairline on its right edge is the second half of the same idea.
+ */
+.ma-navbar.ma-navbar {
+  display: flex;
+  flex-direction: column;
+  background: var(--ma-nav-bg);
+  border-right: 1px solid var(--ma-border);
+  padding: 0 16px;
+}
+
+.ma-nav-divider.ma-nav-divider {
+  margin: 14px 4px;
+  border-color: var(--ma-border-strong);
+}
+
+.ma-nav-anchor.ma-nav-anchor {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.ma-nav-anchor.ma-nav-anchor:hover {
+  color: inherit;
+}
+
+/* The row itself. Mantine puts `data-active` on the root when `active` is
+ * true, which is why the active look lives here and not in a per-item style
+ * dict built with `rx.cond` — a colour that crosses the Var boundary as a
+ * string cannot also carry a border, a radius and a shadow.
+ */
+.ma-nav-link.ma-nav-link {
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ma-text);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.ma-nav-link.ma-nav-link:hover {
+  background: var(--ma-surface-hover);
+}
+
+/* White on the sidebar's tint, which is what makes the active row read without
+ * a colour: on a white sidebar the same pill had only its border to show for
+ * itself.
+ */
+
+.ma-nav-link.ma-nav-link[data-active] {
+  background: var(--ma-surface);
+  border-color: var(--ma-border-strong);
+  box-shadow: var(--ma-shadow-pill);
+  font-weight: 600;
+  color: var(--ma-text);
+}
+
+/* The icon is in ink whether the row is active or not.
+ *
+ * Dimming an inactive row's glyph is the obvious thing and the reference does
+ * not do it: every label and every icon in that sidebar is the same near-black,
+ * and the active row is told apart by its white pill alone. Dimming as well
+ * makes the sidebar read as one enabled item among seven disabled ones.
+ */
+.ma-nav-link.ma-nav-link .mantine-NavLink-section {
+  margin-inline-end: 14px;
+  color: var(--ma-text);
+}
+
+.ma-user-name.ma-user-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ma-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ma-user-mail.ma-user-mail {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ma-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Page furniture ──────────────────────────────────────────────────────── */
+
+/* The title block carries no bottom margin.
+ *
+ * It used to, and the 24px it set stacked with the page stack's own gap: the
+ * design asks for 24px below the title and the browser drew 44. A margin on a
+ * flex child and a gap on its parent are both real, and neither is visible from
+ * the other's file. `kit.PAGE_GAP` is the one that spaces a page now.
+ */
+
+.ma-page-title.ma-page-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ma-text);
+  line-height: 1.2;
+}
+
+.ma-page-subtitle.ma-page-subtitle {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ma-text-dim);
+}
+
+/* The card, and the single most important thing about this design: the card is
+ * the *recessed* surface and the panel inside it is the raised one.
+ *
+ * Read off the reference, where a card is a tinted rectangle carrying its
+ * heading directly on the tint, and the rows beneath sit on a white panel with
+ * a hairline border. Building it the other way round — white card, grey inner
+ * panel — is what the first pass did, and it produces a box inside a box with
+ * no figure/ground at all: every surface on the page is the same white, so
+ * nothing reads as contained by anything.
+ *
+ * So: no border and no shadow here. The tint against the white page *is* the
+ * card's edge, which is why `--ma-border` is spent on the panel instead.
+ *
+ * A radius IS stated here, unlike before. `kit.panel_card` passes `radius="md"`
+ * (8px) and this doubled-class rule beats Mantine's generated class — which is
+ * the mechanism, not an accident: the reference corner is 14px and `md` is not
+ * it. `--ma-radius-card` now genuinely means "the corner of a card", and the
+ * KPI band shares it because the band is drawn to the same corner.
+ */
+.ma-card.ma-card {
+  background: var(--ma-card-bg);
+  border: 1px solid var(--ma-border);
+  border-radius: var(--ma-radius-card);
+  box-shadow: var(--ma-shadow-card);
+  padding: 10px;
+}
+
+.ma-card-title.ma-card-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ma-text);
+}
+
+/* The heading sits on the card's tint, above the panel. */
+.ma-card-heading.ma-card-heading {
+  padding: 8px 8px 14px;
+}
+
+/* A card's own icon is a bare glyph — no chip.
+ *
+ * Only the *rows* inside a card wear a tinted square. Putting one behind the
+ * card's title too gave every heading a grey box the reference does not have,
+ * and it flattened the distinction the chips exist to draw: a chip marks a
+ * measurement, and a heading is not one.
+ */
+.ma-card-icon.ma-card-icon {
+  flex-shrink: 0;
+  color: var(--ma-text);
+}
+
+/* The tinted square a meter row wears. */
+.ma-chip.ma-chip {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: var(--ma-radius-chip);
+  background: var(--ma-chip-bg);
+  color: var(--ma-chip-fg);
+}
+
+.ma-chip--warm.ma-chip--warm {
+  background: var(--ma-chip-warm-bg);
+  color: var(--ma-chip-warm-fg);
+}
+
+.ma-chip--cool.ma-chip--cool {
+  background: var(--ma-chip-cool-bg);
+  color: var(--ma-chip-cool-fg);
+}
+
+/* The raised panel inside a card — white on the card's tint, and the only one
+ * of the two surfaces that carries a border. One per statistics card wrapping
+ * all of its rows; one per notice; one around each chart.
+ */
+.ma-panel.ma-panel {
+  background: var(--ma-surface);
+  border: 1px solid var(--ma-border);
+  border-radius: var(--ma-radius-panel);
+  padding: 16px;
+}
+
+/* The same panel at chart size, where 14px of padding crowds an axis. */
+.ma-panel-chart.ma-panel-chart {
+  padding: 16px;
+}
+
+/* Where the area under the line fades *from*.
+ *
+ * Mantine's `withGradient` builds a two-stop `<linearGradient>` out of the
+ * series colour alone — `stop-color: <series colour>` at both ends, opaque at
+ * the top and 0.01 at the bottom — so without this the fill is only ever a
+ * washed-out `--ma-chart-line` and `--ma-chart-fill` is a token the UI never
+ * paints. `stop-color` is a real CSS property, and any rule beats the
+ * presentation attribute recharts writes, so the top stop is reachable from
+ * here. Scoped to the chart panel: it is the only place this archive draws an
+ * SVG gradient, and a bare `stop` selector would reach anything that did.
+ */
+.ma-panel-chart linearGradient stop:first-child {
+  stop-color: var(--ma-chart-fill);
+}
+
+/* ── The KPI band ────────────────────────────────────────────────────────── */
+
+.ma-kpi-band.ma-kpi-band {
+  border-radius: var(--ma-radius-card);
+  overflow: hidden;
+  background: linear-gradient(
+    90deg,
+    var(--ma-kpi-from) 0%,
+    var(--ma-kpi-mid) 45%,
+    var(--ma-kpi-to) 100%
+  );
+}
+
+/* A tile is separated from its neighbour by a GAP, not by a rule.
+ *
+ * The gap is what lets the gradient show through between the tiles, and that
+ * band of undiluted colour between two lighter blocks is the whole reason the
+ * reference reads as one segmented band rather than as five cards that happen
+ * to be orange. A divider line drawn on top of the overlay does the opposite:
+ * it makes each tile look closed.
+ */
+.ma-kpi-tile.ma-kpi-tile {
+  margin: 10px 8px;
+  padding: 22px 22px;
+  border-radius: var(--ma-radius-panel);
+  background: var(--ma-kpi-tile);
+}
+
+/* The band's own 4px keeps the outer tiles the same 8px off the edge that the
+ * inner ones are off each other.
+ */
+.ma-kpi-band.ma-kpi-band > * {
+  padding: 0 4px;
+}
+
+.ma-kpi-band.ma-kpi-band {
+  border-radius: var(--ma-radius-card);
+}
+
+/* A plain white glyph. No chip: the reference sets the icon straight on the
+ * tile, and a second translucent rectangle inside an already translucent one
+ * is a box that has nothing to hold.
+ */
+.ma-kpi-icon.ma-kpi-icon {
+  flex-shrink: 0;
+  color: var(--ma-kpi-value);
+}
+
+.ma-kpi-label.ma-kpi-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ma-kpi-label);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ma-kpi-value.ma-kpi-value {
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--ma-kpi-value);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── One utility ─────────────────────────────────────────────────────────── */
+
+/* Every number in this UI. Without it a column of figures shifts sideways as
+ * it updates, which reads as the layout twitching rather than as the number
+ * changing.
+ */
+.ma-tabular.ma-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Statistics rows, notifications and the services checklist ───────────── */
+
+/* The label of a meter row, and the name of a service. One class, because the
+ * two are the same line of type in the reference and drifting apart is exactly
+ * what a second class would let them do.
+ */
+.ma-row-label.ma-row-label {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ma-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 4em;
+}
+
+/* The dimmed size beside a disk label: `3.0 GB / 7.5 GB`. Shrinks before the
+ * label does, and ellipses rather than overflowing.
+ */
+.ma-row-caption.ma-row-caption {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ma-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The percentage on the right. `min-width` and not `width`: the column has to
+ * hold still between `9%` and `100%`, and a fixed width clips the third digit.
+ */
+.ma-row-value.ma-row-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ma-text);
+  min-width: 46px;
+  text-align: right;
+}
+
+/* An absolute path under a disk label — administrators only, and never
+ * rendered at all for anybody else: the state hands over an empty string and
+ * the row omits the line rather than styling it away.
+ */
+.ma-row-detail.ma-row-detail {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ma-text-mute);
+  font-family: "Roboto Mono", ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The text block of a meter row: label, caption and — for an administrator —
+ * the path. `min-width: 0` is what lets it be narrower than its content, which
+ * a flex item is not allowed to be by default; without it the ellipsis never
+ * appears and the row pushes the bar off the card instead.
+ */
+.ma-row-text.ma-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The bar's track. Mantine paints the filled section from the `color` prop and
+ * the root is the track, so this is the half that can come off a stylesheet.
+ *
+ * 115px, and it is allowed to shrink to 64.
+ *
+ * The reference row is one line — chip, label, bar, figure — and keeping it one
+ * line is the design decision here, because a row that wraps stops looking like
+ * a meter and starts looking like two rows. Three cards across a 1440px laptop
+ * leave a meter row about 250px, which is narrower than the reference was ever
+ * drawn at (450px), so something has to give at that width; letting the bar
+ * give is right and letting the row break is not. The label ellipses, which is
+ * a truncation this design already uses on the notification text, and the bar
+ * is back at its full length the moment there is room.
+ */
+.ma-meter.ma-meter {
+  background: var(--ma-meter-track);
+  flex: 0 1 115px;
+  min-width: 64px;
+}
+
+/* One pending fault, on its own raised panel — the same surface as `.ma-panel`,
+ * because a notice IS a panel; it just happens one per row instead of one per
+ * card.
+ */
+.ma-notice.ma-notice {
+  background: var(--ma-surface);
+  border: 1px solid var(--ma-border);
+  border-radius: var(--ma-radius-panel);
+  padding: 13px;
+}
+
+.ma-notice-dot.ma-notice-dot {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--ma-info-bg);
+  color: var(--ma-info-fg);
+}
+
+/* Two lines and then an ellipsis. A `last_error` is whatever a provider wrote
+ * and can be a paragraph; a panel that grew to fit one would push every other
+ * card down the page.
+ */
+.ma-notice-text.ma-notice-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ma-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ma-notice-when.ma-notice-when {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ma-text-dim);
+}
+
+/* A service that is up. The grey variant below is the same circle with the
+ * colour taken out, so the row keeps its rhythm whichever way it answers.
+ */
+.ma-service-dot.ma-service-dot {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--ma-ok);
+  color: #ffffff;
+}
+
+.ma-service-dot--off.ma-service-dot--off {
+  background: var(--ma-border-strong);
+  color: var(--ma-text-mute);
+}
+
+/* ── The range switch ────────────────────────────────────────────────────── */
+
+/* Mantine's SegmentedControl again needs the doubled selector — its own
+ * generated class carries the track colour and the indicator's shadow, and a
+ * single class here loses the tie to a rule the bundle injects later.
+ */
+.ma-range.ma-range .mantine-SegmentedControl-root,
+.ma-range.ma-range {
+  background: var(--ma-nav-bg);
+  border-radius: var(--ma-radius-chip);
+  padding: 3px;
+  /* The heading beside it is the flexible half of that row. Without this the
+   * switch was the one that gave way and lost its third option to the card's
+   * edge — `Last week | Last month | L`. */
+  flex: 0 0 auto;
+}
+
+.ma-range.ma-range .mantine-SegmentedControl-indicator {
+  background: var(--ma-surface);
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 7px;
+  box-shadow: var(--ma-shadow-pill);
+}
+
+.ma-range.ma-range .mantine-SegmentedControl-label {
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ma-text-mute);
+  padding: 4px 12px;
+}
+
+.ma-range.ma-range .mantine-SegmentedControl-label[data-active] {
+  font-weight: 500;
+  color: var(--ma-text);
+}
+
+/* ── The chart's own type ────────────────────────────────────────────────── */
+
+/* recharts renders its ticks as SVG `<text>`, which inherits neither the card's
+ * font size nor a Mantine class. The chart component takes a `text_color` prop
+ * and no size, so the size has to come from here. Both spellings, because
+ * recharts puts the class on the tick group and Mantine on the text itself.
+ */
+.ma-panel-chart .recharts-cartesian-axis-tick text,
+.ma-panel-chart .recharts-cartesian-axis-tick-value,
+.ma-panel-chart .recharts-text {
+  font-size: 13px;
+  fill: var(--ma-text-mute);
+}
+
+/* ── Degrading a meter row that has run out of room ──────────────────────── */
+
+/* The size beside a disk label is the first thing to go.
+ *
+ * The reference draws these rows in a 450px card, where a chip, a label, a
+ * size, a 115px bar and a figure all fit. Three cards across a 1400px laptop
+ * gives 265px, and every one of those five things had to give a little: the
+ * result was `Graph 1.` — a label cut in half beside a size cut to two
+ * characters, which says less than either would alone.
+ *
+ * A container query rather than a media query, because what has run out is the
+ * *card's* width and not the window's: the same card is wide enough at three
+ * across on a large monitor and too narrow at three across on a laptop, and a
+ * viewport breakpoint cannot tell those apart.
+ */
+.ma-panel.ma-panel {
+  container-type: inline-size;
+}
+
+@container (max-width: 300px) {
+  .ma-row-caption.ma-row-caption {
+    display: none;
+  }
+}

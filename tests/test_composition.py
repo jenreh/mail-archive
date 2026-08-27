@@ -6,6 +6,7 @@ import logging
 import sys
 
 import pytest
+from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.registry import service_registry
 
 from app import composition
@@ -19,7 +20,9 @@ from mailarc_core import (
     GraphConfig,
     GraphServerMode,
 )
+from mailarc_core.graph.health import GraphHealth
 from mailarc_core.mail.config import MailConfig
+from mailarc_core.storage import StorageReader
 from mailarc_google.source import GmailConfig
 from mailarc_imap.source import ImapConfig
 from mailarc_m365.source import M365Config
@@ -27,6 +30,7 @@ from mailarc_sync.engine import SyncConfig
 from mailarc_ui.insights import analytics_reader as analytics_the_ui_sees
 from mailarc_ui.insights.search import archive_search as search_the_ui_sees
 from mailarc_ui.review import archive_reader as reader_the_ui_sees
+from mailarc_ui.status import graph_health as health_the_ui_sees
 
 GETTERS: dict[type, str] = {
     GraphConfig: "graph_config",
@@ -64,6 +68,31 @@ def _getter(config: type):
     return getattr(composition, GETTERS[config])
 
 
+MEMOISED = (
+    "graph_server",
+    "graph_health",
+    "provider_registry",
+    "archive_reader",
+    "analytics_reader",
+    "semantic_embedder",
+    "semantic_search",
+    "storage_reader",
+    "sync_worker",
+)
+"""Every ``lru_cache`` on the composition root, by name.
+
+A list rather than two hand-written runs of ``cache_clear()`` calls: the two
+runs had already been written twice and a handle added to one and not the other
+leaks its first construction into every test after it — which is exactly the
+kind of failure that shows up somewhere else entirely.
+"""
+
+
+def _clear_memoised() -> None:
+    for name in MEMOISED:
+        getattr(composition, name).cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """The composition root memoises; each test needs a clean slate.
@@ -73,22 +102,10 @@ def _clear_caches():
     every later test's ``semantic_config()`` answers.
     """
     composition._semantic_override = None
-    composition.graph_server.cache_clear()
-    composition.provider_registry.cache_clear()
-    composition.archive_reader.cache_clear()
-    composition.analytics_reader.cache_clear()
-    composition.semantic_embedder.cache_clear()
-    composition.semantic_search.cache_clear()
-    composition.sync_worker.cache_clear()
+    _clear_memoised()
     yield
     composition._semantic_override = None
-    composition.graph_server.cache_clear()
-    composition.provider_registry.cache_clear()
-    composition.archive_reader.cache_clear()
-    composition.analytics_reader.cache_clear()
-    composition.semantic_embedder.cache_clear()
-    composition.semantic_search.cache_clear()
-    composition.sync_worker.cache_clear()
+    _clear_memoised()
 
 
 @pytest.fixture
@@ -103,6 +120,19 @@ def _published_registry():
 def _use_config(monkeypatch, mode: GraphServerMode) -> GraphConfig:
     config = GraphConfig(mode=mode, host="127.0.0.1", port=6379)
     monkeypatch.setattr(composition, "graph_config", lambda: config)
+    return config
+
+
+def _use_database(url: str) -> DatabaseConfig:
+    """Put a database configuration in the registry, the way the app does.
+
+    Through the registry rather than by monkeypatching :func:`_registered`:
+    that one function answers for every configuration object the root hands
+    out, so replacing it hands an ``ArchiveConfig`` question a ``DatabaseConfig``
+    answer. Callers take ``_published_registry``, which puts the real one back.
+    """
+    config = DatabaseConfig.model_validate({"url_override": url})
+    service_registry().register_as(DatabaseConfig, config)
     return config
 
 
@@ -318,6 +348,120 @@ def test_publishing_the_analytics_reader_twice_leaves_one(caplog) -> None:
 
     assert service_registry().get(AnalyticsReader) is first
     assert caplog.records == []
+
+
+class TestTheGraphHealth:
+    """What ``/admin/status`` reads, and the reason it could leave ``app/``.
+
+    ``GraphStatusState`` used to import :func:`graph_status` and
+    :func:`graph_startup_error` from the composition root by name, which is a
+    component importing the application. The façade is what replaced that, so
+    the assertions are about the two halves reaching it intact.
+    """
+
+    def test_it_reads_the_configured_server(self, monkeypatch) -> None:
+        config = _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        health = composition.graph_health()
+
+        assert health._config is config
+        assert health._server is composition.graph_server()
+
+    def test_it_is_a_singleton(self, monkeypatch) -> None:
+        """Two would be two answers to "which server is being reported on"."""
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        assert composition.graph_health() is composition.graph_health()
+
+    def test_the_startup_error_is_read_through_to_the_handle(self, monkeypatch) -> None:
+        """Read through rather than copied at construction: the handle learns
+        of a failure when the lifespan hook tries to start it, which is after
+        this object exists."""
+        _use_config(monkeypatch, GraphServerMode.LOCAL)
+        health = composition.graph_health()
+
+        composition.graph_server()._startup_error = "run `task tauri:vendor`"
+
+        assert health.startup_error() == "run `task tauri:vendor`"
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_the_ui_finds_it_without_importing_the_app(self, monkeypatch) -> None:
+        """Asserted through the UI's own lookup, because that is the code a
+        broken hand-over would break."""
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        published = composition.publish_graph_health()
+
+        assert published is composition.graph_health()
+        assert health_the_ui_sees() is published
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_publishing_it_twice_leaves_one(self, monkeypatch, caplog) -> None:
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+        first = composition.publish_graph_health()
+
+        with caplog.at_level(logging.WARNING, logger=REGISTRY_LOGGER):
+            assert composition.publish_graph_health() is first
+
+        assert service_registry().get(GraphHealth) is first
+        assert caplog.records == []
+
+
+class TestTheStorageReader:
+    """The three paths one archive lives in, and the only module that has all
+    three.
+
+    The mailstore comes from ``mailarc_core.archive``, the graph directory from
+    ``mailarc_core.graph`` and the database file from appkit, so a reader built
+    anywhere else would be a reader built from a config somebody guessed at.
+    """
+
+    def test_it_measures_the_configured_paths(self, monkeypatch, tmp_path) -> None:
+        graph = GraphConfig(mode=GraphServerMode.LOCAL, data_dir=tmp_path / "falkordb")
+        archive = ArchiveConfig(store_dir=tmp_path / "blobs")
+        monkeypatch.setattr(composition, "graph_config", lambda: graph)
+        monkeypatch.setattr(composition, "archive_config", lambda: archive)
+
+        paths = composition.storage_reader()._paths
+
+        assert paths["Mailstore"] == archive.store_dir
+        assert paths["Graph"] == graph.data_dir
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_a_database_in_memory_contributes_no_path(self) -> None:
+        """``sqlite+aiosqlite:///:memory:`` is what the test profile uses, and a
+        row reading "Database — 0 bytes" would describe a file that does not
+        exist."""
+        _use_database("sqlite+aiosqlite:///:memory:")
+
+        assert "Database" not in composition.storage_reader()._paths
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_a_database_on_disk_is_measured_with_the_rest(self, tmp_path) -> None:
+        database = tmp_path / "mail-archive.db"
+        _use_database(f"sqlite+aiosqlite:///{database}")
+
+        assert composition.storage_reader()._paths["Database"] == database
+
+    def test_it_is_a_singleton(self) -> None:
+        assert composition.storage_reader() is composition.storage_reader()
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_the_ui_finds_it_without_importing_the_app(self) -> None:
+        published = composition.publish_storage_reader()
+
+        assert published is composition.storage_reader()
+        assert service_registry().get(StorageReader) is published
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_publishing_it_twice_leaves_one(self, caplog) -> None:
+        first = composition.publish_storage_reader()
+
+        with caplog.at_level(logging.WARNING, logger=REGISTRY_LOGGER):
+            assert composition.publish_storage_reader() is first
+
+        assert service_registry().get(StorageReader) is first
+        assert caplog.records == []
 
 
 class TestTheSearch:

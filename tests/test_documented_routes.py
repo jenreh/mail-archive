@@ -15,17 +15,18 @@ walk over the documentation and the pages.
 import re
 from pathlib import Path
 
-from app.pages import mail_accounts, mail_embedder, mail_insights, mail_review
+from mailarc_ui.shell import routes
 
 ROOT = Path(__file__).resolve().parent.parent
 
-ROUTES = {
-    mail_accounts.ROUTE,
-    mail_embedder.ROUTE,
-    mail_insights.ROUTE,
-    mail_review.ROUTE,
-}
-"""Where the four admin pages actually live."""
+ROUTES = {route for route in routes.ALL_ROUTES if route.startswith("/admin/")}
+"""Where the administration actually lives.
+
+Read off ``mailarc_ui.shell.routes`` rather than off the page modules, which is
+where the constants moved to and also the cheaper import: the route table names
+no Reflex component, so this check no longer registers five pages into a
+module-level registry in order to ask what their paths are.
+"""
 
 MOVED = re.compile(r"/mail/(accounts|review|insights)\b")
 """The paths they used to live at, and nothing else.
@@ -79,4 +80,6 @@ def test_the_admin_pages_agree_on_where_they_are() -> None:
         "/admin/embedder",
         "/admin/insights",
         "/admin/review",
+        "/admin/status",
+        "/admin/users",
     }

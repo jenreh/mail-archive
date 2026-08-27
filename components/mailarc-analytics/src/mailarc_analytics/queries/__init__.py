@@ -37,6 +37,7 @@ values and are re-exported like any other.
 
 from mailarc_analytics.queries.catalog import (
     ACCOUNT_ADDRESSES,
+    ARCHIVED_PER_DAY,
     CATALOG,
     CO_RECIPIENTS,
     COUNT_CO_ADDRESSED,
@@ -74,6 +75,7 @@ from mailarc_analytics.queries.catalog import (
     parameters_of,
 )
 from mailarc_analytics.queries.model import (
+    ArchivedDay,
     ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
@@ -99,6 +101,7 @@ from mailarc_analytics.queries.rows import (
 __all__ = [
     "ACCOUNT_ADDRESSES",
     "AGREEMENT_LIMIT",
+    "ARCHIVED_PER_DAY",
     "CATALOG",
     "COUNT_CO_ADDRESSED",
     "COUNT_GROUPS",
@@ -135,6 +138,7 @@ __all__ = [
     "WRITE_EMBEDDINGS",
     "AnalyticsReader",
     "ArchiveTotals",
+    "ArchivedDay",
     "CoAddressedAgreement",
     "CoAddressedRow",
     "CoRecipientRow",

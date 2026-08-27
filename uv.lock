@@ -82,7 +82,7 @@ wheels = [
 
 [[package]]
 name = "appkit-commons"
-version = "1.13.6"
+version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorlog" },
@@ -93,50 +93,51 @@ dependencies = [
     { name = "sqlalchemy-utils" },
     { name = "starlette" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4d/b0/98d40cc634efaec0dda8d1d6ee3fde18a5cf0d65f16a6135a87fdc103fdb/appkit_commons-1.13.6.tar.gz", hash = "sha256:4daca5b32ef8ae0252de1bfa4a2d9b0396ab3226fba3aa3d4778855ce7a77a19", size = 59014, upload-time = "2026-08-06T12:22:10.076Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/75/1fec67c55020d6769ddc652972eab8e093c8bda74cf7583d9f1b7fbc9d7f/appkit_commons-1.14.0.tar.gz", hash = "sha256:ce2197829a16d5f116a51f912186dbe4e09d1713ed1481312376b92755beb658", size = 59767, upload-time = "2026-08-26T16:08:24.925Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/35/ae/1a291edcb3d8e5e9aa367f3152c6add3f250db6f06195d7b97ab5b0bc4d8/appkit_commons-1.13.6-py3-none-any.whl", hash = "sha256:42e4102db73fdf66701841ea85fb1e6d54f970e6bf73143b5c662040ea36da7b", size = 37161, upload-time = "2026-08-06T12:22:02.336Z" },
+    { url = "https://files.pythonhosted.org/packages/66/62/e6987bf3949adbde95eec0ce70bb6b03350eb3046b06bf657f6ecfed7996/appkit_commons-1.14.0-py3-none-any.whl", hash = "sha256:e586121faa89a8a8b4eaad0e9d3d49932ad1d62b76bee24599ce1e19181b33d2", size = 37377, upload-time = "2026-08-26T16:08:08.662Z" },
 ]
 
 [[package]]
 name = "appkit-mantine"
-version = "1.13.6"
+version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "reflex" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9d/d2/e54366156ca68de728e960a83fe300ea5f8b81a56dc201c75432c70b3e63/appkit_mantine-1.13.6.tar.gz", hash = "sha256:99ac43d3e5847ace16e939c01a30db2f9433bfbdf54f2b52298860ca074f3333", size = 243637, upload-time = "2026-08-06T12:22:12.355Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/2f/a10756bc5fab7569b9abb15c0f1ae9b26bfa8bbb5ef0921a7285c7df579e/appkit_mantine-1.14.0.tar.gz", hash = "sha256:61618112244a3d48cbf007c57c41623582374dee8f6fdfe6df29bfccd24e1647", size = 250204, upload-time = "2026-08-26T16:08:27.579Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/f2/eeeebef17d2f7062e560eb920a6a8ea4ea7d3f4a31b72698ce62ebaa8bba/appkit_mantine-1.13.6-py3-none-any.whl", hash = "sha256:35757f07591fd40a3dc2cc785cd29ffa8881e1d38cb7709b3554b9efd6294d29", size = 288559, upload-time = "2026-08-06T12:22:04.948Z" },
+    { url = "https://files.pythonhosted.org/packages/64/c8/7039386ebb55446aeed53ddee4ee6e5626aa0bacfd273f92c2fd4f460c78/appkit_mantine-1.14.0-py3-none-any.whl", hash = "sha256:57d918bbb159780ec0a97c5e5b48aff6bc56833be370378062a90b02dfd04ca5", size = 308076, upload-time = "2026-08-26T16:08:11.355Z" },
 ]
 
 [[package]]
 name = "appkit-ui"
-version = "1.13.6"
+version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "appkit-mantine" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2b/42/d47ba21a4fe7c5a3cc4eff5d689fcde98b731e405eee7b6cca85f9bed8ec/appkit_ui-1.13.6.tar.gz", hash = "sha256:60435b0e79c1686e9ec6a30964b6c60a5eae58eb221edb78627edaa3eb27aa0f", size = 13902, upload-time = "2026-08-06T12:22:13.289Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/f5/3e93cf4653bacf9d5e8ddae8c94c640eef5621ddf8f3d0a1705bc28af6f6/appkit_ui-1.14.0.tar.gz", hash = "sha256:400ae737cdf41381ca0c3b067a292f806ffa35233baa0048f3005e0b15392106", size = 13900, upload-time = "2026-08-26T16:08:33.695Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/65/48729817d692684a825e8b6038753f889d224853a71bf03ac3f76501ac90/appkit_ui-1.13.6-py3-none-any.whl", hash = "sha256:538c7b521e2f5d859c44f20f8e267972bd588f17377f08397225604bbec53093", size = 17013, upload-time = "2026-08-06T12:22:06.261Z" },
+    { url = "https://files.pythonhosted.org/packages/63/59/651559c56343bc0630706601858b834eab0ee1f064ca868bd39f8f52a74a/appkit_ui-1.14.0-py3-none-any.whl", hash = "sha256:18d7f4d02d52f03bcaa2fe96b27b27f83e9ba6dfde31358aa63df17402a4c023", size = 17013, upload-time = "2026-08-26T16:08:19.372Z" },
 ]
 
 [[package]]
 name = "appkit-user"
-version = "1.13.6"
+version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "appkit-commons" },
     { name = "appkit-ui" },
+    { name = "fastapi" },
     { name = "greenlet" },
     { name = "jinja2" },
     { name = "requests-oauthlib" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a4/b8/2ea2cb2683fd73e570ecfb5a477a96c0c604c47925499456474c5a511f97/appkit_user-1.13.6.tar.gz", hash = "sha256:1fdb65d8958e13fde34d38f0db94f9f6358580773f45963a454356e29fc4b13e", size = 850835, upload-time = "2026-08-06T12:22:14.464Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/da/884d015fe4ff43c6ddcfe6666ffe161b6707f9bb99f26c653f2023f01576/appkit_user-1.14.0.tar.gz", hash = "sha256:c2bf875ebb6b971332b68e8019e0411b4654684fc83be8e8a724920a678e157d", size = 881326, upload-time = "2026-08-26T16:08:34.946Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/ca/03a4633b712b16fa0a57aff829f292c4a23a14488559306dacb5d6b47b81/appkit_user-1.13.6-py3-none-any.whl", hash = "sha256:abab1df01d58f4d23a1e9a8a2e2ab8034153304b730bd7691a009a672c03a85c", size = 64597, upload-time = "2026-08-06T12:22:07.332Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/b7/5c99d93819dd489af755e0e5f1b3633626ababf7b93c0b2ce4ed639d916a/appkit_user-1.14.0-py3-none-any.whl", hash = "sha256:0aa5c0caeb0754604e9598c32447be0c8b0b46678b3ac0cdb41ae9302e0e61af", size = 81578, upload-time = "2026-08-26T16:08:20.732Z" },
 ]
 
 [[package]]
@@ -650,6 +651,22 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi"
+version = "0.141.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/02/91e3416a8fdd715abb903a952a6bec7cdd8d14eed55d415fc8595524c319/fastapi-0.141.1.tar.gz", hash = "sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1", size = 425799, upload-time = "2026-07-29T17:18:05.568Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl", hash = "sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3", size = 131954, upload-time = "2026-07-29T17:18:04.364Z" },
+]
+
+[[package]]
 name = "fastmcp"
 version = "3.4.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1118,9 +1135,6 @@ name = "mail-archive"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "appkit-mantine" },
     { name = "appkit-user" },
     { name = "mailarc-analytics" },
     { name = "mailarc-core" },
@@ -1129,8 +1143,6 @@ dependencies = [
     { name = "mailarc-m365" },
     { name = "mailarc-sync" },
     { name = "mailarc-ui" },
-    { name = "reflex" },
-    { name = "sqlalchemy" },
 ]
 
 [package.optional-dependencies]
@@ -1155,10 +1167,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "alembic", specifier = ">=1.18.4" },
-    { name = "appkit-mantine", specifier = ">=1.10.2" },
-    { name = "appkit-user", specifier = ">=1.10.2" },
+    { name = "appkit-user", specifier = "==1.14.0" },
     { name = "mailarc-analytics", editable = "components/mailarc-analytics" },
     { name = "mailarc-core", editable = "components/mailarc-core" },
     { name = "mailarc-google", editable = "components/mailarc-google" },
@@ -1167,8 +1176,6 @@ requires-dist = [
     { name = "mailarc-mcp", marker = "extra == 'mcp'", editable = "components/mailarc-mcp" },
     { name = "mailarc-sync", editable = "components/mailarc-sync" },
     { name = "mailarc-ui", editable = "components/mailarc-ui" },
-    { name = "reflex", specifier = ">=0.9.5" },
-    { name = "sqlalchemy", specifier = ">=2.0.49" },
 ]
 provides-extras = ["mcp"]
 
@@ -1207,6 +1214,8 @@ name = "mailarc-core"
 version = "1.0.0"
 source = { editable = "components/mailarc-core" }
 dependencies = [
+    { name = "aiosqlite" },
+    { name = "alembic" },
     { name = "appkit-commons" },
     { name = "falkordb" },
     { name = "pydantic" },
@@ -1216,11 +1225,13 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "appkit-commons", specifier = ">=1.13.6" },
+    { name = "aiosqlite", specifier = "==0.22.1" },
+    { name = "alembic", specifier = "==1.19.1" },
+    { name = "appkit-commons", specifier = ">=1.14.0" },
     { name = "falkordb", specifier = ">=1.7.0" },
-    { name = "pydantic", specifier = ">=2.13" },
+    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "runic-py", specifier = ">=0.6.0" },
-    { name = "sqlalchemy", specifier = ">=2.0.49" },
+    { name = "sqlalchemy", specifier = ">=2.0.52" },
 ]
 
 [[package]]
@@ -1308,6 +1319,7 @@ version = "1.0.0"
 source = { editable = "components/mailarc-ui" }
 dependencies = [
     { name = "appkit-mantine" },
+    { name = "appkit-ui" },
     { name = "appkit-user" },
     { name = "mailarc-analytics" },
     { name = "mailarc-core" },
@@ -1317,12 +1329,13 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "appkit-mantine", specifier = ">=1.10.2" },
-    { name = "appkit-user", specifier = ">=1.10.2" },
+    { name = "appkit-mantine", specifier = ">=1.14.0" },
+    { name = "appkit-ui", specifier = ">=1.14.0" },
+    { name = "appkit-user", specifier = ">=1.14.0" },
     { name = "mailarc-analytics", editable = "components/mailarc-analytics" },
     { name = "mailarc-core", editable = "components/mailarc-core" },
     { name = "mailarc-sync", editable = "components/mailarc-sync" },
-    { name = "reflex", specifier = ">=0.9.5" },
+    { name = "reflex", specifier = ">=0.9.8.post1" },
 ]
 
 [[package]]
@@ -1983,7 +1996,7 @@ wheels = [
 
 [[package]]
 name = "reflex"
-version = "0.9.8"
+version = "0.9.8.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -2013,14 +2026,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/60/b7/73bedfef3eeab60b3f3c675f292dddbed7061eff5524515e5b7e5c9a035f/reflex-0.9.8.tar.gz", hash = "sha256:ed0d2905c4968226e37da6999ccad77d4600a1370399afbed1038826dec3fc9b", size = 406093, upload-time = "2026-08-04T18:55:55.347Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2a/88/4783f5f1599cec1869dde31bae126d8d51fa9dc26d2de09c342a016ec778/reflex-0.9.8.post1.tar.gz", hash = "sha256:e2720d9eca201392dc8546cbfa474dfa7b17240ac2675a1491e61ccbf359b15f", size = 408223, upload-time = "2026-08-18T22:37:32.948Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/c8/d34ac31978bce63d9bddcbd3ed1522ce0f367290a5923a6e3012618c5583/reflex-0.9.8-py3-none-any.whl", hash = "sha256:4f50452f5c6540d98711bfdc138085ce5339c5b3b2cf27444b93952e10906f86", size = 660205, upload-time = "2026-08-04T18:55:53.86Z" },
+    { url = "https://files.pythonhosted.org/packages/38/bf/518c58b060360a73fcb3e0346da8a8f79998de35284bc5208e4c9398909a/reflex-0.9.8.post1-py3-none-any.whl", hash = "sha256:98891477cbef918c0b5595f5a4242d90abb59969f5f021dbbb0f5f1baf642064", size = 660878, upload-time = "2026-08-18T22:37:33.989Z" },
 ]
 
 [[package]]
 name = "reflex-base"
-version = "0.9.8"
+version = "0.9.8.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
@@ -2029,9 +2042,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/5d/9d9bed0d9294276d7e4b7d9b1e6f3185fa888657d0e73a996de30012a6c7/reflex_base-0.9.8.tar.gz", hash = "sha256:e4c6c5a221920c153361f7855c8ab6dc43fc6a9f1dfce402c6d631728f313d82", size = 275540, upload-time = "2026-08-04T18:54:24.365Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/3a/483412fc7b8446437d575c82b6a9a4708a7e941980b99116a9b2d0979f26/reflex_base-0.9.8.post1.tar.gz", hash = "sha256:c590535bb672a3a13f4a53ff09a0f48c34889990a51c1a8f875fedfa9c4c7499", size = 275572, upload-time = "2026-08-18T22:36:29.444Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/f8/16f00aceb2f8cac1d42c4ed47f91d76aa4fa242fb011e5cfe0fe27449589/reflex_base-0.9.8-py3-none-any.whl", hash = "sha256:e91c453fef26b70d058bcc926f5811d01e8b01257f033507efed22734ed3be8f", size = 315203, upload-time = "2026-08-04T18:54:25.317Z" },
+    { url = "https://files.pythonhosted.org/packages/59/b0/c465aacc934aa86589fb1c0fe54a6ee309e28b23fc1ae9c47d050fe6b93c/reflex_base-0.9.8.post1-py3-none-any.whl", hash = "sha256:d73a7301a5223188f8a848fd3fbe56c2149f48d8c775368d61774f8af47f5905", size = 315248, upload-time = "2026-08-18T22:36:30.589Z" },
 ]
 
 [[package]]

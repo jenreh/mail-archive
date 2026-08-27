@@ -12,13 +12,14 @@ behind the state.
 
 The ``lambda`` around a handler is how a row passes its own id into one, and
 ``ty`` cannot model that call — hence the suppressions, the same ones
-``app/pages/home.py`` carries.
+every page module carries around an event handler.
 """
 
 import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.accounts.state import AccountRow, CredentialInput, MailAccountState
+from mailarc_ui.kit import panel_card
 
 
 def _credential_input(field: CredentialInput) -> rx.Component:
@@ -98,7 +99,7 @@ def error_alert() -> rx.Component:
 
 def add_account_form() -> rx.Component:
     """Provider, address, and whatever that provider declared it needs."""
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.text("Add an account", fw=600, size="sm"),
             mn.select(
@@ -130,17 +131,12 @@ def add_account_form() -> rx.Component:
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 
 def accounts_table() -> rx.Component:
     """The mailboxes this archive knows, or the reason there are none yet."""
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.text("Accounts", fw=600, size="sm"),
             rx.cond(
@@ -170,11 +166,6 @@ def accounts_table() -> rx.Component:
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 

@@ -9,6 +9,7 @@ import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.imports.state import ImportJobRow, ImportJobState
+from mailarc_ui.kit import panel_card
 
 
 def import_controls() -> rx.Component:
@@ -48,8 +49,20 @@ def import_progress() -> rx.Component:
             animated=ImportJobState.job.active,
             flex="1",
         ),
-        mn.text(ImportJobState.job.percent_label, size="sm", fw=600, w=52, ta="right"),
-        mn.text(ImportJobState.job.counts_label, size="sm", c="dimmed"),
+        mn.text(
+            ImportJobState.job.percent_label,
+            size="sm",
+            fw=600,
+            w=52,
+            ta="right",
+            class_name="ma-tabular",
+        ),
+        mn.text(
+            ImportJobState.job.counts_label,
+            size="sm",
+            c="dimmed",
+            class_name="ma-tabular",
+        ),
         gap="sm",
         align="center",
         w="100%",
@@ -86,7 +99,7 @@ def recent_jobs() -> rx.Component:
 
 def import_panel() -> rx.Component:
     """The whole thing in one card, for a page to drop in."""
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.group(
                 mn.text("Import", fw=600, size="sm"),
@@ -115,11 +128,6 @@ def import_panel() -> rx.Component:
             recent_jobs(),
             gap="md",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 

@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from reflex.event import EventCallback
 
 from mailarc_sync.jobs import JobKind, JobProgress, JobQueue, JobState, SyncJob
+from mailarc_ui.shell.access import granted, signed_in_user
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,14 @@ class ImportJobState(rx.State):
     ``job_id`` is the job being watched and ``job`` is the last reading of it.
     They are separate on purpose: a read that comes back empty must not make
     the panel forget what it was following.
+
+    **Every handler that reaches the queue gates itself**, and
+    ``admin_only=True`` on ``/admin/accounts`` is not what does it: that flag
+    is a render-time ``rx.cond``, while a Reflex handler is reached by *name*
+    over the websocket and never by route. Since ``/`` is public an anonymous
+    session is an ordinary thing, and queueing an import is work run against
+    somebody's mailbox on somebody else's machine. See
+    :mod:`mailarc_ui.shell.access`.
     """
 
     account_id: int = 0
@@ -136,12 +145,21 @@ class ImportJobState(rx.State):
 
     @rx.event
     async def refresh(self) -> None:
-        """Read the watched jobs back once, for a page that is not polling."""
+        """Read the watched jobs back once, for a page that is not polling.
+
+        Refuses in silence: this is half of ``/admin/accounts``' ``on_load``,
+        which runs for whoever opened the socket, and an error naming what was
+        withheld is itself a statement about the installation.
+        """
+        if not await self._may_administer("a job-queue read"):
+            return
         await self._sync()
 
     @rx.event
     async def start_import(self) -> EventCallback[()] | None:
         """Queue an import for the selected account and start following it."""
+        if not await self._may_administer("queueing an import"):
+            return None
         if self.account_id <= 0:
             self.message = "Choose an account first."
             return None
@@ -174,6 +192,8 @@ class ImportJobState(rx.State):
         The worker reads it between batches, so whatever was half written when
         a human clicked is still written whole.
         """
+        if not await self._may_administer("cancelling an import"):
+            return
         if self.job_id <= 0:
             return
         self.cancelling = True
@@ -198,6 +218,10 @@ class ImportJobState(rx.State):
         us. A job that has ended stops the loop — a panel left open overnight
         must not keep asking about it.
         """
+        if not await self._may_administer("a job-queue read"):
+            async with self:
+                self.polling = False
+            return
         while True:
             async with self:
                 if not self.polling or self.job_id <= 0:
@@ -219,6 +243,23 @@ class ImportJobState(rx.State):
                         self.polling = False
                         return
             await asyncio.sleep(self.poll_interval)
+
+    async def _may_administer(self, what: str) -> bool:
+        """Whether this session may read or drive the archive's job queue.
+
+        Fails closed — :func:`mailarc_ui.shell.access.granted` is where that
+        decision lives and why.
+        """
+        return await granted(self._current_user, what=what)
+
+    async def _current_user(self) -> object | None:  # pragma: no cover
+        """The signed-in user of this session, or ``None``.
+
+        Its own method so :meth:`_may_administer` can be tested without a
+        running Reflex app; see
+        :func:`mailarc_ui.shell.access.signed_in_user`.
+        """
+        return await signed_in_user(self)
 
     def _queue(self) -> JobQueue:
         """Built per call, never at import.

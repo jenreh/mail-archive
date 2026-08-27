@@ -165,7 +165,7 @@ The hierarchy *is* the import table — read it as the layering:
 | `mailarc-sync` | `mailarc-core` | any provider, Reflex |
 | `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex |
 | `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, any provider, Reflex |
-| `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-user | `app` |
+| `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-ui/-user | `app` |
 | `app` | everything | — |
 
 **A provider may not reach into a sibling**, which is why `mailarc-m365` holds

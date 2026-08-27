@@ -9,8 +9,22 @@
     {
       "name": "layout-repro",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/private/tmp/claude-501/-Users-jens-Workspace-projekte-mail-archive/0586b287-147d-4c55-ae4d-b8680a10b348/scratchpad"],
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8765",
+        "--directory",
+        "/private/tmp/claude-501/-Users-jens-Workspace-projekte-mail-archive/0586b287-147d-4c55-ae4d-b8680a10b348/scratchpad"
+      ],
       "port": 8765
+    },
+    {
+      "name": "agent-app",
+      "runtimeExecutable": "task",
+      "runtimeArgs": [
+        "agent:app"
+      ],
+      "port": 3031
     }
   ]
 }

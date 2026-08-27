@@ -25,6 +25,7 @@ from mailarc_ui.embedder.model import (
     WORKER_NOTE,
 )
 from mailarc_ui.embedder.state import EmbedderSettingsState
+from mailarc_ui.kit import panel_card
 
 
 def _advice(advice: rx.Var) -> rx.Component:
@@ -143,7 +144,7 @@ def api_key_field() -> rx.Component:
 
 def settings_form() -> rx.Component:
     """Which service, which model, how long a vector, and where it lives."""
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.text("The embedder", fw=600, size="sm"),
             mn.text(
@@ -195,11 +196,6 @@ def settings_form() -> rx.Component:
             api_key_field(),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 
@@ -310,7 +306,7 @@ def embed_card() -> rx.Component:
     owe it a vector. See
     :class:`~mailarc_ui.embedder.model.EmbedJobView`.
     """
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.group(
                 mn.stack(
@@ -367,11 +363,13 @@ def embed_card() -> rx.Component:
                         fw=600,
                         w=52,
                         ta="right",
+                        class_name="ma-tabular",
                     ),
                     mn.text(
                         EmbedderSettingsState.job.messages_label,
                         size="sm",
                         c="dimmed",
+                        class_name="ma-tabular",
                     ),
                     gap="sm",
                     align="center",
@@ -402,11 +400,6 @@ def embed_card() -> rx.Component:
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 

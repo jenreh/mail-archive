@@ -22,10 +22,20 @@ from typing import Any, cast
 
 import pytest
 from appkit_commons.registry import service_registry
+from who_is_asking import FakeUser, nobody_can_be_established, signed_in_as
 
 from mailarc_analytics import AnalyticsReader, TemplateDirection, TopicSignal
 from mailarc_analytics.queries import catalog
 from mailarc_core.archive.reader import GraphSessionFactory
+
+__all__ = [
+    "FakeUser",
+    "nobody_can_be_established",
+    "signed_in_as",
+]
+"""Re-exported so the insights tests keep one import for their fixtures.
+
+The definitions moved to ``who_is_asking`` once a third state needed them."""
 
 MARCH = datetime(2026, 3, 12, 9, 0, tzinfo=UTC)
 AUGUST = datetime(2026, 8, 21, 16, 0, tzinfo=UTC)
@@ -224,32 +234,6 @@ def fresh(graph: FakeGraph) -> FakeGraph:
     ):
         graph.count(statement, 0)
     return graph
-
-
-class FakeUser:
-    """Just the one attribute the gate reads off a signed-in user."""
-
-    def __init__(self, is_admin: bool) -> None:
-        self.is_admin = is_admin
-
-
-def signed_in_as(
-    state: Any, user: FakeUser | None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Say who is asking, for a state that has no Reflex app under it.
-
-    ``AnalyticsInsightsState._may_read`` goes through ``_current_user``, which
-    goes through ``self.get_state(UserSession)`` — and ``get_state`` needs an
-    ``EventContext`` context variable that only a running Reflex app sets, so a
-    unit test cannot reach it. ``_current_user`` exists as its own method for
-    exactly this: it is the one line that needs the app, and everything the
-    authorisation actually decides sits above it and can be tested.
-    """
-
-    async def current(_self: object) -> FakeUser | None:
-        return user
-
-    monkeypatch.setattr(type(state), "_current_user", current)
 
 
 @pytest.fixture

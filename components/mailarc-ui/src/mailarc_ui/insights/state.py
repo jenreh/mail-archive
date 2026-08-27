@@ -51,6 +51,7 @@ from mailarc_ui.insights.model import (
     TopicView,
     TotalsView,
 )
+from mailarc_ui.shell.access import granted, signed_in_user
 
 logger = logging.getLogger(__name__)
 
@@ -559,45 +560,26 @@ class AnalyticsInsightsState(rx.State):
         render-time ``rx.cond`` and nothing more: appkit's
         ``_build_auth_handlers`` puts ``LoginState.check_auth`` in front of the
         page's ``on_load`` and Reflex runs the rest of the chain whatever that
-        returns, so this handler runs for a logged-out visitor and for a
-        signed-in non-admin alike. What they are shown is the no-permission
-        page; what they would be *sent* is :attr:`pairs` and
+        returns — and a handler is reached by *name* over the websocket in any
+        case, never by route. So this handler runs for a logged-out visitor and
+        for a signed-in non-admin alike. What they are shown is the
+        no-permission page; what they would be *sent* is :attr:`pairs` and
         :attr:`AgreementView.disputes`, which are raw mail addresses out of
         every mailbox in the installation. The gate has to sit where the data
         leaves, not where the page is drawn.
 
-        Fails closed. A process with no ``appkit_user`` in it, or one where the
-        session cannot be read, is a process that cannot say this caller is an
-        administrator — and "cannot tell" is not "yes" for a page whose own
-        comment justifies itself on everybody's private mail.
+        Fails closed — :func:`mailarc_ui.shell.access.granted` is the one place
+        that decision is made, for every state in this package.
         """
-        try:
-            user = await self._current_user()
-        except Exception:
-            logger.exception("Could not establish who is asking; refusing the read")
-            return False
-        if user is None or not getattr(user, "is_admin", False):
-            logger.warning("Refused an archive-wide analytics read: not an admin")
-            return False
-        return True
+        return await granted(self._current_user, what="an archive-wide analysis")
 
     async def _current_user(self) -> object | None:  # pragma: no cover
-        """The signed-in user, or ``None`` — Reflex's own session state.
+        """The signed-in user of this session, or ``None``.
 
-        Its own method so the authorisation above can be tested, and excluded
-        from coverage for the same reason it is its own method: ``get_state``
-        needs an ``EventContext`` context variable that only a running Reflex
-        app sets, so these three lines cannot run under pytest at all.
-        Everything the gate actually *decides* sits in :meth:`_may_read`, above
-        this, and is covered there. Imported inside the method rather than at
-        module scope because ``appkit_user.authentication.states`` reads its
-        configuration out of the service registry *at import*, which a
-        component's own test suite has no reason to have populated.
+        Its own method so :meth:`_may_read` can be tested without a running
+        Reflex app; see :func:`mailarc_ui.shell.access.signed_in_user`.
         """
-        from appkit_user.authentication.states import UserSession
-
-        session = await self.get_state(UserSession)
-        return session.user
+        return await signed_in_user(self)
 
     def _follow(self) -> EventCallback[()] | None:
         """Start watching the rebuild, unless this page already is."""

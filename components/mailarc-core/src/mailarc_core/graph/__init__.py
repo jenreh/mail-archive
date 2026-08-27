@@ -24,6 +24,9 @@ One module per concern, layered so nothing points back up:
     Builds runic drivers and sessions. Backend-independent.
 ``status``
     Reads a snapshot; never raises for an unreachable server.
+``health``
+    ``GraphHealth`` — the snapshot and the startup error behind one object, so
+    a caller needs neither the config nor the composition root.
 ``server``
     ``FalkorDBServer`` — starts, adopts and stops the process.
 """
@@ -31,6 +34,7 @@ One module per concern, layered so nothing points back up:
 from mailarc_core.graph.admin import is_serving
 from mailarc_core.graph.client import close, connect, session
 from mailarc_core.graph.config import GraphConfig
+from mailarc_core.graph.health import GraphHealth
 from mailarc_core.graph.model import (
     GraphBackend,
     GraphInfo,
@@ -47,6 +51,7 @@ __all__ = [
     "FalkorDBServer",
     "GraphBackend",
     "GraphConfig",
+    "GraphHealth",
     "GraphInfo",
     "GraphRuntimeError",
     "GraphServerMode",

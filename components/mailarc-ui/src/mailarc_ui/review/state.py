@@ -19,6 +19,13 @@ Its HTML goes into a sandboxed frame and is wrapped in a document whose
 Content-Security-Policy allows nothing remote: a tracking pixel is a request
 to a stranger's server the moment a mail is opened, and a mail client that
 blocks remote content by default is the behaviour to copy.
+
+**Every handler that reaches the archive gates itself**, and ``/admin/review``
+carrying ``admin_only=True`` is not what does it: that flag is a render-time
+``rx.cond``, while a Reflex handler is reached by *name* over the websocket and
+never by route. Since ``/`` is public an anonymous session is an ordinary thing,
+and what these handlers ship is subjects, addresses and message bodies out of
+every mailbox in the installation. See :mod:`mailarc_ui.shell.access`.
 """
 
 import asyncio
@@ -38,6 +45,7 @@ from mailarc_core.mail.model import (
     ParsedAttachment,
     RenderedMessage,
 )
+from mailarc_ui.shell.access import granted, signed_in_user
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +82,32 @@ FRAME_CSP_REMOTE = (
 fonts may now come from elsewhere. Scripts, frames, forms and connections
 stay out — trust extends to being seen, never to being run."""
 
+FRAME_INK = "#1a1a1a"
+FRAME_PAPER = "#ffffff"
+"""``--ma-text`` and ``--ma-surface``, written out — the only two literals in
+this package, and the reason is the document boundary.
+
+A custom property defined on the parent page's ``:root`` does not cross into an
+iframe: the frame is its own document with its own cascade, so a ``var(--ma-…)``
+in :data:`FRAME_STYLE` would resolve to nothing and the declaration would be
+dropped. The values are therefore restated here rather than referenced, which
+also means they are **fixed**: a mail renders on white in dark mode too. That is
+arguably right — a mail was written to be read on paper-white and re-tinting
+somebody's HTML is a change to their document — but it is a decision, not an
+oversight, and it is written down here rather than left to be discovered.
+"""
+
 FRAME_STYLE = (
+    ":root{color-scheme:light}"
     "body{margin:0;padding:16px;font:14px/1.5 -apple-system,BlinkMacSystemFont,"
-    "'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1a1a;background:#fff;"
+    f"'Segoe UI',Helvetica,Arial,sans-serif;color:{FRAME_INK};"
+    f"background:{FRAME_PAPER};"
     "word-wrap:break-word}img{max-width:100%}"
 )
-"""A quiet default look for mails that bring no styling of their own."""
+"""A quiet default look for mails that bring no styling of their own.
+
+``color-scheme: light`` is what stops the browser from darkening form controls
+and scrollbars inside a frame it has been told is on white."""
 
 
 LABEL_COLORS = {
@@ -284,7 +312,14 @@ class MessageReviewState(rx.State):
 
     @rx.event
     async def load(self) -> None:
-        """Start over: the first page and the count. The page's ``on_load``."""
+        """Start over: the first page and the count. The page's ``on_load``.
+
+        Refuses with an empty list and **no error text**: the page's ``on_load``
+        runs for whoever opened the socket, and a sentence saying what was
+        withheld is itself a statement about the installation.
+        """
+        if not await self._may_read():
+            return
         self.error = ""
         self.loading = True
         try:
@@ -306,6 +341,8 @@ class MessageReviewState(rx.State):
     async def load_more(self) -> None:
         """Append the next page; the list keeps what it has."""
         if self.loading or not self.has_more:
+            return
+        if not await self._may_read():
             return
         self.loading = True
         try:
@@ -333,6 +370,8 @@ class MessageReviewState(rx.State):
         Both views come out of one read of the original; the parse runs off
         the event loop beside it, because a big HTML mail is real work.
         """
+        if not await self._may_read():
+            return
         row = next((one for one in self.messages if one.id == message_id), None)
         if row is None:
             return
@@ -369,6 +408,8 @@ class MessageReviewState(rx.State):
     @rx.event
     async def allow_remote_for_sender(self) -> None:
         """Load it now and from this sender always — recorded on the address."""
+        if not await self._may_read():
+            return
         address = self.view.sender_address
         if not address:
             return
@@ -382,6 +423,22 @@ class MessageReviewState(rx.State):
         if not recorded:
             self.message_note = "The decision could not be stored; allowed once."
         self.remote_allowed = True
+
+    async def _may_read(self) -> bool:
+        """Whether this session may be shown, or told to trust, somebody's mail.
+
+        Fails closed — :func:`mailarc_ui.shell.access.granted` is where that
+        decision lives and why.
+        """
+        return await granted(self._current_user, what="a read of the archive")
+
+    async def _current_user(self) -> object | None:  # pragma: no cover
+        """The signed-in user of this session, or ``None``.
+
+        Its own method so :meth:`_may_read` can be tested without a running
+        Reflex app; see :func:`mailarc_ui.shell.access.signed_in_user`.
+        """
+        return await signed_in_user(self)
 
     def _explain(self, sentence: str) -> None:
         """Put one sentence where both views would show the message."""

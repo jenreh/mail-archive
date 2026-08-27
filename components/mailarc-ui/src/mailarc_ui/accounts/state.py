@@ -42,6 +42,7 @@ from mailarc_core.mail.errors import MailAuthError
 from mailarc_core.mail.model import AccountIdentity, MailProvider
 from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY, MailSourcePort
 from mailarc_sync.engine import ProviderRegistry
+from mailarc_ui.shell.access import granted, signed_in_user
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,21 @@ def provider_registry() -> ProviderRegistry:
 
 
 class MailAccountState(rx.State):
-    """Everything the accounts page can do, and nothing beyond it."""
+    """Everything the accounts page can do, and nothing beyond it.
+
+    **Every handler that touches a mailbox gates itself**, and
+    ``admin_only=True`` on ``/admin/accounts`` is not what does it: that flag
+    is a render-time ``rx.cond``, while a Reflex handler is reached by *name*
+    over the websocket and never by route. Since ``/`` is public an anonymous
+    session is an ordinary thing, and this state lists, connects and
+    **deletes** every mailbox in the installation along with the secret that
+    opened it. See :mod:`mailarc_ui.shell.access`.
+
+    The form handlers are deliberately outside the gate. ``select_provider``
+    and the two setters move a caller's own draft around in their own session
+    and reach nothing; gating them would add a round trip to every keystroke
+    to protect a value the caller typed.
+    """
 
     accounts: list[AccountRow] = []
     provider_options: list[dict[str, str]] = []
@@ -137,7 +152,14 @@ class MailAccountState(rx.State):
 
     @rx.event
     async def load(self) -> None:
-        """Read the providers and the accounts. The page's ``on_load``."""
+        """Read the providers and the accounts. The page's ``on_load``.
+
+        Refuses with an empty list and **no error text**: an ``on_load`` runs
+        for whoever opened the socket, and a sentence naming what was withheld
+        is itself a statement about the installation.
+        """
+        if not await self._may_administer("a mail-account read"):
+            return
         self.error = ""
         self.busy = True
         try:
@@ -172,6 +194,8 @@ class MailAccountState(rx.State):
     @rx.event
     async def create_account(self) -> None:
         """Write the account row and the credential row that opens it."""
+        if not await self._may_administer("adding a mailbox"):
+            return
         self.busy = True
         self.error = ""
         try:
@@ -187,6 +211,8 @@ class MailAccountState(rx.State):
     @rx.event
     async def delete_account(self, account_id: int) -> None:
         """Drop an account and the secret that opened it."""
+        if not await self._may_administer("deleting a mailbox"):
+            return
         self.busy = True
         self.error = ""
         try:
@@ -216,6 +242,8 @@ class MailAccountState(rx.State):
         state lock is held around the mutations only, or every other page would
         wait on this one.
         """
+        if not await self._may_administer("a consent run"):
+            return
         async with self:
             self.busy = True
             self.error = ""
@@ -231,6 +259,23 @@ class MailAccountState(rx.State):
         async with self:
             self.accounts = accounts
             self.busy = False
+
+    async def _may_administer(self, what: str) -> bool:
+        """Whether this session may be handed, or allowed to change, a mailbox.
+
+        Fails closed — :func:`mailarc_ui.shell.access.granted` is where that
+        decision lives and why.
+        """
+        return await granted(self._current_user, what=what)
+
+    async def _current_user(self) -> object | None:  # pragma: no cover
+        """The signed-in user of this session, or ``None``.
+
+        Its own method so :meth:`_may_administer` can be tested without a
+        running Reflex app; see
+        :func:`mailarc_ui.shell.access.signed_in_user`.
+        """
+        return await signed_in_user(self)
 
     def _read_providers(self) -> None:
         """Offer what the composition root registered, in that order."""

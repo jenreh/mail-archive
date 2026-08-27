@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from who_is_asking import FakeUser, signed_in_as
 
 from mailarc_core.database.entities import MailAccountEntity, MailSyncJobEntity
 from mailarc_core.database.sqlite import install_pragmas
@@ -97,17 +98,25 @@ async def account_id(session_factory: SessionFactory) -> int:
 
 
 @pytest.fixture
-def state(queue: JobQueue, account_id: int) -> Iterator[ImportJobState]:
+def state(
+    queue: JobQueue, account_id: int, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[ImportJobState]:
     """The state under test, with the queue it builds pointed at our file.
 
     The patch stays up for the whole test: the state constructs its queue
     inside every handler, which is the production path and the one worth
     exercising.
+
+    Signed in as an administrator, because every handler that reaches the queue
+    gates itself — a Reflex handler is reached by name over the same websocket
+    the public ``/`` uses and never by route. What a refused caller gets is
+    ``test_ui_state_gates.py``.
     """
     with patch(f"{STATE_MODULE}.JobQueue", Mock(return_value=queue)):
         instance = ImportJobState()
         instance.account_id = account_id
         instance.poll_interval = 0
+        signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
         yield instance
 
 

@@ -15,8 +15,10 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator, Mapping, Sequence
 from functools import lru_cache, partial
+from pathlib import Path
 from typing import Any
 
+from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.database.session import get_asyncdb_session
 from appkit_commons.registry import service_registry
 from pydantic import ValidationError
@@ -39,11 +41,14 @@ from mailarc_core import (
     GraphServerStatus,
     read_status_async,
 )
+from mailarc_core.database import database_path
 from mailarc_core.database.repositories import SemanticSettingsRepository
 from mailarc_core.graph.client import session as graph_session
+from mailarc_core.graph.health import GraphHealth
 from mailarc_core.mail.config import MailConfig
 from mailarc_core.mail.errors import MailAuthError
 from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY
+from mailarc_core.storage import StorageReader
 from mailarc_google import GmailSource
 from mailarc_google.source.config import GmailConfig
 from mailarc_google.source.oauth import run_consent_async
@@ -360,6 +365,71 @@ async def graph_status() -> GraphServerStatus:
 def graph_startup_error() -> str | None:
     """Why the graph server failed to start, if it did."""
     return graph_server().startup_error
+
+
+@lru_cache(maxsize=1)
+def graph_health() -> GraphHealth:
+    """The two questions the status page asks, behind one object.
+
+    A façade over the pair this module already holds — the configuration a
+    fresh snapshot is read over, and the handle that knows why a start failed.
+    Cached like the other handles: it owns nothing, but it is one decision and
+    two objects would be two answers to "which server is being reported on".
+    """
+    return GraphHealth(graph_config(), graph_server())
+
+
+def publish_graph_health() -> GraphHealth:
+    """Leave the façade where the status page can find it.
+
+    Same route and same reason as :func:`publish_archive_reader`, down to the
+    second call being a no-op. This is the one that let a Reflex state leave
+    ``app/``: ``GraphStatusState`` used to import :func:`graph_status` and
+    :func:`graph_startup_error` from this module by name, which is a component
+    importing the application.
+    """
+    services = service_registry()
+    health = graph_health()
+    if services.has(GraphHealth) and services.get(GraphHealth) is health:
+        return health
+    services.register_as(GraphHealth, health)
+    return health
+
+
+@lru_cache(maxsize=1)
+def storage_reader() -> StorageReader:
+    """What the archive occupies on disk, over the paths it actually uses.
+
+    Built here because this is the only module that can name all three: the
+    mailstore belongs to ``mailarc_core.archive``, the graph's data directory
+    to ``mailarc_core.graph`` and the database file to appkit. The reader
+    itself deliberately knows none of that — it measures whatever it is handed,
+    in the order it is handed, and the labels are what a panel prints.
+
+    A database configured in memory contributes no path at all rather than a
+    zero: ``sqlite+aiosqlite:///:memory:`` is what the test profile uses, and a
+    row reading "Database — 0 bytes" would describe a file that does not exist.
+    """
+    paths: dict[str, Path] = {
+        "Mailstore": archive_config().store_dir,
+        "Graph": graph_config().data_dir,
+    }
+    if (database := database_path(str(_registered(DatabaseConfig).url))) is not None:
+        paths["Database"] = database
+    return StorageReader(paths)
+
+
+def publish_storage_reader() -> StorageReader:
+    """Leave the reader where the dashboard's disk panel can find it.
+
+    Same route and same reason as :func:`publish_graph_health`.
+    """
+    services = service_registry()
+    reader = storage_reader()
+    if services.has(StorageReader) and services.get(StorageReader) is reader:
+        return reader
+    services.register_as(StorageReader, reader)
+    return reader
 
 
 @contextlib.asynccontextmanager

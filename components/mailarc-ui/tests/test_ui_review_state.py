@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 import reflex as rx
 from appkit_commons.registry import service_registry
+from who_is_asking import FakeUser, signed_in_as
 
 from mailarc_core import ArchiveReader
 from mailarc_core.archive.blobs import BlobStore
@@ -188,8 +189,19 @@ def published(session: FakeSession, blobs: BlobStore) -> Iterator[ArchiveReader]
 
 
 @pytest.fixture
-def state(published: ArchiveReader) -> MessageReviewState:
-    return MessageReviewState()
+def state(
+    published: ArchiveReader, monkeypatch: pytest.MonkeyPatch
+) -> MessageReviewState:
+    """The reader as an administrator drives it.
+
+    Signed in on purpose: every handler that reaches the archive gates itself,
+    because a Reflex handler is reached by name over the same websocket the
+    public ``/`` uses and never by route. What a refused caller gets is
+    ``test_ui_state_gates.py``.
+    """
+    instance = MessageReviewState()
+    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
+    return instance
 
 
 class TestFindingTheReader:

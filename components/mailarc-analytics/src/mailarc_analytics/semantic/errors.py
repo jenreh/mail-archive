@@ -31,8 +31,9 @@ SETTINGS_PAGE = "/admin/embedder"
 A route rather than a setting name because a route is what most readers can
 actually reach: on the desktop bundle there is no shell into the application's
 environment at all, so a sentence whose only remedy was an environment variable
-was one its reader could not act on. ``tests/test_mail_embedder_page.py`` pins
-this against the page's own ``ROUTE`` so the two cannot drift.
+was one its reader could not act on.
+``components/mailarc-ui/tests/test_ui_pages.py`` pins this against the page's
+own ``ROUTE`` so the two cannot drift.
 """
 
 STORED_WINS = (

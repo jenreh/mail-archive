@@ -26,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 
 from mailarc_analytics.derived.model import TemplateDirection
 from mailarc_analytics.queries.model import (
+    ArchivedDay,
     ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
@@ -39,6 +40,7 @@ from mailarc_analytics.queries.model import (
 WHEN = datetime(2026, 1, 12, 9, 0, tzinfo=UTC)
 
 VALUE_OBJECTS: tuple[type[BaseModel], ...] = (
+    ArchivedDay,
     ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
@@ -452,6 +454,16 @@ class TestTheRowsThemselves:
         row = TemplateRow(id="template:1e16:sent", direction=TemplateDirection.SENT)
 
         assert row.direction is TemplateDirection.SENT
+
+    def test_an_archived_day_defaults_to_a_day_on_which_nothing_happened(
+        self,
+    ) -> None:
+        """The shape gap-filling needs: every field but the key has a zero, so
+        a day the statement never returned is one constructor call rather than
+        a second row type."""
+        row = ArchivedDay(day="2026-03-01")
+
+        assert (row.messages, row.bytes) == (0, 0)
 
     def test_totals_say_whether_a_rebuild_has_ever_run(self) -> None:
         """Zero derived over a non-empty archive is a different sentence from

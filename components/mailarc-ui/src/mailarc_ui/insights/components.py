@@ -31,6 +31,7 @@ from mailarc_ui.insights.model import (
 )
 from mailarc_ui.insights.search import SEARCH_PATHS, ArchiveSearchState
 from mailarc_ui.insights.state import AnalyticsInsightsState
+from mailarc_ui.kit import card_heading, panel_card, stat_tile
 
 KEY_COLUMN = {"width": 140}
 """A digest column: wide enough for twelve characters, and no wider."""
@@ -38,18 +39,6 @@ KEY_COLUMN = {"width": 140}
 ADDRESS_COLUMN = {"maxWidth": 260, "overflow": "hidden", "textOverflow": "ellipsis"}
 """An address column. Mail addresses are long and a table is not a place to
 read one in full — the numbers beside it are what the row is for."""
-
-
-def _stat(
-    label: str, value: rx.Var | int, color: rx.Var | str = "inherit"
-) -> rx.Component:
-    """One number with its name under it."""
-    return mn.stack(
-        mn.text(value, fw=700, fz=26, c=color),
-        mn.text(label, size="xs", c="dimmed"),
-        gap=0,
-        style={"minWidth": 0},
-    )
 
 
 def totals_card() -> rx.Component:
@@ -61,15 +50,15 @@ def totals_card() -> rx.Component:
     is not zero — a ``Message`` without a canonical id is something the graph
     holds that the writer cannot produce, and every analysis steps over it.
     """
-    return mn.card(
+    return panel_card(
         mn.stack(
-            _card_heading("database", "The archive, and what was derived"),
+            card_heading("database", "The archive, and what was derived"),
             rx.cond(
                 AnalyticsInsightsState.loading_totals,
                 mn.group(mn.loader(size="sm"), justify="center", py="lg"),
                 mn.simple_grid(
-                    _stat("Messages", AnalyticsInsightsState.totals.messages),
-                    _stat(
+                    stat_tile("Messages", AnalyticsInsightsState.totals.messages),
+                    stat_tile(
                         "Unidentified",
                         AnalyticsInsightsState.totals.unidentified,
                         color=rx.cond(
@@ -78,22 +67,17 @@ def totals_card() -> rx.Component:
                             "inherit",
                         ),
                     ),
-                    _stat("Pairs", AnalyticsInsightsState.totals.co_addressed),
-                    _stat("Groups", AnalyticsInsightsState.totals.groups),
-                    _stat("Topics", AnalyticsInsightsState.totals.topics),
-                    _stat("Templates", AnalyticsInsightsState.totals.templates),
-                    _stat("Derived", AnalyticsInsightsState.totals.derived),
+                    stat_tile("Pairs", AnalyticsInsightsState.totals.co_addressed),
+                    stat_tile("Groups", AnalyticsInsightsState.totals.groups),
+                    stat_tile("Topics", AnalyticsInsightsState.totals.topics),
+                    stat_tile("Templates", AnalyticsInsightsState.totals.templates),
+                    stat_tile("Derived", AnalyticsInsightsState.totals.derived),
                     cols={"base": 2, "sm": 4, "lg": 7},
                     spacing="md",
                 ),
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 
@@ -138,10 +122,10 @@ def rebuild_card() -> rx.Component:
     once per analysis, so ``3 of 5 stages`` is what the row honestly knows. A
     percentage of the archive would be a nicer number and a made-up one.
     """
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.group(
-                _card_heading("hammer", "Rebuild the derived layer"),
+                card_heading("hammer", "Rebuild the derived layer"),
                 rebuild_controls(),
                 justify="space-between",
                 align="center",
@@ -212,11 +196,6 @@ def rebuild_card() -> rx.Component:
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 
@@ -238,11 +217,11 @@ def _verdict() -> rx.Component:
 def _agreement_counts() -> rx.Component:
     """The four buckets and what was left open, as numbers."""
     return mn.simple_grid(
-        _stat("Matched", AnalyticsInsightsState.agreement.matched),
-        _stat("Different counts", AnalyticsInsightsState.agreement.mismatched),
-        _stat("Edge only", AnalyticsInsightsState.agreement.edge_only),
-        _stat("Archive only", AnalyticsInsightsState.agreement.truth_only),
-        _stat("Unjudged", AnalyticsInsightsState.agreement.unjudged),
+        stat_tile("Matched", AnalyticsInsightsState.agreement.matched),
+        stat_tile("Different counts", AnalyticsInsightsState.agreement.mismatched),
+        stat_tile("Edge only", AnalyticsInsightsState.agreement.edge_only),
+        stat_tile("Archive only", AnalyticsInsightsState.agreement.truth_only),
+        stat_tile("Unjudged", AnalyticsInsightsState.agreement.unjudged),
         cols={"base": 2, "sm": 5},
         spacing="md",
     )
@@ -322,10 +301,10 @@ def agreement_card() -> rx.Component:
     and a reader who has just been told the edge is trustworthy should be able
     to look at what it claims in the same breath.
     """
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.group(
-                _card_heading("scale", "Co-addressed pairs, checked twice"),
+                card_heading("scale", "Co-addressed pairs, checked twice"),
                 mn.button(
                     "Re-check",
                     on_click=AnalyticsInsightsState.check_agreement,
@@ -371,11 +350,6 @@ def agreement_card() -> rx.Component:
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 
@@ -656,10 +630,10 @@ def search_card() -> rx.Component:
     what it primes is a different service from the readout's, and neither
     should be able to leave the other unasked.
     """
-    return mn.card(
+    return panel_card(
         mn.stack(
             mn.group(
-                _card_heading("search", "Find a message"),
+                card_heading("search", "Find a message"),
                 _search_path(),
                 justify="space-between",
                 align="center",
@@ -723,21 +697,7 @@ def search_card() -> rx.Component:
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
         on_mount=ArchiveSearchState.prepare,
-    )
-
-
-def _card_heading(icon: str, title: str) -> rx.Component:
-    return mn.group(
-        rx.icon(icon, size=16),
-        mn.text(title, fw=600, size="sm"),
-        gap="xs",
-        align="center",
     )
 
 
@@ -776,9 +736,9 @@ def _panel(
     as false when the panel has nothing to show: a list var already does, so
     most panels pass their rows straight in.
     """
-    return mn.card(
+    return panel_card(
         mn.stack(
-            _card_heading(icon, title),
+            card_heading(icon, title),
             mn.text(hint, size="xs", c="dimmed"),
             rx.cond(
                 error != "",
@@ -791,11 +751,6 @@ def _panel(
             ),
             gap="sm",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 
@@ -807,7 +762,7 @@ def guidance_panel() -> rx.Component:
     statement from "nothing has been run". The button is in the panel because
     the answer to the sentence above it is one click away.
     """
-    return mn.card(
+    return panel_card(
         mn.empty_state(
             rx.cond(
                 AnalyticsInsightsState.needs_rebuild,
@@ -829,11 +784,6 @@ def guidance_panel() -> rx.Component:
             description=AnalyticsInsightsState.guidance,
             align="center",
         ),
-        shadow="sm",
-        padding="lg",
-        radius="md",
-        with_border=True,
-        w="100%",
     )
 
 

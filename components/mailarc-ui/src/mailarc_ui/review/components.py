@@ -76,7 +76,13 @@ def _message_row(row: MessageRow) -> rx.Component:
         mn.stack(
             mn.group(
                 mn.text(row.sender, fw=700, size="sm", truncate="end", flex="1"),
-                mn.text(row.date_label, size="sm", c="dimmed", style={"flexShrink": 0}),
+                mn.text(
+                    row.date_label,
+                    size="sm",
+                    c="dimmed",
+                    class_name="ma-tabular",
+                    style={"flexShrink": 0},
+                ),
                 gap="sm",
                 wrap="nowrap",
                 justify="space-between",
@@ -252,7 +258,10 @@ def message_body() -> rx.Component:
                 **GROW,
                 "width": "100%",
                 "border": "0",
-                "background": "#fff",
+                # The frame element is in *this* document, so a token resolves
+                # here normally. The document inside it is another matter — see
+                # `review/state.py`'s FRAME_STYLE.
+                "background": "var(--ma-surface)",
                 "borderRadius": "var(--mantine-radius-sm)",
             },
         ),

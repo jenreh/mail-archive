@@ -52,8 +52,9 @@ This installs the required Python version, syncs dependencies, and sets up pre-c
 A uv workspace: one Reflex application on top of first-party components.
 
 ```sh
-app/                            the Reflex web application — pages, states, styles
+app/                            the composition root, the configuration and the entry points
   composition.py                the only place that builds the core from configuration
+  app.py                        rx.App, the lifespans, the publish_* calls, the page imports
 components/mailarc-core/        everything that works without a browser
   src/mailarc_core/
     graph/                      the FalkorDB graph store
@@ -78,7 +79,7 @@ components/mailarc-google/      Gmail, behind the mail source port
 components/mailarc-imap/        any IMAP mailbox — iCloud, an app password, a mail host
 components/mailarc-m365/        Microsoft 365 over Graph, delegated or app-only
 components/mailarc-mcp/         the read-only MCP tools — optional, behind the `mcp` extra
-components/mailarc-ui/          the Reflex states and components
+components/mailarc-ui/          the whole interface — pages, shell, kit, styles, states
 scripts/                        build-time tooling (vendoring FalkorDB, icons)
 src-tauri/                      the macOS desktop shell
 ```

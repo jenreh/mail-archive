@@ -19,7 +19,7 @@ import subprocess
 import sys
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
@@ -118,6 +118,16 @@ def _reader(
 
 def _total(value: int) -> Reply:
     return Reply(columns=["total"], rows=[[value]])
+
+
+def _days(*rows: tuple[str, int, float]) -> Reply:
+    """``ARCHIVED_PER_DAY``'s answer, newest first the way the statement orders
+    it — so a test that passes only because the reader was handed its rows in
+    calendar order fails here instead."""
+    return Reply(
+        columns=["day", "messages", "bytes"],
+        rows=[[day, messages, size] for day, messages, size in reversed(rows)],
+    )
 
 
 class TestWhatTheTotalsAsk:
@@ -371,6 +381,165 @@ class TestWhatEachListingDecodes:
         assert found[0].occurrences == 10
         assert found[0].automation_score == 0.279724
         assert found[0].sample_text == "Hallo"
+
+
+class TestTheArchivingHistory:
+    """One statement, and the two things the reader does to its answer.
+
+    The window and the gap-filling are the whole method: the statement returns
+    the days on which something was archived, in an order and under a ceiling,
+    and a chart needs a fixed number of consecutive days ending today. So the
+    day the window ends on is pinned here rather than taken from the clock —
+    :func:`~mailarc_analytics.queries.reports._today` is the seam that exists
+    for it, and a test that read the clock too would agree with the reader by
+    construction and fail once a year at midnight.
+    """
+
+    def test_the_row_ceiling_leaves_room_for_days_stamped_in_the_future(
+        self,
+    ) -> None:
+        """One day is one row — but not only days inside the window have rows.
+
+        The statement orders by day descending and stops at its ceiling, so a
+        stamp from a machine whose clock ran ahead, or from a restored backup,
+        is returned *first* and spends a slot the window wanted. Bound to the
+        window itself, the ceiling was spent on days nobody asked for and the
+        oldest real ones were gap-filled as zeros. So the ceiling is wider than
+        the window while the window stays what was asked for.
+        """
+        fake, reader = _reader()
+
+        found = reader.archived_per_day(days=7)
+
+        assert fake.statements == [catalog.ARCHIVED_PER_DAY]
+        assert fake.parameters(catalog.ARCHIVED_PER_DAY) == {"limit": 14}
+        assert len(found) == 7
+        assert fake.opened == 1
+
+    def test_a_window_of_no_days_still_asks_for_one(self) -> None:
+        """``LIMIT 0`` is legal Cypher that returns nothing, and a chart of
+        nought days is not a state anything wants to render."""
+        fake, reader = _reader()
+
+        found = reader.archived_per_day(days=0)
+
+        assert fake.parameters(catalog.ARCHIVED_PER_DAY) == {"limit": 2}
+        assert len(found) == 1
+
+    def test_a_window_nobody_could_read_is_capped_at_the_same_ceiling(self) -> None:
+        """Thirteen years of daily rows is the ceiling ``MAX_ROWS`` already
+        names, and the cap has to move the *window* and not only the binding —
+        a window wider than the rows asked for would be filled with zeros the
+        statement was never given a chance to contradict.
+
+        ``MAX_ROWS`` is where the two numbers meet again: the room the ceiling
+        normally keeps for future-stamped rows cannot be bought above it.
+        """
+        fake, reader = _reader()
+
+        found = reader.archived_per_day(days=10_000_000)
+
+        assert fake.parameters(catalog.ARCHIVED_PER_DAY) == {"limit": reports.MAX_ROWS}
+        assert len(found) == reports.MAX_ROWS
+
+    def test_the_window_is_a_run_of_days_ending_today(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Consecutive and ascending, whatever the statement returned — the
+        chart's x-axis is a calendar, not a list of days something happened."""
+        _fake, reader = _reader({catalog.ARCHIVED_PER_DAY: _days(("2026-03-04", 2, 9))})
+        monkeypatch.setattr(reports, "_today", lambda: date(2026, 3, 5))
+
+        found = reader.archived_per_day(days=3)
+
+        assert [one.day for one in found] == ["2026-03-03", "2026-03-04", "2026-03-05"]
+
+    def test_a_day_the_statement_never_returned_is_a_zero_and_not_a_hole(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A chart with a hole in it reads as missing data rather than as a
+        quiet day, which is the opposite of what an idle archive means."""
+        _fake, reader = _reader({catalog.ARCHIVED_PER_DAY: _days(("2026-03-05", 2, 9))})
+        monkeypatch.setattr(reports, "_today", lambda: date(2026, 3, 5))
+
+        found = reader.archived_per_day(days=3)
+
+        assert [(one.messages, one.bytes) for one in found] == [(0, 0), (0, 0), (2, 9)]
+
+    def test_a_day_older_than_the_window_is_cut_rather_than_folded_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ceiling is a number of rows and the window is a span of days, so
+        an archive that was idle for a month hands back rows from before it.
+        Keeping them would stretch the axis; adding them to the first day would
+        invent a spike."""
+        _fake, reader = _reader(
+            {
+                catalog.ARCHIVED_PER_DAY: _days(
+                    ("2025-11-02", 40, 4000), ("2026-03-05", 2, 9)
+                )
+            }
+        )
+        monkeypatch.setattr(reports, "_today", lambda: date(2026, 3, 5))
+
+        found = reader.archived_per_day(days=3)
+
+        assert len(found) == 3
+        assert sum(one.messages for one in found) == 2
+
+    def test_a_day_after_today_is_cut_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``archived_at`` is a wall clock somebody else set. A machine whose
+        clock ran ahead — or a restored backup — leaves a stamp in the future,
+        and a window that ends today has to end today."""
+        _fake, reader = _reader(
+            {catalog.ARCHIVED_PER_DAY: _days(("2026-03-09", 5, 50))}
+        )
+        monkeypatch.setattr(reports, "_today", lambda: date(2026, 3, 5))
+
+        found = reader.archived_per_day(days=2)
+
+        assert [one.day for one in found] == ["2026-03-04", "2026-03-05"]
+        assert sum(one.messages for one in found) == 0
+
+    def test_the_summed_bytes_come_back_as_a_whole_number(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Measured on the vendored FalkorDB: ``sum()`` answers with a float,
+        so ``bytes`` arrives as ``3139.0`` and a page would render it."""
+        _fake, reader = _reader(
+            {catalog.ARCHIVED_PER_DAY: _days(("2026-03-05", 2, 3139.0))}
+        )
+        monkeypatch.setattr(reports, "_today", lambda: date(2026, 3, 5))
+
+        found = reader.archived_per_day(days=1)
+
+        assert found[0].bytes == 3139
+        assert isinstance(found[0].bytes, int)
+
+    def test_a_day_key_the_store_could_not_have_written_costs_one_row(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """``left()`` cuts ten characters off whatever the property holds, so a
+        stamp written by something other than the writer comes back as a key no
+        calendar has. One row loses its day; a report that died over it would
+        lose the whole chart.
+        """
+        _fake, reader = _reader(
+            {
+                catalog.ARCHIVED_PER_DAY: _days(
+                    ("not-a-day", 7, 70), ("2026-03-05", 2, 9)
+                )
+            }
+        )
+        monkeypatch.setattr(reports, "_today", lambda: date(2026, 3, 5))
+
+        with caplog.at_level("WARNING"):
+            found = reader.archived_per_day(days=1)
+
+        assert [(one.day, one.messages) for one in found] == [("2026-03-05", 2)]
+        assert "not-a-day" in caplog.text
 
 
 class TestWhatTheCrossCheckAsks:

@@ -1,10 +1,12 @@
-"""What a rebuild reads, and the two counts that frame what it read.
+"""What a rebuild reads, the two counts that frame what it read, and when.
 
-Six statements: the account's own addresses, the two halves of every message's
-facts, the bodies A3 comes back for, and the pair of counts that make "what the
-reader stepped over" and "what a capped rebuild could have seen" numbers rather
-than absences. They are the first thing a rebuild runs and the last thing its
-job row reports.
+Seven statements. Six of them are a rebuild's: the account's own addresses, the
+two halves of every message's facts, the bodies A3 comes back for, and the pair
+of counts that make "what the reader stepped over" and "what a capped rebuild
+could have seen" numbers rather than absences — the first thing a rebuild runs
+and the last thing its job row reports. The seventh, :data:`ARCHIVED_PER_DAY`,
+answers a page instead: it reads the same two things the others do and buckets
+them by the day the copy was archived on.
 
 Three measured properties of runic 0.5's builder shape everything here, and
 each is repeated at the statement it bites:
@@ -27,11 +29,22 @@ store. :func:`~mailarc_analytics.queries.rows.as_datetime` and
 :func:`~mailarc_core.archive.model.to_unsigned_64` are still what decode them.
 """
 
-from runic.ogm import QueryBuilder, alias, collect, count, param, select, var
+from runic.ogm import (
+    QueryBuilder,
+    alias,
+    collect,
+    count,
+    left,
+    param,
+    select,
+    sum_,
+    var,
+)
 
 from mailarc_core.archive.model import (
     Account,
     Address,
+    ArchivedFrom,
     Attachment,
     Message,
     Thread,
@@ -279,4 +292,80 @@ The banned use is ``.in_()`` on a *list* property: ``Message.refs.in_([…])``
 compiles to ``m.refs IN $p0``, asks whether the whole list is an element of the
 parameter, and returns nothing at all. That case wants
 ``Message.refs.any_of(param("token"))``.
+"""
+
+
+_archived = alias(Message, "m")
+_provenance = alias(ArchivedFrom, "r")
+
+ARCHIVED_PER_DAY: QueryBuilder[Message] = (
+    select(_archived)
+    .traverse(Message.archived_from, from_=_archived, edge=_provenance)
+    .where(_provenance.archived_at.is_not_null())
+    .project(
+        left(_provenance.archived_at, 10).as_("day"),
+        count(_archived).as_("messages"),
+        sum_(_archived.size_bytes).as_("bytes"),
+    )
+    .order_by(var("day"), desc=True)
+    .limit(param("limit"))
+)
+"""When the archive grew, and by how much — one row per day, newest first.
+
+The odd one out in this module: every other statement here is something a
+rebuild runs, and this one answers a page. It sits with them because it reads
+the same two things they do — ``Message`` and the provenance edge — and because
+the counts it is the sibling of are here.
+
+**``left()`` and not a bucketing loop, and that was measured rather than
+assumed.** ``ArchivedFrom.archived_at`` is a ``datetime`` field, so a
+``left()`` over it is only a day key if runic's mapper stored the value as an
+ISO-8601 string and FalkorDB's ``left`` cuts characters off that string —
+neither of which ``build()`` can show, because a compiled statement shows the
+call and not what the store makes of the property. Run against the vendored
+FalkorDB with five copies archived at named instants, it answers
+``{'day': '2026-03-01', 'messages': 2, 'bytes': 3139.0}``: midnight and one
+second to midnight fold into one bucket, and the key is exactly the first ten
+characters of ``2026-03-01T08:00:00+00:00``. So the fallback the spec
+authorised — projecting the raw stamp under the ``MAX_ROWS`` ceiling and
+bucketing in Python — is not needed, and
+``tests/queries/test_queries_archived_per_day_local.py`` is what would say so
+if a FalkorDB upgrade changed its mind.
+
+**The day key carries the offset the stamp was written with, which is why the
+reader can call it UTC.** :class:`~mailarc_core.archive.writer.MessageArchiver`
+stamps ``datetime.now(UTC)`` whenever ``ArchiveSource.archived_at`` is unset,
+and nothing in this repository sets it — a sync run always archives in the
+present. Every stored stamp is therefore UTC, and cutting ten characters off
+it yields the UTC calendar day. A caller that one day hands the writer a stamp
+in another zone would get *that* zone's date here, which is a property of what
+was written and not something this statement could correct.
+
+**Newest first, and it is the one departure from every sibling's ordering.**
+The other listings are ordered by the number that matters, so cutting them
+keeps the interesting rows; this one is ordered by time, and a chart of the
+last week wants the newest days. Ascending under the same ``LIMIT`` would hand
+back the oldest days in the archive and draw an empty week.
+:meth:`~mailarc_analytics.queries.reports.AnalyticsReader.archived_per_day`
+turns the window round again.
+
+**A row is one archiving event, not one message.** ``count(m)`` counts pattern
+rows and ``r`` is bound, so the same mail reaching two accounts is two
+``ARCHIVED_FROM`` edges and counts twice — measured, two edges and
+``messages: 2``. That is what the column means: the chart is of what the
+archive did on a day, and importing a mail into a second account is work the
+archive did.
+
+Two things a consumer has to know about the numbers. ``sum()`` comes back as a
+**float** (``3139.0``), so
+:func:`~mailarc_analytics.queries.rows.as_int` is what makes ``bytes`` a whole
+number — the same coercion every other count in this package needs and for a
+different reason. And a day whose copies all lack ``size_bytes`` sums to ``0``
+rather than to null, which is the answer a chart wants anyway.
+
+The traversal is an inner match on purpose. A ``Message`` with no
+``ARCHIVED_FROM`` edge was never archived from anywhere and has no day to be
+placed on; ``optional=True`` would give it a null key and collect every one of
+them into a bucket no calendar has. The ``IS NOT NULL`` filter closes the same
+hole from the other side, for an edge written before the field existed.
 """

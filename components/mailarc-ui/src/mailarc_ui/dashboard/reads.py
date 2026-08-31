@@ -114,21 +114,17 @@ async def graph_status() -> GraphServerStatus:
 
 
 async def database_counts() -> DashboardCounts:
-    """Accounts, users and the job queue — one session, three questions.
+    """The mailboxes and the job queue — one session, two questions.
 
     The queue is counted by the database rather than by loading its rows: a
     long-lived archive has tens of thousands of succeeded jobs behind the one
     number nobody looks at.
     """
-    from appkit_user.authentication.backend.database import user_repo
-
     async with get_asyncdb_session() as session:
         accounts = await _ACCOUNTS.count(session)
         states = await _JOBS.count_by_state(session)
-        users = await user_repo.count(session)
     return DashboardCounts(
         accounts=accounts,
-        users=users,
         queued=states.get(SyncJobState.QUEUED, 0),
         running=states.get(SyncJobState.RUNNING, 0),
     )
@@ -139,16 +135,14 @@ async def pending_notifications(
 ) -> list[NotificationView]:
     """Everything currently wrong, as the panel prints it.
 
-    **Administrators only** — the caller is what enforces that, and this
-    function is never reached for anybody else. Three reads and one projection,
-    all inside one session, because two of the three answer with rows whose
-    attributes are gone once it closes.
+    Three reads and one projection, all inside one session, because two of the
+    three answer with rows whose attributes are gone once it closes.
 
     All three reads are bounded. The failed jobs used to come from
     ``find_by_state``, which has no ``LIMIT`` and orders oldest-first, so this
     page loaded every job the archive ever failed in order to print at most
-    eight lines of them — and it does so on a page a signed-out visitor can
-    open. :meth:`~mailarc_core.database.repositories.SyncJobRepository.find_recent_failed`
+    eight lines of them.
+    :meth:`~mailarc_core.database.repositories.SyncJobRepository.find_recent_failed`
     is the finder that ends that.
     """
     async with get_asyncdb_session() as session:

@@ -10,16 +10,15 @@ from typing import Literal
 
 import appkit_mantine as mn
 import reflex as rx
-from appkit_user.authentication.templates import authenticated_page
 
 from mailarc_ui.accounts import AccountRow, MailAccountState, accounts_panel
 from mailarc_ui.imports import ImportJobState, import_panel
 from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
 from mailarc_ui.shell import routes
-from mailarc_ui.shell.templates import mailarc_app
+from mailarc_ui.shell.templates import mailarc_app, public_page
 
 ROUTE = routes.ACCOUNTS
-"""Where this page lives; the sidebar reads the same constant."""
+"""Where this page lives; the rail reads the same constant."""
 
 
 def _pick_button(row: AccountRow, variant: Literal["filled", "light"]) -> rx.Component:
@@ -67,21 +66,12 @@ def _mailbox_picker() -> rx.Component:
     )
 
 
-@authenticated_page(
+@public_page(
     route=ROUTE,
     title="Mail accounts",
     description="Add a mailbox, connect it, and import it into the archive",
     template=mailarc_app,
-    # Admin-only, like `/admin/users`. `mail_accounts` carries no owner column,
-    # so this page lists, connects, imports and deletes *every* mailbox in the
-    # installation — on a deployment with more than one login, leaving it at
-    # plain `@authenticated_page` would hand any account holder the whole
-    # archive, which is everybody's private mail. On the desktop the only user
-    # is the admin and nothing changes. An owner column is the real fix and
-    # belongs with a multi-user story.
-    admin_only=True,
-    # ty cannot model reflex event-handler calls; suppress the false positives.
-    on_load=[MailAccountState.load, ImportJobState.refresh],  # ty: ignore[invalid-argument-type]
+    on_load=[MailAccountState.load, ImportJobState.refresh],
 )
 def accounts_page() -> rx.Component:
     return mn.stack(

@@ -114,9 +114,10 @@ pair in the archive, with no prompt and no credential.
 
 That is a deliberate choice and a defensible one for a single-user desktop
 archive: the boundary is the operating-system process, and anything that can
-run the script can already read `.state/` directly. But it is worth reading
-beside the UI's own rule, which is stricter — the insights page refuses a
-non-administrator with "this search reads every mailbox in the installation".
+run the script can already read the archive directory itself. The UI draws the
+same line rather than a stricter one — it has no sign-in either, so whoever
+opens the window reads every mailbox. One boundary, stated once, is easier to
+reason about than two that disagree.
 
 Two consequences follow:
 

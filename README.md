@@ -71,7 +71,8 @@ components/mailarc-core/        everything that works without a browser
       model.py                  the runic nodes and edges, plus MessageSummary
       writer.py                 MessageArchiver — the idempotent upsert into the graph
       blobs.py                  BlobStore — content-addressed originals on disk
-      repository.py             MessageRepository — the listing, via runic's query builder
+      search.py                 SearchFilters and the hit/page value objects
+      repository.py             MessageRepository — listing and filtered search, via runic's query builder
       reader.py                 ArchiveReader — summaries out of the graph, bytes off disk
 components/mailarc-sync/        the import engine, the job queue and the worker loop
 components/mailarc-analytics/   derived nodes, analysis queries, embeddings
@@ -106,10 +107,16 @@ task db:upgrade              # create .state/mail-archive.db and its tables
 PROFILES=local task run      # http://localhost:8080 (frontend) + :3030 (backend)
 ```
 
+It opens on the search page at `/`; the icon rail down the left edge holds the
+dashboard (`/dashboard`), insights (`/insights`) and an **Admin** popover with
+review, mail accounts, embedder and graph status under `/admin/`. There is no
+sign-in — the archive is a desktop application, and the boundary is the machine
+it runs on.
+
 The relational store is a single SQLite file at `.state/mail-archive.db` — no
-database server to start. `task clean` wipes `.state/`, so it takes the user
-accounts with it; the first `task db:upgrade` after that recreates them,
-including the default `admin` account.
+database server to start. `task clean` wipes `.state/`, so it takes the
+mailboxes, their credentials and the imported mail with it; the first
+`task db:upgrade` after that gives the schema back, empty.
 
 `PROFILES` picks which `configuration/config.<profile>.yaml` layers over
 `config.yaml`. It is deliberately **not** set in `.env`: `appkit_commons` loads
@@ -146,6 +153,22 @@ task tauri:build    # produce build/release/bundle/macos/mail-archive.app
 `task tauri:build` also runs `task tauri:frontend`, which compiles the Reflex
 frontend up front so the app's first launch does a few seconds of rebuild
 rather than a cold `reflex init`.
+
+A **release** launch keeps the mail per user, out of this checkout:
+
+```text
+~/Library/Application Support/de.rehpoehler.mailarc/
+├── mail-archive.db      mailboxes, credentials, jobs, checkpoints
+├── mailstore/           the original bytes — this is the archive
+└── falkordb/            the graph's data
+```
+
+The path is derived from the bundle identifier in `tauri.conf.json`, the shell
+creates it `0700` before the backend starts, and it hands the backend
+`app_database_url_override`, `app_archive_store_dir` and `app_graph_data_dir`
+pointing into it. `task tauri:dev` and every other development run set none of
+them and stay on `.state/`, so the two never share an archive. Back the
+directory up by quitting the app and copying it.
 
 Still **not** self-contained: the backend itself runs from this checkout. See
 `task tauri:bundle:sidecar` for what freezing it would take.

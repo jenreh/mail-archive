@@ -14,7 +14,14 @@ dependencies = [
     "falkordb>=1.7.0",
     "pydantic>=2.13.4",
     "runic-py>=0.6.0",
-    "sqlalchemy>=2.0.52",
+    # `[asyncio]` because that extra is the only unconditional source of
+    # `greenlet`, which every `AsyncSession` in this component needs.
+    # SQLAlchemy's own requirement carries a `platform_machine` marker that
+    # names `aarch64` but not Apple Silicon's `arm64`, so on this machine a
+    # bare `sqlalchemy` installs without it and the first `engine.begin()`
+    # raises "the greenlet library is required". It was arriving through
+    # `appkit-user` until that package was dropped.
+    "sqlalchemy[asyncio]>=2.0.52",
     "alembic==1.19.1",
     "aiosqlite==0.22.1",
 ]

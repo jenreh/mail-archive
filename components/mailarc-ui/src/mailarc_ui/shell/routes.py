@@ -8,34 +8,39 @@ moved from ``/mail/*`` to ``/admin/*`` and six places went on naming the old
 paths, because the routes were string literals living next to each other
 rather than one name used three times.
 
-Only routes a person navigates to. The login and password-reset pages appkit
-registers are appkit's routes and it owns their spelling; naming them here
-would create a second place they could disagree.
+Only routes a person navigates to, and after the mail-client redesign that is
+all of them: the archive is a desktop application with no sign-in, so there is
+no longer a login page, a password reset or a user administration to name.
 """
 
-DASHBOARD = "/"
-"""The welcome dashboard. The one public page: no sign-in, no admin gate."""
+SEARCH = "/"
+"""Searching the archive — the address a person arrives at and works from."""
+
+DASHBOARD = "/dashboard"
+"""What the archive holds. Reachable from the rail, no longer the front door."""
+
+INSIGHTS = "/insights"
+"""What a rebuild derived from the archive. In the main menu, not under
+``/admin/``: it is something a reader of the archive looks at rather than
+something an operator maintains."""
 
 REVIEW = "/admin/review"
-INSIGHTS = "/admin/insights"
 ACCOUNTS = "/admin/accounts"
 EMBEDDER = "/admin/embedder"
 GRAPH_STATUS = "/admin/status"
-USERS = "/admin/users"
-PROFILE = "/profile"
 
 ALL_ROUTES: tuple[str, ...] = (
+    SEARCH,
     DASHBOARD,
-    REVIEW,
     INSIGHTS,
+    REVIEW,
     ACCOUNTS,
     EMBEDDER,
     GRAPH_STATUS,
-    USERS,
-    PROFILE,
 )
-"""In the order the sidebar shows them, so a reader of either sees the same
-application. A tuple because a route table is not something a caller edits."""
+"""In the order the rail shows them — the three menu items, then the four the
+admin popover holds — so a reader of either sees the same application. A tuple
+because a route table is not something a caller edits."""
 
 __all__ = [
     "ACCOUNTS",
@@ -44,7 +49,6 @@ __all__ = [
     "EMBEDDER",
     "GRAPH_STATUS",
     "INSIGHTS",
-    "PROFILE",
     "REVIEW",
-    "USERS",
+    "SEARCH",
 ]

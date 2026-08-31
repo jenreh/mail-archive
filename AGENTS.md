@@ -165,7 +165,7 @@ The hierarchy *is* the import table — read it as the layering:
 | `mailarc-sync` | `mailarc-core` | any provider, Reflex |
 | `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex |
 | `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, any provider, Reflex |
-| `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-ui/-user | `app` |
+| `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-ui | `app` |
 | `app` | everything | — |
 
 **A provider may not reach into a sibling**, which is why `mailarc-m365` holds
@@ -209,7 +209,7 @@ Key rules:
   implementation behind a port is indirection, not architecture.
 - **`mailarc-mcp` is optional and must stay optional.** It sits behind
   `[project.optional-dependencies] mcp`, so `uv sync` resolves the desktop
-  bundle (82 distributions) and `uv sync --extra mcp` the web deployment (125)
+  bundle (83 distributions) and `uv sync --extra mcp` the web deployment (125)
   — `fastmcp` alone is around sixty and a desktop archive serves no MCP.
   `app/mcp_server.py` is the console script's entry point and the only module
   under `app/` allowed to name the component; **nothing may import that module,
@@ -257,10 +257,6 @@ Two mechanisms keep work away from it. Do not defeat either.
   `taskfiles/Taskfile.agent.yml` exports the `app_*` variables that close that
   gap; use it rather than setting `PROFILES` by hand. `.state-agent/` is
   gitignored and disposable.
-
-**UI test login.** Pages behind `@authenticated` are reached with the test
-account `test@test.de` / `Test#2026`. Dev-only, seeded in the local SQLite;
-not a production secret.
 
 **`PROFILES` belongs in the entry point, never in `.env`.** `appkit_commons`
 calls `load_dotenv(override=True)` at import, so a value in `.env` beats the

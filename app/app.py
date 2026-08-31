@@ -1,10 +1,11 @@
 """The application: what it publishes, which pages it serves, what it owns.
 
-Everything visual lives in ``mailarc-ui`` now — the styles, the shell, the
-pages. What is left here is the four things only the application layer can do:
-set the log levels, hand the composition root's objects to the browser half
-through the service registry, name the page modules whose import registers
-them, and own the three background lifespans.
+Everything visual lives in ``mailarc-ui`` now — the styles, the theme, the
+shell, the pages. What is left here is the five things only the application
+layer can do: set the log levels, hand the composition root's objects to the
+browser half through the service registry, register the archive's Mantine
+theme before ``rx.App`` builds the provider that reads it, name the page
+modules whose import registers them, and own the three background lifespans.
 """
 
 import logging
@@ -30,13 +31,12 @@ from mailarc_ui.pages import (  # noqa: F401  # imported for their route registr
     dashboard,
     embedder,
     insights,
-    profile,
     review,
+    search,
     status,
-    users,
 )
-from mailarc_ui.pages.auth import register_auth_pages
 from mailarc_ui.styles import base_style, base_stylesheets
+from mailarc_ui.theme import set_mailarc_theme
 
 logging.basicConfig(level=logging.DEBUG)
 # Three libraries that write somebody's secret into the log at DEBUG, pinned by
@@ -66,12 +66,6 @@ for _noisy in ("oauthlib", "requests_oauthlib", "aiosqlite"):
 # while this file is imported after sqlalchemy.
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
-# appkit's login and password-reset pages are built by calling a factory rather
-# than registered on import, so they are the one part of the interface that
-# needs a call. The call itself lives in `mailarc_ui.pages.auth` with the rest
-# of the pages.
-register_auth_pages()
-
 
 # Middleware transformer for HTTPS redirect
 def add_https_middleware(asgi_app: ASGIApp) -> ASGIApp:
@@ -97,6 +91,12 @@ publish_semantic_search()
 publish_semantic_control()
 publish_graph_health()
 publish_storage_reader()
+
+# The archive's own Mantine theme — the coral accent, the warm grays, Inter and
+# the radius scale — before `rx.App`, and that order is the whole requirement:
+# the theme is forwarded to the root `MantineProvider` that wraps every page,
+# and a provider already built reads whatever was registered when it was.
+set_mailarc_theme()
 
 app = rx.App(
     stylesheets=base_stylesheets,

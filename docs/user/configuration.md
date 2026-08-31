@@ -69,6 +69,39 @@ its own:
 | `APP_IMAP_` | `ImapConfig` | IMAP timeouts, paging and certificate authority |
 | `APP_M365_` | `M365Config` | The Entra application, Graph endpoints and paging |
 
+## Where the data lives
+
+Three settings decide it, and they are deliberately three rather than one root:
+the graph, the blob store and the relational file are separate stores that a
+deployment may well want in separate places.
+
+| Setting | Default | Holds |
+| --- | --- | --- |
+| `app.database.url` | `sqlite+aiosqlite:///.state/mail-archive.db` | Mailboxes, credentials, jobs, checkpoints |
+| `app.archive.store_dir` | `.state/mailstore` | The original bytes — this is the archive |
+| `app.graph.data_dir` | `.state/falkordb` | The graph's own data directory |
+
+Run from this checkout and the defaults put all three under `.state/`, which is
+what `task run`, `task tauri:dev` and the test suite do.
+
+The **built macOS app** overrides all three onto a per-user directory instead —
+`~/Library/Application Support/de.rehpoehler.mailarc`, created `0700` — so the
+mail somebody imports is never written into a checkout. The Tauri shell sets
+them as environment variables before the backend starts; see
+[the desktop app](desktop-app.md#where-it-keeps-your-mail) for the exact three.
+
+Each directory is `chmod`-ed to `0700` as it is created — an explicit chmod
+rather than a creation mode, so a permissive umask cannot widen it and a
+directory an earlier version left behind is narrowed on the next start.
+
+**From the environment the database one is `app_database_url_override`, not
+`app_database_url`.** `DatabaseConfig.url` is a *computed* field over a stored
+`url_override` — the YAML key is `url` because the field carries that alias,
+but the variable that overrides it has to name the field. The obvious spelling
+is accepted and silently ignored, and the configuration then falls through to
+whatever `config.yaml` says. The other two have no such twin:
+`app_archive_store_dir` and `app_graph_data_dir` are ordinary fields.
+
 ## Every setting
 
 ### Graph — `app.graph` / `APP_GRAPH_`
@@ -83,7 +116,7 @@ its own:
 | `database` | *unset* | Bolt backends address a database; falls back to `graph_name` |
 | `username` / `password` | *unset* | Bolt backends only |
 | `startup_timeout` | `15.0` | Seconds to wait for a local server. Ignored when remote |
-| `data_dir` | `.state/falkordb` | Ignored when remote |
+| `data_dir` | `.state/falkordb` | Created `0700`. Ignored when remote |
 | `runtime_dir` | *unset* | Where the vendored binaries are. Ignored when remote |
 
 `mode: local` requires `backend: falkordb` and the config refuses anything
@@ -99,7 +132,7 @@ the status snapshot simply leaves those fields empty.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `store_dir` | `.state/mailstore` | Content-addressed store for the original bytes |
+| `store_dir` | `.state/mailstore` | Content-addressed store for the original bytes. Created `0700`; the bundled app points it into the per-user directory |
 | `body_text_limit` | `65536` | Characters of body the graph node keeps — 64 KB |
 
 Both are limits, not switches. The whole message always stays in the blob store;
@@ -255,7 +288,9 @@ database:
 
 The URL names an **async** driver because every application session is async.
 Alembic and Reflex need the blocking one and convert it themselves by stripping
-`+aiosqlite`.
+`+aiosqlite`. The directory it points into is created `0700`, and the bundled
+macOS app replaces the whole URL with one under the per-user directory — see
+[Where the data lives](#where-the-data-lives).
 
 Three pragmas are applied to every connection this process opens, and they are
 not optional: WAL (so a reader is not blocked by a writer), `foreign_keys=ON`

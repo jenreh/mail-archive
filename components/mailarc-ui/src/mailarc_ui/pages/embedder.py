@@ -4,7 +4,7 @@ Layout and nothing else. The whole body is one component ``mailarc-ui``
 exports — :func:`embedder_panel` — and this module only gives it a route, a
 title and the paragraph that says what a reader is looking at.
 
-Its own route rather than a card on ``/admin/insights``, and the reason is
+Its own route rather than a card on ``/insights``, and the reason is
 worth stating where the route is declared: this page must work when nothing
 else does. Configuring an embedder is what somebody does *before* semantic
 search answers, so the page cannot depend on a graph, on a rebuilt derived
@@ -16,31 +16,22 @@ archive and deserves a different place to stand.
 
 import appkit_mantine as mn
 import reflex as rx
-from appkit_user.authentication.templates import authenticated_page
 
 from mailarc_ui.embedder import EmbedderSettingsState, embedder_panel
 from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
 from mailarc_ui.shell import routes
-from mailarc_ui.shell.templates import mailarc_app
+from mailarc_ui.shell.templates import mailarc_app, public_page
 
 ROUTE = routes.EMBEDDER
-"""Where this page lives; the sidebar reads the same constant."""
+"""Where this page lives; the rail reads the same constant."""
 
 
-@authenticated_page(
+@public_page(
     route=ROUTE,
     title="Embedder",
     description="Which model turns this archive into vectors, and what changing it costs",
     template=mailarc_app,
-    # Admin-only, and this is the sharpest case of it in the application. The
-    # other admin pages *read* every mailbox; this one decides which service
-    # every message body is sent to the next time the embed job runs, and holds
-    # the credential it is sent with. The decorator is the cosmetic half —
-    # `EmbedderSettingsState._may_configure` is what actually refuses, on every
-    # handler, because a Reflex event is addressable by name over the socket.
-    admin_only=True,
-    # ty cannot model reflex event-handler calls; suppress the false positive.
-    on_load=[EmbedderSettingsState.load],  # ty: ignore[invalid-argument-type]
+    on_load=[EmbedderSettingsState.load],
 )
 def embedder_page() -> rx.Component:
     return mn.stack(

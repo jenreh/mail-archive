@@ -5,6 +5,13 @@ session behind the reader is a fake handing back canned nodes, the way
 ``mailarc-core``'s own reader tests drive it. Both claims worth proving here
 are about the seams: that the state finds its reader where the composition
 root left it, and that what a row shows is what the reader read.
+
+Reading one message moved to :mod:`mailarc_ui.message_detail` and is tested
+there. What stays is everything the review page brings on top of it — the list,
+the paging, the click — and it is still driven through the selection, because a
+page whose parts each work separately can still be wired up wrong. Every import
+below is spelled the way it was before the move, which is the re-export test:
+these names went to another module and no caller had to learn that.
 """
 
 import time
@@ -15,7 +22,6 @@ from typing import Any, cast
 import pytest
 import reflex as rx
 from appkit_commons.registry import service_registry
-from who_is_asking import FakeUser, signed_in_as
 
 from mailarc_core import ArchiveReader
 from mailarc_core.archive.blobs import BlobStore
@@ -23,6 +29,7 @@ from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.archive.model import Address, BlobKind, Label, Message
 from mailarc_core.archive.reader import GraphSessionFactory
 from mailarc_core.mail.model import EmailAddress, LabelKind
+from mailarc_ui import message_detail
 from mailarc_ui.review import (
     LabelChip,
     MessageReviewState,
@@ -33,11 +40,9 @@ from mailarc_ui.review import (
     decode_raw,
     frame_document,
     message_list,
-    message_tabs,
-    message_view,
-    raw_message_view,
     review_panel,
 )
+from mailarc_ui.review import state as review_state
 from mailarc_ui.review.state import (
     FRAME_CSP,
     NO_SUBJECT,
@@ -189,19 +194,9 @@ def published(session: FakeSession, blobs: BlobStore) -> Iterator[ArchiveReader]
 
 
 @pytest.fixture
-def state(
-    published: ArchiveReader, monkeypatch: pytest.MonkeyPatch
-) -> MessageReviewState:
-    """The reader as an administrator drives it.
-
-    Signed in on purpose: every handler that reaches the archive gates itself,
-    because a Reflex handler is reached by name over the same websocket the
-    public ``/`` uses and never by route. What a refused caller gets is
-    ``test_ui_state_gates.py``.
-    """
-    instance = MessageReviewState()
-    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
-    return instance
+def state(published: ArchiveReader) -> MessageReviewState:
+    """The reader as the page drives it."""
+    return MessageReviewState()
 
 
 class TestFindingTheReader:
@@ -599,57 +594,41 @@ class TestTheHeaderLabels:
         assert size_label(size) == label
 
 
-class TestTheFrameDocument:
-    def test_the_policy_comes_before_the_mail(self) -> None:
-        document = frame_document("<p>hi</p>")
+class TestTheMovedNames:
+    """The re-export, asserted rather than assumed.
 
-        assert document.index("Content-Security-Policy") < document.index("<p>hi</p>")
-        assert "default-src 'none'" in document
-        assert "img-src data:" in document
+    ``mailarc_ui.review`` promises the names it had before the reading pane
+    became its own package; equality by identity is what makes that a promise
+    and not a second definition that will drift.
+    """
 
+    def test_the_review_package_still_answers_for_them(self) -> None:
+        assert frame_document is message_detail.frame_document
+        assert decode_raw is message_detail.decode_raw
+        assert date_label is message_detail.date_label
+        assert MessageRow is message_detail.MessageRow
+        assert MessageView is message_detail.MessageView
 
-class TestDecodingTheRaw:
-    def test_utf8_comes_through_whole(self) -> None:
-        assert decode_raw("Grüße".encode()) == ("Grüße", False)
-
-    def test_a_mislabelled_byte_is_replaced_not_fatal(self) -> None:
-        text, truncated = decode_raw(b"Gr\xfc\xdfe")
-
-        assert text == "Gr��e"
-        assert truncated is False
-
-    def test_a_long_original_is_cut_after_decoding(self) -> None:
-        text, truncated = decode_raw(("é" * 10).encode(), limit=4)
-
-        assert text == "éééé"
-        assert truncated is True
+    def test_so_does_the_module_they_used_to_live_in(self) -> None:
+        assert review_state.size_label is message_detail.size_label
+        assert review_state.address_label is message_detail.address_label
+        assert review_state.FRAME_CSP is message_detail.FRAME_CSP
+        assert review_state.TAB_SOURCE is message_detail.TAB_SOURCE
 
 
 class TestTheComponents:
     """A prop appkit_mantine does not have only shows up when it is built."""
 
-    @pytest.mark.parametrize(
-        "build",
-        [message_list, message_view, message_tabs, raw_message_view, review_panel],
-    )
+    @pytest.mark.parametrize("build", [message_list, review_panel])
     def test_builds(self, build) -> None:
         assert isinstance(build(), rx.Component)
 
-    def test_the_tabs_are_told_to_fill_their_column(self) -> None:
-        """Mantine 9 lays Tabs out through CSS variables its stylesheet owns;
-        only inline `styles` override them. Without this the panel is
-        content-sized and the mail frame falls back to 150 pixels."""
-        rendered = str(message_tabs().render())
+    def test_the_panel_hands_the_pane_this_pages_state(self) -> None:
+        """The whole point of the parameterised pane: what the review page
+        renders reads ``MessageReviewState`` and nothing else."""
+        rendered = str(review_panel().render())
 
-        assert '["--tabs-display"] : "flex"' in rendered
-        assert '["--tabs-panel-grow"] : "1"' in rendered
-        assert '["--tabs-flex-direction"] : "column"' in rendered
-
-    def test_the_body_frame_is_sandboxed(self) -> None:
-        """The one line the whole HTML story rests on: render it and read it."""
-        rendered = str(message_view().render())
-
-        assert 'sandbox:""' in rendered
+        assert MessageReviewState.get_full_name().replace(".", "__") in rendered
         assert "srcDoc" in rendered
 
     def test_a_row_is_frozen(self) -> None:

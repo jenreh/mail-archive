@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from appkit_commons.database.entities import Base
-from insights_archive import FakeUser, fresh, graph, published, signed_in_as
+from insights_archive import fresh, graph, published
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -82,18 +82,16 @@ def queue(session_factory: SessionFactory) -> JobQueue:
 
 @pytest.fixture
 def state(
-    published: AnalyticsReader, queue: JobQueue, monkeypatch: pytest.MonkeyPatch
+    published: AnalyticsReader, queue: JobQueue
 ) -> Iterator[AnalyticsInsightsState]:
     """The state under test, with the queue it builds pointed at our file.
 
     The patch stays up for the whole test: the state constructs its queue
-    inside every handler, which is the production path. Signed in as an
-    administrator, because the panels these tests refresh are admin-only.
+    inside every handler, which is the production path.
     """
     with patch(f"{STATE_MODULE}.JobQueue", Mock(return_value=queue)):
         instance = AnalyticsInsightsState()
         instance.poll_interval = 0
-        signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
         yield instance
 
 

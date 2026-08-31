@@ -158,7 +158,7 @@ NO_MESSAGES = (
 NOT_DERIVED = (
     "Nothing has been derived from this archive yet. Correspondent pairs, "
     "topics and templates are computed by the derive job, not by the import: "
-    "run it (`task graph:rebuild-derived`, or Rebuild on the /admin/insights "
+    "run it (`task graph:rebuild-derived`, or Rebuild on the /insights "
     "page) and ask again. Searching messages and reading threads works without "
     "it."
 )

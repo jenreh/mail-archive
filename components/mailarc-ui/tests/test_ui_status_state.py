@@ -13,7 +13,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from who_is_asking import FakeUser, signed_in_as
 
 from mailarc_core import (
     GraphInfo,
@@ -74,17 +73,9 @@ def _health(read: Any, startup_error: str | None = None) -> Any:
 
 
 @pytest.fixture
-def state(monkeypatch: pytest.MonkeyPatch) -> GraphStatusState:
-    """The panel as an administrator drives it.
-
-    Signed in on purpose: every handler on this state gates itself, because a
-    Reflex handler is reached by name over the same websocket the public ``/``
-    uses and never by route. What a refused caller gets is
-    ``test_ui_state_gates.py``.
-    """
-    instance = GraphStatusState()
-    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
-    return instance
+def state() -> GraphStatusState:
+    """The panel as a page drives it."""
+    return GraphStatusState()
 
 
 def _scripted(state, *results):

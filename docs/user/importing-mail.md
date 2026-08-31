@@ -128,12 +128,18 @@ twice.
 
 ## Looking at what arrived
 
-**Review** in the navigation (`/admin/review`) lists the archive the way a mail
-client would: sender and date on the first line, subject and a paperclip on the
-second, two lines of preview under them, newest first. Under the preview sit
-the labels the provider filed the message under — your own labels in blue,
-folders in teal, the provider's housekeeping (Inbox, Updates, Unread) in grey
-and last. Pick a message and the right half shows it in two tabs:
+**Search** — the page the window opens on, at `/` — is where you go to find one
+message: filter by sender, recipient, date or the words in it, and the result
+you pick opens in the reading pane beside the list.
+
+**Review**, under **Admin** in the rail (`/admin/review`), is the same reading
+pane with no query in front of it — the whole archive, newest first, which is
+what you want right after an import. It lists the way a mail client would:
+sender and date on the first line, subject and a paperclip on the second, two
+lines of preview under them. Under the preview sit the labels the provider
+filed the message under — your own labels in blue, folders in teal, the
+provider's housekeeping (Inbox, Updates, Unread) in grey and last. Pick a
+message and the right half shows it in two tabs:
 
 - **Message** — the way a mail client renders it: subject, From / To / Cc /
   Date, the attached files with their sizes, and the body. An HTML mail keeps
@@ -161,15 +167,18 @@ A few things are on purpose:
 - A message archived without a stored original — or whose blob has since
   gone missing — says so instead of erroring.
 
-Like the accounts page, the review is **admin-only**: the archive is every
-mailbox of the installation.
+Both pages read **every mailbox of the installation** at once, and nothing in
+the application narrows that. There is no sign-in and no per-mailbox
+permission: this is a desktop archive, and the boundary is whoever can open the
+window — the same boundary as the files on disk. Do not run it where that is
+not what you want.
 
 ## Checking what the analyses made of it
 
-**Insights** in the navigation (`/admin/insights`) is the other half: the review
-page shows what the import wrote, this one shows what was *derived* from it —
-who gets addressed together, which of those groups recur, what the mail is
-about, and which of it is written by a machine.
+**Insights** in the rail (`/insights`) is the other half: the review page shows
+what the import wrote, this one shows what was *derived* from it — who gets
+addressed together, which of those groups recur, what the mail is about, and
+which of it is written by a machine.
 
 Nothing is derived until you ask. **Rebuild** queues the work as a job and the
 bar under it climbs in stages, so the page stays usable while a large archive is
@@ -204,8 +213,9 @@ fact read out of a header while the others are a suggestion — and templates
 split into what you send and what you receive, since only the mail you write
 yourself can be automated.
 
-Admin-only, like the review page, and for a stronger reason: a co-recipient
-listing says who writes to whom across every mailbox in the installation.
+The same caveat applies here more sharply than anywhere else: a co-recipient
+listing says who writes to whom across every mailbox in the installation, and
+nothing gates it.
 
 ## Job kinds
 

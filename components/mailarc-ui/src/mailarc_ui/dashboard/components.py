@@ -1,18 +1,16 @@
 """The dashboard as it is drawn: one band, six cards, no colour literals.
 
 Everything visual arrives from ``assets/css/mail-archive.css`` through a class
-name; nothing in this module names a hex value, and the two places that name a
-colour at all name a ``var(--ma-…)`` because Mantine's ``color`` prop takes a
-CSS colour and there is no class to put it on.
+name; nothing in this module names a hex value, and the handful of places that
+name a colour at all name a ``var(--ma-…)`` — the meter bars, the two chart
+lines and the charts' grid, which are the props Mantine takes as a CSS colour
+with no class to put it on. ``test_ui_dashboard_panel.py`` reads the render
+back and fails on a colour written out rather than named.
 
 What the page shows is decided in :mod:`mailarc_ui.dashboard.state`, and one
 consequence shows up repeatedly below: **an empty panel is drawn the same way
-whether the archive is healthy or the caller was refused.** The notifications
-card renders "Nothing needs attention" for an administrator with nothing
-pending and for an anonymous visitor alike, and a meter row prints no path when
-the state did not put one there. There is no branch here on who is asking,
-because there is nothing here to branch on — the state hands over what may be
-shown and nothing else.
+whether the archive is healthy or its read failed** — the state hands over what
+there is to show, and a card renders it or renders the sentence beside it.
 """
 
 from typing import Any
@@ -79,7 +77,7 @@ def kpi_band() -> rx.Component:
             _kpi_tile("clock", "Last Archived", DashboardState.last_archived),
             _kpi_tile("at-sign", "Accounts", DashboardState.accounts),
             _kpi_tile("briefcase", "Emails queue", DashboardState.queued),
-            _kpi_tile("users", "Users", DashboardState.users),
+            _kpi_tile("refresh-cw", "Imports running", DashboardState.running),
             cols={"base": 1, "xs": 2, "sm": 3, "lg": 5},
             spacing=0,
         ),
@@ -95,7 +93,7 @@ def _band_error() -> rx.Component:
     ``—`` is what a tile says when nobody could read its number — so the reason
     goes under the band. Without it a failed SQLite read left three tiles
     dashed with nothing on the page saying why, which is the state a reader
-    cannot tell apart from an archive that has no accounts and no users.
+    cannot tell apart from an archive that has no accounts and no jobs.
 
     Nothing while the read is still out: an alert that appeared and vanished on
     every page load would be a fault the page reports about itself.
@@ -135,12 +133,7 @@ def system_card() -> rx.Component:
 
 
 def disk_card() -> rx.Component:
-    """What the archive occupies, path by path.
-
-    The label, the size and the percentage are public; the absolute path is
-    not, and only reaches this component when the state decided the caller may
-    see it. There is no condition here — the row simply has no path in it.
-    """
+    """What the archive occupies, path by path."""
     return panel_card(
         mn.stack(
             card_heading("hard-drive", "Disk statistics"),
@@ -285,7 +278,7 @@ def _chart_card(icon: str, title: str, chart: rx.Component) -> rx.Component:
             _panel(
                 DashboardState.loading_series,
                 DashboardState.series_error,
-                mn.box(chart, class_name="ma-panel ma-panel-chart", w="100%"),
+                mn.box(chart, class_name="ma-panel-chart", w="100%"),
             ),
             gap="md",
             w="100%",
@@ -340,13 +333,13 @@ def _while_reading(loading: Any, body: rx.Component) -> rx.Component:
 
 
 def _meters(rows: Any, tone: CardTone) -> rx.Component:
-    """Every row of one statistics card, inside one raised panel.
+    """Every row of one statistics card, inside one recessed well.
 
-    One panel around all the rows rather than one per row: the design lifts a
-    single white area out of the card's tint, and a panel per row would draw
-    four borders where the reference draws one. Notifications are the deliberate
-    exception — there the reference *does* give each entry its own panel, which
-    is what separates a list of faults from a list of measurements.
+    One well around all the rows rather than one per row: the design digs a
+    single tinted area into the card's white, and a well per row would draw
+    four edges where the design draws one. Notifications are the deliberate
+    exception — there every entry *does* get its own, which is what separates
+    a list of faults from a list of measurements.
     """
     return mn.stack(
         rx.foreach(rows, lambda row: _meter_row(row, tone)),

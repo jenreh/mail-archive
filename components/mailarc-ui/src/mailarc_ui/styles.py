@@ -54,14 +54,14 @@ button_props = {
     "variant": "outline",
 }
 
-logo_font = {
-    "font-family": "Major Mono Display",
-    "font-weight": "400",
-    "font-style": "normal",
-}
+FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+"""The application face — Inter everywhere, with the platform stack behind it."""
+
+MONO_FONT_FAMILY = "'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace"
+"""The mono face the uppercase field labels and technical detail lines wear."""
 
 base_stylesheets = [
-    "https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&display=swap",
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
     "https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;600&display=swap",
     "css/react-zoom.css",
     "css/appkit.css",
@@ -71,7 +71,7 @@ base_stylesheets = [
 ]
 
 base_style = {
-    "font_family": "Roboto Flex",
+    "font_family": "Inter",
     rx.icon: {
         "stroke_width": "1.5px",
     },

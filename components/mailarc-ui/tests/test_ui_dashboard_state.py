@@ -1,19 +1,16 @@
 """What the dashboard reads, what it refuses to hand over, and how it prints it.
 
-Three groups of claims, and the middle one is the reason this file is long.
+Three groups of claims, and the first one is the reason this file is long.
 
 **It reads.** Every panel fills from the source §7.3 names, and one source that
 throws sets *that* panel's error while the other five keep their numbers. The
 range switch reshapes both series out of one read, because both charts and the
 "last archived" tile come from one statement (§1.3).
 
-**It refuses.** ``/`` is public, and appkit runs the whole ``on_load`` chain
-whatever ``check_auth`` returned — so the handler below runs for a signed-out
-visitor. Half of what it reads is per-person data out of everybody's private
-mail, and the tests here are what pin that half to an administrator. The
-anonymous case is exercised through the failure that actually happens outside a
-request — ``_current_user`` raising — because that is the branch that has to
-fail closed rather than fall open.
+**It says only what it may.** A panel's error string is rendered into a
+browser, so it is written by the state and never quoted from an exception — the
+drivers below raise sentences carrying the graph's endpoint and absolute
+filesystem paths, and neither reaches a var.
 
 **It prints.** Bytes, timestamps, counts and the em dash are pure functions
 over a value, tested without a graph, a registry or an event loop.
@@ -29,9 +26,7 @@ from unittest.mock import patch
 import pytest
 from appkit_commons.database.entities import Base
 from appkit_commons.registry import service_registry
-from appkit_user.authentication.backend.database import UserEntity
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from who_is_asking import FakeUser, nobody_can_be_established, signed_in_as
 
 from mailarc_analytics import AnalyticsReader, ArchivedDay, ArchiveTotals
 from mailarc_analytics.semantic import (
@@ -309,8 +304,6 @@ async def database(tmp_path) -> AsyncIterator[Sessions]:
                     detail="Date: header from the year 9999",
                     occurred_at=NOW,
                 ),
-                UserEntity(email="jens@example.com", name="Jens"),
-                UserEntity(email="ada@example.com", name="Ada"),
             ]
         )
     with patch(f"{READS}.get_asyncdb_session", sessions):
@@ -319,11 +312,9 @@ async def database(tmp_path) -> AsyncIterator[Sessions]:
 
 
 @pytest.fixture
-def state(monkeypatch: pytest.MonkeyPatch) -> DashboardState:
-    """The dashboard as an administrator sees it. Every other case says so."""
-    instance = DashboardState()
-    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
-    return instance
+def state() -> DashboardState:
+    """The dashboard as a page opens it."""
+    return DashboardState()
 
 
 async def _load(state: DashboardState) -> None:
@@ -351,7 +342,7 @@ def _text_of(state: DashboardState) -> str:
             state.archived,
             state.accounts,
             state.queued,
-            state.users,
+            state.running,
             state.last_archived,
             *(f"{one.label} {one.caption} {one.detail}" for one in state.health),
             *(f"{one.label} {one.caption} {one.detail}" for one in state.storage),
@@ -376,7 +367,7 @@ class TestOneRefresh:
         assert state.archived == "12,400"
         assert state.accounts == "2"
         assert state.queued == "2"
-        assert state.users == "2"
+        assert state.running == "0"
         assert state.last_archived != UNKNOWN
         assert state.health, "the archive-health meters are empty"
         assert state.storage, "the disk meters are empty"
@@ -448,7 +439,7 @@ class TestOneDeadPanel:
         assert state.archived == UNKNOWN
         assert state.health == []
         assert state.accounts == "2"
-        assert state.users == "2"
+        assert state.running == "0"
         assert state.storage, "the disk panel went down with the graph"
 
     async def test_an_unreadable_disk_costs_only_the_disk_panel(
@@ -522,10 +513,10 @@ class TestTheRangeSwitch:
 
 
 @pytest.mark.usefixtures("published", "database")
-class TestWhoIsAsking:
-    """``/`` is public, so this is the gate that keeps private data off it."""
+class TestNothingIsWithheld:
+    """One person owns this archive, so every panel answers in full."""
 
-    async def test_an_administrator_sees_the_notifications_and_the_paths(
+    async def test_the_notifications_and_the_paths_are_read(
         self, state: DashboardState
     ) -> None:
         await _load(state)
@@ -534,84 +525,25 @@ class TestWhoIsAsking:
         assert "the password was refused" in _text_of(state)
         assert "/srv/mail-archive/.state/mailstore" in _text_of(state)
 
-    async def test_a_signed_in_visitor_who_is_not_an_administrator_sees_neither(
-        self, monkeypatch: pytest.MonkeyPatch
+    async def test_the_disk_panel_carries_its_labels_ratios_and_paths(
+        self, state: DashboardState
     ) -> None:
-        instance = DashboardState()
-        signed_in_as(instance, FakeUser(is_admin=False), monkeypatch)
+        await _load(state)
 
-        await _load(instance)
-
-        assert instance.notifications == []
-        assert "jens@example.com" not in _text_of(instance)
-        assert "the password was refused" not in _text_of(instance)
-        assert "/srv/mail-archive" not in _text_of(instance)
-
-    async def test_an_anonymous_visitor_fails_the_gate_closed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        instance = DashboardState()
-        nobody_can_be_established(instance, monkeypatch)
-
-        await _load(instance)
-
-        assert instance.notifications == []
-        assert "jens@example.com" not in _text_of(instance)
-        assert "/srv/mail-archive" not in _text_of(instance)
-
-    async def test_the_public_panels_still_answer_a_visitor(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The point of a public dashboard: a refusal is not an empty page."""
-        instance = DashboardState()
-        nobody_can_be_established(instance, monkeypatch)
-
-        await _load(instance)
-
-        assert instance.archived == "12,400"
-        assert instance.accounts == "2"
-        assert instance.health
-        assert instance.services
-        assert instance.messages_series
-        assert instance.storage, "a visitor loses the paths, not the panel"
-
-    async def test_a_refused_notifications_panel_reads_as_healthy(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Not an error, and not a count that says how many faults exist."""
-        instance = DashboardState()
-        signed_in_as(instance, FakeUser(is_admin=False), monkeypatch)
-
-        await _load(instance)
-
-        assert instance.notifications_error == ""
-        assert instance.loading_notifications is False
-        assert instance.notifications == []
-
-    async def test_a_visitor_keeps_the_disk_ratios(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Labels, ratios and percentages are public; the paths are not."""
-        instance = DashboardState()
-        signed_in_as(instance, FakeUser(is_admin=False), monkeypatch)
-
-        await _load(instance)
-
-        assert [one.label for one in instance.storage] == [
+        assert [one.label for one in state.storage] == [
             "Mailstore",
             "Graph",
             "Database",
         ]
-        assert all(one.percent > 0 for one in instance.storage)
-        assert all(one.detail == "" for one in instance.storage)
+        assert all(one.percent > 0 for one in state.storage)
+        assert all(one.detail for one in state.storage)
 
 
 @pytest.mark.usefixtures("published", "database")
 class TestWhatAFailureIsAllowedToSay:
-    """A panel's error string is rendered on ``/``, which anybody may open.
+    """A panel's error string is written here and never quoted.
 
-    So it is written here and never quoted from an exception. The exceptions
-    these reads actually raise carry the graph's host and port
+    The exceptions these reads actually raise carry the graph's host and port
     (``ConnectionError: Error 61 connecting to 127.0.0.1:6379``) and absolute
     filesystem paths (``PermissionError: … '/srv/mail-archive/.state/…'``) —
     the two facts the services card's own docstring says this page must not
@@ -619,48 +551,42 @@ class TestWhatAFailureIsAllowedToSay:
     """
 
     async def test_a_failing_graph_read_never_quotes_the_endpoint(
-        self, reader: StubReader, monkeypatch: pytest.MonkeyPatch
+        self, state: DashboardState, reader: StubReader
     ) -> None:
-        instance = DashboardState()
-        nobody_can_be_established(instance, monkeypatch)
         reader.totals_error = ConnectionError(
             "Error 61 connecting to 127.0.0.1:6379. Connection refused."
         )
 
-        await _load(instance)
+        await _load(state)
 
-        assert instance.archive_error
-        printed = _text_of(instance)
+        assert state.archive_error
+        printed = _text_of(state)
         for forbidden in ("6379", "127.0.0.1", "Error 61", "ConnectionError"):
             assert forbidden not in printed
 
     async def test_a_failing_disk_read_never_quotes_the_path(
-        self, storage: StubStorage, monkeypatch: pytest.MonkeyPatch
+        self, state: DashboardState, storage: StubStorage
     ) -> None:
-        instance = DashboardState()
-        nobody_can_be_established(instance, monkeypatch)
         storage.error = PermissionError(
             13, "Permission denied", "/srv/mail-archive/.state/mailstore/ab/cd"
         )
 
-        await _load(instance)
+        await _load(state)
 
-        assert instance.storage_error
-        assert "/srv/mail-archive" not in _text_of(instance)
+        assert state.storage_error
+        assert "/srv/mail-archive" not in _text_of(state)
 
     async def test_a_failing_series_read_never_quotes_the_endpoint(
-        self, reader: StubReader, monkeypatch: pytest.MonkeyPatch
+        self, state: DashboardState, reader: StubReader
     ) -> None:
-        instance = DashboardState()
-        nobody_can_be_established(instance, monkeypatch)
         reader.series_error = ConnectionError(
             "Error 61 connecting to 127.0.0.1:6379. Connection refused."
         )
 
-        await _load(instance)
+        await _load(state)
 
-        assert instance.series_error
-        assert "6379" not in _text_of(instance)
+        assert state.series_error
+        assert "6379" not in _text_of(state)
 
     async def test_each_panel_still_says_which_read_failed(
         self, state: DashboardState, storage: StubStorage

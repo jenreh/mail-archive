@@ -24,7 +24,6 @@ from appkit_commons.registry import service_registry
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from who_is_asking import FakeUser, signed_in_as
 
 from mailarc_core.database.entities import (
     AccountStatus,
@@ -162,17 +161,9 @@ async def sessions(tmp_path) -> AsyncIterator[SessionSpy]:
 
 
 @pytest.fixture
-def state(monkeypatch: pytest.MonkeyPatch) -> MailAccountState:
-    """The page as an administrator drives it.
-
-    Signed in on purpose: every handler that touches a mailbox gates itself,
-    because a Reflex handler is reached by name over the same websocket the
-    public ``/`` uses and never by route. What a refused caller gets is
-    ``test_ui_state_gates.py``.
-    """
-    instance = MailAccountState()
-    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
-    return instance
+def state() -> MailAccountState:
+    """The page as it is driven."""
+    return MailAccountState()
 
 
 async def _filled(state: MailAccountState) -> None:

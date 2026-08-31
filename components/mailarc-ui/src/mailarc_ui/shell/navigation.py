@@ -1,281 +1,273 @@
-"""The sidebar: the navigation table, and the one component that renders it.
+"""The icon rail: the navigation table, and the one component that renders it.
 
-Three decisions worth stating, because each has an obvious alternative that
-does not work here.
+Seventy-six pixels wide, no text in the column at all — a logo tile, two mono
+section headings and a run of 44px icon buttons, each naming itself in a
+tooltip to its right. Four decisions worth stating, because each has an
+obvious alternative that does not work here.
 
-**The active row comes from the router, not from a state.** A state that
+**The active item comes from the router, not from a state.** A state that
 recorded which entry was clicked would be a second copy of a fact the browser
 already holds, and the two disagree the moment somebody uses the back button
 or opens a link in a new tab. ``rx.State.router.page.path`` is the address bar.
 
-**The gate is data on the item.** ``/`` is public, so the sidebar renders for
-people who are not signed in at all, and every ``/admin/*`` entry has to be
-absent from that render rather than merely refused on click. Declaring it on
-the item means the question "who sees this?" is answered where the entry is
-written, and :func:`_gated` is the only code that has to know how.
+**There is no gate.** The archive ships as a desktop application with no
+sign-in, so every entry renders for whoever opened the window. What used to be
+``admin_only`` data on the item is gone rather than defaulted to ``False``: a
+flag nothing reads is a permission somebody will believe is enforced.
 
-**The look comes from the stylesheet, keyed on Mantine's own ``data-active``.**
-The alternative — a per-item ``style`` dict assembled with ``rx.cond`` — puts
-one colour at a time across the Var boundary, and the active row is not one
-colour: it is a background, a border, a radius, a shadow and a font weight
+**The administration is a popover, not four more icons.** Four maintenance
+pages in the same column as the three a person actually works in would make
+the rail read as seven equals. One ``mn.menu`` to the right holds them,
+labelled, and the trigger lights up while any of the four is the current page.
+
+**The look comes from the stylesheet, keyed on ``data-active``.** The
+alternative — a per-item ``style`` dict assembled with ``rx.cond`` — puts one
+colour at a time across the Var boundary, and the active item is not one
+colour: it is a background, a border, a radius, a shadow and a text colour
 together. One class in ``mail-archive.css`` says all of that once.
+
+**Nothing inside an ``rx.link`` renders a second anchor.** React refuses
+nested interactive elements out loud on every page load — "<a> cannot contain
+a nested <a>. This will cause a hydration error" — which is what the previous
+sidebar hit with Mantine's ``NavLink``. Every rail item is an ``mn.box``, a
+plain ``div``, and the router link around it is the only thing that navigates.
+The administration's entries navigate with ``rx.redirect`` from a menu item
+instead, for the same reason: a link inside a menu item is that bug again.
 """
 
 from typing import Any
 
 import appkit_mantine as mn
 import reflex as rx
-from appkit_user.authentication.components.components import (
-    requires_admin,
-    requires_role,
-)
-from appkit_user.authentication.states import LOGIN_ROUTE, LoginState, UserSession
 
 from mailarc_ui.shell import routes
 from mailarc_ui.shell.model import NavItem, NavSection
 
-NAVBAR_WIDTH = 300
-"""What the shell reserves for the sidebar, in pixels."""
+NAVBAR_WIDTH = 76
+"""What the shell reserves for the rail, in pixels."""
 
-NAV_SECTIONS: tuple[NavSection, ...] = (
+INDEX_ALIAS = "/index"
+"""The second spelling Reflex serves the index page under.
+
+Which of the two the router reports depends on how the page was reached, so
+the item answering at ``/`` has to accept both or it goes dark on a reload.
+"""
+
+RAIL_SECTIONS: tuple[NavSection, ...] = (
     NavSection(
+        label="Menu",
         items=(
-            NavItem(
-                label="Dashboard",
-                href=routes.DASHBOARD,
-                icon="layout-dashboard",
-            ),
-            NavItem(
-                label="Review",
-                href=routes.REVIEW,
-                icon="mail",
-                admin_only=True,
-            ),
-            NavItem(
-                label="Insights",
-                href=routes.INSIGHTS,
-                icon="chart-line",
-                admin_only=True,
-            ),
-        )
+            NavItem(label="Search", href=routes.SEARCH, icon="mail-search"),
+            NavItem(label="Dashboard", href=routes.DASHBOARD, icon="layout-dashboard"),
+            NavItem(label="Insights", href=routes.INSIGHTS, icon="chart-line"),
+        ),
     ),
     NavSection(
+        label="Admin",
         items=(
-            NavItem(
-                label="Mail accounts",
-                href=routes.ACCOUNTS,
-                icon="at-sign",
-                admin_only=True,
-            ),
-            NavItem(
-                label="Embedder",
-                href=routes.EMBEDDER,
-                icon="brain",
-                admin_only=True,
-            ),
-            NavItem(
-                label="Graph status",
-                href=routes.GRAPH_STATUS,
-                icon="database",
-                admin_only=True,
-            ),
-            NavItem(
-                label="Users",
-                href=routes.USERS,
-                icon="users",
-                admin_only=True,
-            ),
-        )
-    ),
-    NavSection(
-        items=(
-            # Signed in, and *not* admin-gated, which is the one place this
-            # table departs from "everything except `/` is administration".
-            # `/profile` is where a person changes their own password, and
-            # `pages/profile.py` is decorated to match: an `admin_only` link
-            # here would hide a page a regular account holder is entitled to
-            # and can still reach by typing the path.
-            NavItem(
-                label="Profile",
-                href=routes.PROFILE,
-                icon="user-round",
-                requires_login=True,
-            ),
-        )
+            NavItem(label="Review", href=routes.REVIEW, icon="mail"),
+            NavItem(label="Mail accounts", href=routes.ACCOUNTS, icon="at-sign"),
+            NavItem(label="Embedder", href=routes.EMBEDDER, icon="brain"),
+            NavItem(label="Graph status", href=routes.GRAPH_STATUS, icon="database"),
+        ),
     ),
 )
-"""What the sidebar shows, top to bottom.
+"""What the rail offers, top to bottom.
 
-Three sections: what a person looks at, what an administrator maintains, and
-the secondary group that sits at the bottom above the user footer. The order
-inside a section is the order somebody works in — the archive first, then what
-was derived from it, then the machinery underneath.
+Two sections and they are two different kinds of thing. ``MENU`` is where a
+person works — the search they arrive at, what the archive holds, what was
+derived from it — and each entry is an icon of its own. ``ADMIN`` is what an
+operator maintains, and it is one icon with a popover behind it.
 """
+
+ADMIN_ICON = "settings-2"
+"""The trigger the administration's popover hangs from."""
 
 
 def _is_active(href: str) -> Any:
     """Whether the browser is on this entry's page right now."""
     current = rx.State.router.page.path
-    if href == routes.DASHBOARD:
-        # Reflex serves the index under both spellings, and which one the
-        # router reports depends on how the page was reached.
-        return (current == routes.DASHBOARD) | (current == "/index")
+    if href == routes.SEARCH:
+        return (current == routes.SEARCH) | (current == INDEX_ALIAS)
     return current == href
 
 
-def _gated(item: NavItem, component: rx.Component) -> rx.Component:
-    """Apply whatever the item declared about who may see it.
+def _administration_is_active() -> Any:
+    """Whether any page the popover holds is the current one.
 
-    Nested rather than exclusive, so an entry that is both administrative and
-    role-scoped gets both checks. No gate at all is the default, and it is
-    what ``/`` relies on.
+    Written out as four equalities rather than as a ``startswith("/admin/")``
+    on the router path: the entries are data, the prefix is a coincidence of
+    how they are spelled today, and a rail that lit up for any path beginning
+    ``/admin/`` would light up for one this menu does not offer.
     """
-    if item.requires_role is not None:
-        component = requires_role(component, role=item.requires_role)
-    if item.admin_only:
-        component = requires_admin(component)
-    if item.requires_login:
-        component = rx.cond(LoginState.is_authenticated, component, rx.fragment())
-    return component
+    _, administration = RAIL_SECTIONS
+    matches = [_is_active(item.href) for item in administration.items]
+    active = matches[0]
+    for match in matches[1:]:
+        active = active | match
+    return active
 
 
-def _nav_link(item: NavItem) -> rx.Component:
-    """One row, wrapped in the router link that makes it navigate.
+def _rail_icon(item: NavItem, active: Any) -> rx.Component:
+    """The 44px square itself: an icon in a box the stylesheet dresses.
 
-    ``mn.nav_link`` declares no ``href``: on its own it is a styled label with
-    an ``on_click``, and a sidebar built out of them looks entirely correct and
-    goes nowhere. The ``rx.link`` around it is what puts a real router target
-    into the rendered tree.
-
-    **``component="div"`` is what keeps that legal.** Mantine's ``NavLink`` is
-    polymorphic over ``'a'``, so by default the row renders an anchor *inside*
-    the router's anchor — React refuses nested interactive elements and says so
-    on every page load ("<a> cannot contain a nested <a>. This will cause a
-    hydration error"), which was measured in a browser rather than reasoned
-    about. Rendered as a ``div`` the row is a plain box and the link around it
-    is the only thing that navigates, which is what it was always meant to be.
-
-    It goes through ``custom_attrs`` and not as a keyword, and that is not
-    decoration: ``component`` is not a declared prop of this wrapper, and
-    Reflex folds an undeclared keyword into the ``css`` prop — measured,
-    ``mn.nav_link(component="div")`` renders ``css:({["component"]:"div"})``
-    and a bogus CSS key. ``custom_attrs`` is the door that puts a real React
-    prop on the component.
+    A ``div`` and not a button, because this sits inside the router link that
+    makes it navigate. ``data-active`` reaches the DOM through ``custom_attrs``
+    — Reflex folds an undeclared keyword into the ``css`` prop, where it would
+    become a bogus CSS key rather than an attribute the stylesheet can match.
     """
-    return _gated(
-        item,
+    return mn.box(
+        rx.icon(item.icon, size=20),
+        class_name="ma-rail-item",
+        custom_attrs={"data-active": active},
+    )
+
+
+def _rail_link(item: NavItem) -> rx.Component:
+    """One menu entry: the square, the route it goes to, the name it answers to.
+
+    The tooltip is the only place this entry's label is ever shown — the rail
+    is too narrow for text — so it is not decoration, it is the label.
+    """
+    return mn.tooltip(
         rx.link(
-            mn.nav_link(
-                label=item.label,
-                left_section=rx.icon(item.icon, size=18),
-                active=_is_active(item.href),
-                variant="subtle",
-                class_name="ma-nav-link",
-                custom_attrs={"component": "div"},
-            ),
+            _rail_icon(item, _is_active(item.href)),
             href=item.href,
             underline="none",
-            class_name="ma-nav-anchor",
+            # An anchor is inline, and an inline box around a 44px square
+            # inherits a line box that leaves a stripe of dead space under
+            # every item. `flex` is what makes the anchor exactly its square.
+            style={"display": "flex"},
         ),
+        label=item.label,
+        position="right",
+        offset=10,
     )
 
 
-def _section(section: NavSection) -> rx.Component:
+def _section_label(section: NavSection) -> rx.Component:
+    """``MENU`` / ``ADMIN`` — mono, 10px, uppercase from the stylesheet."""
+    return mn.text(section.label, class_name="ma-rail-label")
+
+
+def _menu_section(section: NavSection) -> rx.Component:
     return mn.app_shell.section(
-        mn.stack(*[_nav_link(item) for item in section.items], gap=8),
-    )
-
-
-def _divider() -> rx.Component:
-    return mn.app_shell.section(
-        mn.divider(variant="dotted", class_name="ma-nav-divider")
-    )
-
-
-def _signed_in() -> rx.Component:
-    """Who is signed in, and the way out.
-
-    Both lines are single-line with an ellipsis, from the stylesheet: a display
-    name and a mail address are both arbitrarily long, and a sidebar that grows
-    a third line for one account and not another is a layout that depends on
-    who is looking at it.
-
-    ``UserSession.user`` is typed ``User | None`` and is read here as a Var, so
-    the attribute accesses are suppressed rather than guarded: Reflex compiles
-    them to optional chaining (``user?.["name"]``) and renders an empty string
-    when there is no user. There is no user to read only while signed out, and
-    ``rx.cond`` has already chosen the other branch by then.
-    """
-    return mn.group(
-        mn.avatar(
-            name=UserSession.user.name,  # ty: ignore[unresolved-attribute]
-            size=36,
-            radius="xl",
-            color="blue",
-            variant="filled",
-        ),
         mn.stack(
-            mn.text(
-                UserSession.user.name,  # ty: ignore[unresolved-attribute]
-                class_name="ma-user-name",
-            ),
-            mn.text(
-                UserSession.user.email,  # ty: ignore[unresolved-attribute]
-                class_name="ma-user-mail",
-            ),
-            gap=0,
-            style={"minWidth": 0, "flex": 1},
+            _section_label(section),
+            *[_rail_link(item) for item in section.items],
+            gap=8,
+            align="center",
         ),
-        mn.action_icon(
-            rx.icon("log-out", size=16),
-            variant="subtle",
-            color="gray",
-            on_click=LoginState.logout,
-        ),
-        gap="sm",
-        wrap="nowrap",
-        w="100%",
     )
 
 
-def _signed_out() -> rx.Component:
-    return mn.button(
-        "Sign in",
-        left_section=rx.icon("log-in", size=16),
-        variant="light",
-        w="100%",
-        on_click=rx.redirect(LOGIN_ROUTE),
+def _administration_item(item: NavItem) -> rx.Component:
+    """One row of the popover: an icon, a name, and the page it opens.
+
+    ``rx.redirect`` rather than an ``rx.link`` around the row: a menu item is
+    already a button, and an anchor inside one is the nested-interactive
+    element React complains about on every render.
+    """
+    return mn.menu.item(
+        item.label,
+        left_section=rx.icon(item.icon, size=16),
+        on_click=rx.redirect(item.href),
     )
 
 
-def _user_footer() -> rx.Component:
+def _administration_section(section: NavSection) -> rx.Component:
+    """The four maintenance pages, behind one icon and a popover to its right."""
     return mn.app_shell.section(
-        rx.cond(LoginState.is_authenticated, _signed_in(), _signed_out()),
-        p="12px",
+        mn.stack(
+            _section_label(section),
+            # The active state rides on a hidden marker rather than on the
+            # trigger, and the trigger is a button rather than a box. Both are
+            # forced by ``Menu.Target``, which opens the dropdown by cloning
+            # its child with an ``onClick`` and a ``ref``: a box forwards
+            # neither, and *any* element carrying a state-dependent attribute
+            # is compiled by Reflex into a ``memo(({children}) => …)`` wrapper
+            # that takes children and discards every other prop. Either one
+            # leaves the menu unopenable — measured in the browser, where the
+            # trigger rendered without so much as an ``aria-haspopup``. The
+            # marker is a sibling the CSS reaches with ``~``; see
+            # ``.ma-rail-flag`` in ``mail-archive.css``.
+            mn.box(
+                class_name="ma-rail-flag",
+                custom_attrs={"data-active": _administration_is_active()},
+            ),
+            mn.menu(
+                mn.menu.target(
+                    mn.unstyled_button(
+                        rx.icon(ADMIN_ICON, size=20),
+                        class_name="ma-rail-item",
+                        aria_label="Administration",
+                    ),
+                ),
+                mn.menu.dropdown(
+                    mn.menu.label(section.label),
+                    *[_administration_item(item) for item in section.items],
+                ),
+                position="right-start",
+                offset=10,
+                width=200,
+                shadow="md",
+            ),
+            gap=8,
+            align="center",
+        ),
+    )
+
+
+def _logo() -> rx.Component:
+    """The orange rounded square at the top of the rail.
+
+    The application's mark and not its name: this ships as a desktop
+    application, where the window already carries the name and the icon sits
+    in the dock, so a wordmark drawn inside the rail is the title bar said
+    twice — and there is no room for one at 76px anyway.
+    """
+    return mn.app_shell.section(
+        mn.box(rx.icon("mails", size=22), class_name="ma-rail-logo"),
+        mb=18,
+    )
+
+
+def _bottom_slot() -> rx.Component:
+    """The foot of the rail: light or dark, and nothing else.
+
+    Mantine takes its colour scheme from Reflex's — ``appkit_mantine`` forces
+    ``force_color_scheme`` off ``rx.color_mode`` — so one toggle moves both
+    halves of the design, the ``--ma-*`` tokens' dark block included.
+    """
+    return mn.app_shell.section(
+        mn.tooltip(
+            mn.unstyled_button(
+                rx.color_mode_cond(
+                    light=rx.icon("moon", size=18),
+                    dark=rx.icon("sun", size=18),
+                ),
+                class_name="ma-rail-item",
+                on_click=rx.toggle_color_mode,
+            ),
+            label="Light or dark",
+            position="right",
+            offset=10,
+        ),
     )
 
 
 def app_sidebar() -> rx.Component:
-    """The whole sidebar, ready to hand to ``mn.app_shell``.
+    """The whole rail, ready to hand to ``mn.app_shell``.
 
-    The ``grow=True`` section in the middle is what pins the secondary group
-    and the user footer to the bottom of the navbar however many entries the
-    person looking is allowed to see — which is the point, because that number
-    changes with who is signed in.
+    The ``grow=True`` section in the middle is what pins the bottom slot to the
+    foot of the rail however many entries sit above it.
     """
-    primary, administrative, secondary = NAV_SECTIONS
+    menu, administration = RAIL_SECTIONS
     return mn.app_shell.navbar(
-        # No wordmark. This ships as a desktop application, where the window
-        # already carries the application's name and its icon sits in the dock —
-        # a second one drawn inside the sidebar is the title bar said twice.
-        _section(primary),
-        _divider(),
-        _section(administrative),
+        _logo(),
+        _menu_section(menu),
+        _administration_section(administration),
         mn.app_shell.section(grow=True),
-        _section(secondary),
-        _divider(),
-        _user_footer(),
-        pt="16px",
-        pb="8px",
-        class_name="ma-navbar",
+        _bottom_slot(),
+        class_name="ma-rail",
     )

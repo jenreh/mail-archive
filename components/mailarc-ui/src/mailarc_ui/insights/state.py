@@ -51,7 +51,6 @@ from mailarc_ui.insights.model import (
     TopicView,
     TotalsView,
 )
-from mailarc_ui.shell.access import granted, signed_in_user
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +61,6 @@ Long enough that a rebuild of a large archive is still being watched when it
 ends, short enough that a page nobody is looking at stops asking. Giving up is
 only ever a statement about this page: the job itself is untouched, and the
 message says so.
-"""
-
-NOT_ALLOWED = "Only an administrator may rebuild the analysis."
-"""What a rebuild control says to a caller the gate refused.
-
-A sentence rather than silence, because the same refusal reaches an
-administrator whose session has expired, and "nothing happened" is the least
-useful thing to tell them. It says no more than the page's own title already
-does: that this is administrator's work. What it must not do is confirm
-anything about the archive.
 """
 
 CANCEL_ASKED = "Cancellation requested — the worker will stop after the current stage."
@@ -280,9 +269,6 @@ class AnalyticsInsightsState(rx.State):
         only :meth:`poll` used it.
         """
         async with self:
-            if not await self._may_read():
-                self._apply(Readout())
-                return
             self._reading()
         readout = await self._read_everything()
         async with self:
@@ -299,9 +285,6 @@ class AnalyticsInsightsState(rx.State):
         :meth:`load` is — it is the *more* expensive of the two.
         """
         async with self:
-            if not await self._may_read():
-                self.loading_agreement = False
-                return
             self.loading_agreement = True
         verdict, listed, failure = NO_AGREEMENT, [], ""
         try:
@@ -327,16 +310,7 @@ class AnalyticsInsightsState(rx.State):
         No account: a rebuild is about the whole archive, which is why a
         ``derive`` job carries no ``account_id``. The worker runs it; this page
         only asks and then watches the row.
-
-        Gated like the reads, and for a sharper reason: this one *changes* the
-        archive. The job's first stage deletes every derived node before
-        anything is recomputed, so an ungated caller could throw the analysis
-        away — and the page decorator does not cover a handler reached by name
-        over the socket (see :meth:`_may_read`).
         """
-        if not await self._may_read():
-            self.rebuild_message = NOT_ALLOWED
-            return None
         await self._sync_job()
         if not self.job.active:
             await self._adopt_open_rebuild()
@@ -365,13 +339,7 @@ class AnalyticsInsightsState(rx.State):
         finishes and what is in the graph is whole stages of work. It is still
         half a derived layer, which is why the panels are read again whichever
         way the job ends.
-
-        Gated: ``job_id`` is state this session supplied, so without the check
-        a caller could end a rebuild somebody else started.
         """
-        if not await self._may_read():
-            self.rebuild_message = NOT_ALLOWED
-            return
         if self.job_id <= 0:
             return
         self.cancelling = True
@@ -419,14 +387,6 @@ class AnalyticsInsightsState(rx.State):
         stopped halfway leaves a half-written derived layer, and a page still
         showing the layer from before it would be showing something that is no
         longer in the graph.
-
-        The gate is checked again before that refresh, not only in
-        :meth:`load`. Following a job row sends nothing an unauthorised caller
-        could not already ask the queue for; the readout at the end sends
-        :attr:`pairs` and the template samples, which are addresses and message
-        text out of every mailbox in the installation. So the check sits
-        immediately before the read that leaves, which is the rule
-        :meth:`_may_read` states and the reason it is per-handler.
         """
         ticks = 0
         while True:
@@ -464,10 +424,6 @@ class AnalyticsInsightsState(rx.State):
                         self._reading()
                         break
             await asyncio.sleep(self.poll_interval)
-        async with self:
-            if not await self._may_read():
-                self._apply(Readout())
-                return
         readout = await self._read_everything()
         async with self:
             self._apply(readout)
@@ -552,34 +508,6 @@ class AnalyticsInsightsState(rx.State):
             [],
         )
         return verdict, listed, verdict_error or listing_error
-
-    async def _may_read(self) -> bool:
-        """Whether this session is allowed to see an archive-wide analysis.
-
-        ``admin_only=True`` on the page decorator does **not** do this. It is a
-        render-time ``rx.cond`` and nothing more: appkit's
-        ``_build_auth_handlers`` puts ``LoginState.check_auth`` in front of the
-        page's ``on_load`` and Reflex runs the rest of the chain whatever that
-        returns — and a handler is reached by *name* over the websocket in any
-        case, never by route. So this handler runs for a logged-out visitor and
-        for a signed-in non-admin alike. What they are shown is the
-        no-permission page; what they would be *sent* is :attr:`pairs` and
-        :attr:`AgreementView.disputes`, which are raw mail addresses out of
-        every mailbox in the installation. The gate has to sit where the data
-        leaves, not where the page is drawn.
-
-        Fails closed — :func:`mailarc_ui.shell.access.granted` is the one place
-        that decision is made, for every state in this package.
-        """
-        return await granted(self._current_user, what="an archive-wide analysis")
-
-    async def _current_user(self) -> object | None:  # pragma: no cover
-        """The signed-in user of this session, or ``None``.
-
-        Its own method so :meth:`_may_read` can be tested without a running
-        Reflex app; see :func:`mailarc_ui.shell.access.signed_in_user`.
-        """
-        return await signed_in_user(self)
 
     def _follow(self) -> EventCallback[()] | None:
         """Start watching the rebuild, unless this page already is."""

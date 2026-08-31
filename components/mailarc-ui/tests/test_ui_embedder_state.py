@@ -44,7 +44,6 @@ from embedder_form import (
     state,
     stored_row,
 )
-from insights_archive import FakeUser, signed_in_as
 from pydantic import SecretStr
 from sqlalchemy.exc import OperationalError
 
@@ -93,7 +92,6 @@ class TestWhatAFreshInstallationSees:
         assert state.model == ""
         assert state.dimension == 768
         assert state.api_key_stored is False
-        assert state.allowed is True
         assert state.error == ""
 
     async def test_nothing_is_stored_until_somebody_saves(
@@ -331,7 +329,6 @@ class TestTheDimensionAndModelWarnings:
 
         await load_form(state)
 
-        assert state.allowed is True
         assert state.error == ""
         assert state.in_force.coverage_known is False
 
@@ -340,7 +337,6 @@ class TestTheDimensionAndModelWarnings:
     ) -> None:
         await load_form(state)
 
-        assert state.allowed is True
         assert state.in_force.coverage_known is False
 
 
@@ -439,13 +435,12 @@ class TestFindingTheCompositionRoot:
             services.restore(saved)
 
     async def test_a_page_without_one_says_which_wiring_is_missing(
-        self, sessions, monkeypatch: pytest.MonkeyPatch
+        self, sessions
     ) -> None:
         services = service_registry()
         saved = services.snapshot()
         try:
             orphan = EmbedderSettingsState()
-            signed_in_as(orphan, FakeUser(is_admin=True), monkeypatch)
 
             await load_form(orphan)
 
@@ -488,11 +483,10 @@ class TestWhatTheFormOffers:
         assert state.key_matters is False
         assert state.key_missing is False
 
-    async def test_every_control_is_dead_before_the_gate_has_answered(self) -> None:
+    async def test_every_control_is_dead_before_the_first_read_lands(self) -> None:
         """A live control over an unloaded form is a promise."""
         fresh = EmbedderSettingsState()
 
-        assert fresh.allowed is False
         assert fresh.blocked is True
         assert fresh.can_save is False
         assert fresh.can_clear_key is False
@@ -865,48 +859,39 @@ class TestTheDimensionFollowsTheProvider:
     load would undo it.
     """
 
-    async def _admin(self, monkeypatch: pytest.MonkeyPatch) -> EmbedderSettingsState:
+    async def _opened(self) -> EmbedderSettingsState:
         state = EmbedderSettingsState()
-        signed_in_as(state, FakeUser(is_admin=True), monkeypatch)
-        state.allowed = True
+        state.loading = False
         return state
 
-    async def test_choosing_openai_offers_1536(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        state = await self._admin(monkeypatch)
+    async def test_choosing_openai_offers_1536(self) -> None:
+        state = await self._opened()
         state.dimension = 768
 
         await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
 
         assert state.dimension == 1536
 
-    async def test_choosing_ollama_offers_768(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        state = await self._admin(monkeypatch)
+    async def test_choosing_ollama_offers_768(self) -> None:
+        state = await self._opened()
         state.dimension = 1536
 
         await EmbedderSettingsState.set_provider.fn(state, "ollama")  # ty: ignore[unresolved-attribute]
 
         assert state.dimension == 768
 
-    async def test_naming_the_large_model_offers_3072(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_naming_the_large_model_offers_3072(self) -> None:
         """The length is the model's, not the vendor's — one account ships both."""
-        state = await self._admin(monkeypatch)
+        state = await self._opened()
         await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
 
         await EmbedderSettingsState.set_model.fn(state, "text-embedding-3-large")  # ty: ignore[unresolved-attribute]
 
         assert state.dimension == 3072
 
-    async def test_an_unknown_model_leaves_the_length_alone(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_an_unknown_model_leaves_the_length_alone(self) -> None:
         """Nobody here knows its length, so inventing one would be a guess."""
-        state = await self._admin(monkeypatch)
+        state = await self._opened()
         await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
         state.dimension = 1024
 
@@ -915,10 +900,10 @@ class TestTheDimensionFollowsTheProvider:
         assert state.dimension == 1024
 
     async def test_a_length_set_by_hand_survives_until_the_provider_changes(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
     ) -> None:
         """768 against a 1536-native OpenAI model is a real choice, not a slip."""
-        state = await self._admin(monkeypatch)
+        state = await self._opened()
         await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
 
         await EmbedderSettingsState.set_dimension.fn(state, 768)  # ty: ignore[unresolved-attribute]
@@ -929,56 +914,20 @@ class TestTheDimensionFollowsTheProvider:
             "length and overwrote a deliberate 768"
         )
 
-    async def test_a_non_admin_gets_the_form_emptied_not_filled_in(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The gate comes first, and refusing clears rather than preserves.
-
-        ``_refuse`` puts every field back to its default on purpose: the
-        session may have held an administrator's reading a moment ago, and a
-        form that keeps the values while declining to save them is still a form
-        that showed them. So the assertion is that nothing was adopted, not
-        that the previous length survived.
-        """
-        state = EmbedderSettingsState()
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-        state.dimension = 768
-
-        await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
-
-        assert state.provider != "openai"
-        assert state.dimension == 0, "a refused form keeps nothing on screen"
-
 
 class TestRebuildingTheIndex:
     """The control that makes the length a setting rather than a display field."""
 
-    async def _admin(self, monkeypatch: pytest.MonkeyPatch) -> EmbedderSettingsState:
+    async def _opened(self) -> EmbedderSettingsState:
         state = EmbedderSettingsState()
-        signed_in_as(state, FakeUser(is_admin=True), monkeypatch)
-        state.allowed = True
+        state.loading = False
         return state
-
-    async def test_a_non_admin_cannot_rebuild_the_index(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """It drops the index and forgets every vector — writes, gated like writes."""
-        state = EmbedderSettingsState()
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-        called: list[int] = []
-        monkeypatch.setattr(
-            state_module, "semantic_control", lambda: _control(called), raising=False
-        )
-
-        await EmbedderSettingsState.rebuild_index.fn(state)  # ty: ignore[unresolved-attribute]
-
-        assert called == [], "an ungated caller rebuilt the index"
 
     async def test_it_reports_what_it_forgot(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A resize discards every vector; the notice has to say how many."""
-        state = await self._admin(monkeypatch)
+        state = await self._opened()
         called: list[int] = []
         monkeypatch.setattr(
             state_module, "semantic_control", lambda: _control(called, cleared=7)
@@ -995,7 +944,7 @@ class TestRebuildingTheIndex:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A rebuild that raised must not leave the form stuck mid-rebuild."""
-        state = await self._admin(monkeypatch)
+        state = await self._opened()
 
         def exploding() -> object:
             class _C:

@@ -24,10 +24,6 @@ that both outlive the file size. This panel reads through a different service
 that failed to read, leaves the search working; and a search is not an
 analysis, so it must not sit behind the readout's spinner or be re-run by its
 Refresh.
-
-What it does share is the gate, and it shares it by writing it out again
-rather than by inheriting: a Reflex event is addressable by name over the
-socket, so every state that answers with mail has to refuse for itself.
 """
 
 import logging
@@ -58,18 +54,6 @@ Worded exactly as the errors are — "Semantic search is off …" reads as an
 answer about the control the user just moved — and built from
 :class:`~mailarc_analytics.semantic.model.SearchKind` so a third path cannot
 appear in one place and not the other.
-"""
-
-NOT_ADMIN = (
-    "This search reads every mailbox in the installation, so it is limited to "
-    "administrators."
-)
-"""Why a signed-in non-admin gets no rows.
-
-Said rather than left blank, unlike the analytics readout next door: an empty
-search box that answers nothing is indistinguishable from an archive that
-holds nothing, which is the one outcome this panel exists to avoid. The
-sentence gives away no mail.
 """
 
 NOTHING_ASKED = "Type a word or two to search for."
@@ -126,9 +110,9 @@ class ArchiveSearchState(rx.State):
 
     ``ready`` and ``semantic_ready`` answer two different questions and both
     are needed. The first is whether a search can run at all — there is a
-    service and this caller may use it — and the second is whether the
-    *semantic* path can, which is a statement about configuration that the
-    panel makes before anybody presses a button.
+    service to run it — and the second is whether the *semantic* path can,
+    which is a statement about configuration that the panel makes before
+    anybody presses a button.
     """
 
     query: str = ""
@@ -145,9 +129,9 @@ class ArchiveSearchState(rx.State):
 
     searching: bool = False
     ready: bool = False
-    """Whether a search service was found and this caller may use it. False to
-    begin with, so the button is dead until :meth:`prepare` has said
-    otherwise — an enabled control over an unwired panel is a promise."""
+    """Whether a search service was found. False to begin with, so the button
+    is dead until :meth:`prepare` has said otherwise — an enabled control over
+    an unwired panel is a promise."""
 
     semantic_ready: bool = False
     semantic_note: str = ""
@@ -177,9 +161,7 @@ class ArchiveSearchState(rx.State):
         """Whether pressing the button could produce anything.
 
         A disabled button beside a sentence naming the setting to change is a
-        clearer statement than a live button that always fails — but the
-        handler refuses on its own terms as well, because a Reflex event can
-        be fired by name whatever the DOM shows.
+        clearer statement than a live button that always fails.
         """
         return (
             self.ready
@@ -226,9 +208,6 @@ class ArchiveSearchState(rx.State):
         is not even running.
         """
         async with self:
-            if not await self._may_read():
-                self._refuse()
-                return
             try:
                 search = archive_search()
             except RuntimeError as error:
@@ -254,9 +233,6 @@ class ArchiveSearchState(rx.State):
         behind somebody's search.
         """
         async with self:
-            if not await self._may_read():
-                self._refuse()
-                return
             asked, kind = self.query.strip(), self.kind
             if not asked:
                 self._apply(Found.failed(NOTHING_ASKED, color="yellow"))
@@ -308,53 +284,6 @@ class ArchiveSearchState(rx.State):
         if kind == SearchKind.SEMANTIC.value:
             return SearchKind.SEMANTIC
         return SearchKind.FULLTEXT
-
-    async def _may_read(self) -> bool:
-        """Whether this session may search everybody's mail.
-
-        The same gate as
-        :meth:`~mailarc_ui.insights.state.AnalyticsInsightsState._may_read`,
-        written out again rather than inherited. ``admin_only=True`` on the
-        page is a render-time ``rx.cond`` and gates nothing that goes over the
-        socket, so each state that answers with mail has to refuse for itself
-        — and what this one would send back is subjects and sender addresses
-        out of every mailbox in the installation.
-
-        Fails closed, for the same reason: a process that cannot establish who
-        is asking cannot establish that they are an administrator.
-        """
-        try:
-            user = await self._current_user()
-        except Exception:
-            logger.exception("Could not establish who is asking; refusing the search")
-            return False
-        if user is None or not getattr(user, "is_admin", False):
-            logger.warning("Refused an archive-wide search: not an admin")
-            return False
-        return True
-
-    async def _current_user(self) -> object | None:  # pragma: no cover
-        """The signed-in user, or ``None`` — Reflex's own session state.
-
-        Its own method, and excluded from coverage, for the reason the
-        readout's twin is: ``get_state`` needs an ``EventContext`` context
-        variable that only a running Reflex app sets, so these three lines
-        cannot run under pytest. Everything the gate decides sits above them.
-        Imported inside the method because ``appkit_user.authentication.
-        states`` reads its configuration out of the service registry at
-        import.
-        """
-        from appkit_user.authentication.states import UserSession
-
-        session = await self.get_state(UserSession)
-        return session.user
-
-    def _refuse(self) -> None:
-        """No rows, no search service, and the reason on screen."""
-        self.ready = False
-        self.semantic_ready = False
-        self._forget()
-        self.error, self.error_color = NOT_ADMIN, "yellow"
 
     def _forget(self) -> None:
         """Drop the last answer, all of it at once."""

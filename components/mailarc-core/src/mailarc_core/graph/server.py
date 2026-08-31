@@ -128,6 +128,10 @@ class FalkorDBServer:
         runtime = FalkorDBRuntime.resolve(self._config.runtime_dir)
         data_dir = Path(self._config.data_dir).expanduser().resolve()
         data_dir.mkdir(parents=True, exist_ok=True)
+        # The graph persists a parsed rendering of private mail. An explicit
+        # chmod rather than a mkdir mode, so a permissive umask cannot leave
+        # the dump readable to other users.
+        data_dir.chmod(0o700)
 
         command = [
             str(runtime.redis_server),

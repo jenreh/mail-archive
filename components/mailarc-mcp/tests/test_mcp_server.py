@@ -176,14 +176,14 @@ class StubArchive(ArchiveReader):
             graph_session=_never,
             blobs=BlobStore(ArchiveConfig(store_dir=store or Path("/dev/null/never"))),
         )
-        self._summaries = list(summaries)
+        self._canned = list(summaries)
         self.asked: list[tuple[int, int]] = []
 
     def list_messages(
         self, *, limit: int = 50, offset: int = 0
     ) -> list[MessageSummary]:
         self.asked.append((limit, offset))
-        return self._summaries[offset : offset + limit]
+        return self._canned[offset : offset + limit]
 
 
 class StubSearch(SemanticSearch):

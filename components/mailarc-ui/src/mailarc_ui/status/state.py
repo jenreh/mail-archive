@@ -8,16 +8,6 @@ import, which is the rule every state in this package follows: a module-level
 lookup would run while ``app/app.py`` is still being imported — before the
 composition root has published anything — and would turn a missing service
 into an import error at startup instead of a sentence on one page.
-
-**Every handler here gates itself**, and ``/admin/status`` carrying
-``admin_only=True`` is not what does it. That flag is a render-time ``rx.cond``;
-a Reflex handler is reached by *name* over the websocket and never by route, so
-``refresh`` runs for whoever asks for it — and ``/`` is public, which makes an
-anonymous session an ordinary thing rather than a curiosity. What this panel
-answers with is the endpoint the graph listens on, the Redis and FalkorDB
-versions behind it, how much memory it is using and how many nodes each graph
-holds: the shape of the installation, said plainly. See
-:mod:`mailarc_ui.shell.access`.
 """
 
 import asyncio
@@ -30,7 +20,6 @@ from reflex.event import EventCallback
 
 from mailarc_core import GraphServerStatus
 from mailarc_core.graph.health import GraphHealth
-from mailarc_ui.shell.access import granted, signed_in_user
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +101,7 @@ class GraphStatusState(rx.State):
 
     @rx.event
     async def refresh(self) -> None:
-        """Read the server once, on demand. Administrators only."""
-        if not await self._may_read():
-            return
+        """Read the server once, on demand."""
         self.loading = True
         try:
             health = graph_health()
@@ -126,12 +113,9 @@ class GraphStatusState(rx.State):
     async def start_polling(self) -> EventCallback[()] | None:
         """Kick off background polling unless it is already running.
 
-        The page's ``on_load``, and therefore the first thing a refused caller
-        reaches. It answers with no follow-up event, which leaves the panel in
-        the state it opens in: "Checking…" and nothing read.
+        The page's ``on_load``. Answering with no follow-up event leaves the
+        panel in the state it opens in: "Checking…" and nothing read.
         """
-        if not await self._may_read():
-            return None
         if self.polling:
             return None
         self.polling = True
@@ -148,10 +132,6 @@ class GraphStatusState(rx.State):
         The lock is held only around the state mutation; the sleep happens
         outside it so the rest of the app is never blocked waiting on us.
         """
-        if not await self._may_read():
-            async with self:
-                self.polling = False
-            return
         while True:
             async with self:
                 if not self.polling:
@@ -168,23 +148,6 @@ class GraphStatusState(rx.State):
                 if reading is not None:
                     self._apply(*reading)
             await asyncio.sleep(self.poll_interval)
-
-    async def _may_read(self) -> bool:
-        """Whether this session may be told what the graph server is.
-
-        Fails closed, like every other gate in this package —
-        :func:`mailarc_ui.shell.access.granted` is where that decision lives and
-        why.
-        """
-        return await granted(self._current_user, what="a graph status read")
-
-    async def _current_user(self) -> object | None:  # pragma: no cover
-        """The signed-in user of this session, or ``None``.
-
-        Its own method so :meth:`_may_read` can be tested without a running
-        Reflex app; see :func:`mailarc_ui.shell.access.signed_in_user`.
-        """
-        return await signed_in_user(self)
 
     def _apply(self, status: GraphServerStatus, health: GraphHealth) -> None:
         self.checked = True

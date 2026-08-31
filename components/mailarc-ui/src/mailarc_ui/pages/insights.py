@@ -13,28 +13,22 @@ into one screenful and make each of them scroll separately.
 
 import appkit_mantine as mn
 import reflex as rx
-from appkit_user.authentication.templates import authenticated_page
 
 from mailarc_ui.insights import AnalyticsInsightsState, insights_panel
 from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
 from mailarc_ui.shell import routes
-from mailarc_ui.shell.templates import mailarc_app
+from mailarc_ui.shell.templates import mailarc_app, public_page
 
 ROUTE = routes.INSIGHTS
-"""Where this page lives; the sidebar reads the same constant."""
+"""Where this page lives; the rail reads the same constant."""
 
 
-@authenticated_page(
+@public_page(
     route=ROUTE,
     title="Insights",
     description="What a rebuild derived from the archive, and whether it holds up",
     template=mailarc_app,
-    # Admin-only, for the reason `/admin/review` is: the analyses read every
-    # mailbox of the installation, which is everybody's private mail, and a
-    # co-recipient listing names who writes to whom.
-    admin_only=True,
-    # ty cannot model reflex event-handler calls; suppress the false positive.
-    on_load=[AnalyticsInsightsState.load],  # ty: ignore[invalid-argument-type]
+    on_load=[AnalyticsInsightsState.load],
 )
 def insights_page() -> rx.Component:
     return mn.stack(

@@ -479,14 +479,6 @@ NO_EMBED_JOB = EmbedJobView()
 """No job is being followed. A sentinel keeps ``None`` out of the component."""
 
 
-EMBED_NOT_ALLOWED = "Only an administrator may rebuild the vectors."
-"""What the rebuild control says to a caller the gate refused.
-
-Its own sentence beside :data:`NOT_ALLOWED` because it answers a different
-button, and a form that refused a save by explaining a rebuild would send the
-reader looking in the wrong place. Neither says more than the page's title.
-"""
-
 NO_EMBEDDER_TO_RUN = (
     "There is no embedder to run. Choose a provider above and save it first — "
     "an embed job under 'none' has nothing to compute a vector with and would "
@@ -567,15 +559,6 @@ PROVIDER_OPTIONS = [
 body embedded that way is sent, once, to somebody else's service. A user
 picking from a list of three words has no way to know that, and a mail archive
 is the last place to leave it implicit.
-"""
-
-NOT_ALLOWED = "Only an administrator may change the embedder."
-"""What the form says to a caller the gate refused.
-
-A sentence rather than an empty form, for the reason the search panel says
-something: a page of blank boxes is indistinguishable from an archive that has
-nothing configured, and the difference matters here. It gives nothing away that
-the page's own title does not.
 """
 
 NO_CONTROL = (

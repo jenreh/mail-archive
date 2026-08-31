@@ -23,7 +23,6 @@ dependencies = [
     "mailarc-imap",
     "mailarc-m365",
     "mailarc-ui",
-    "appkit-user==1.14.0",
 ]
 
 [project.optional-dependencies]

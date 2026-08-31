@@ -10,45 +10,11 @@ One archived mail from the year 9999 raised ``OverflowError`` out of every
 listing on the insights page at once and left it spinning with no error text
 and no way back.
 
-Where this state does something the insights page does not is authorisation,
-and it is a **deliberate departure from the specification** that belongs in
-writing.
-
-§7 asks for a public dashboard on ``/``, and that is what this is: no sign-in,
-no admin gate, :func:`~mailarc_ui.shell.templates.public_page` rather than
-``authenticated_page``. But "the page is public" cannot mean "everything on it
-is public", because two of the six panels are not summaries of an archive at
-all — they are extracts from it:
-
-* **Notifications** carry mailbox addresses, the ``last_error`` a provider
-  wrote, and the ``detail`` of a message the import gave up on. That is
-  per-person data out of everybody's private mail, in sentences.
-* **The disk panel's paths** say where an installation keeps that mail, which
-  is the first thing worth knowing to go and take it.
-
-So the line is drawn here, at the point where data leaves the process, and the
-split is:
-
-* **Public** — the KPI counts, both charts, the archive-health ratios, and the
-  services checklist **as booleans only**: no endpoint, host, port, path or
-  version string reaches it, which is why
-  :func:`~mailarc_ui.dashboard.model.services_of` takes a status object and
-  answers with five names and five bools.
-* **Administrator** — the notifications panel in full, and the absolute paths
-  in the disk panel. A visitor keeps that panel's labels, ratios and
-  percentages and loses only the paths; and sees notifications as a neutral
-  empty state rather than as an error or as a count, because a count of faults
-  is itself a fact about the installation.
-
-The gate has to sit *here* and not on the decorator, and this is the part that
-is easy to get wrong: ``admin_only`` is a render-time ``rx.cond``, and appkit's
-``_build_auth_handlers`` runs the rest of an ``on_load`` chain whatever
-``check_auth`` returned. A handler that ships data therefore runs for a
-logged-out visitor, and has to refuse for itself. :meth:`_may_see_private` is
-the same shape as
-:meth:`~mailarc_ui.insights.state.AnalyticsInsightsState._may_read`, including
-**fails closed**: a process where the asker cannot be established is a process
-that cannot call them an administrator.
+The services checklist answers **as booleans only** — no endpoint, host, port,
+path or version string reaches it, which is why
+:func:`~mailarc_ui.dashboard.model.services_of` takes a status object and
+answers with five names and five bools. Those facts live on ``/admin/status``,
+where a reader who wants them goes looking.
 """
 
 import asyncio
@@ -78,7 +44,6 @@ from mailarc_ui.dashboard.model import (
     storage_points,
     thousands,
 )
-from mailarc_ui.shell.access import granted, signed_in_user
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +59,11 @@ groups, one divider, which is what the design draws.
 def _refusal(what: str) -> str:
     """What a panel prints when its read failed — written here, never quoted.
 
-    **The exception text does not cross to the browser.** ``/`` is public, and
-    the exceptions these reads actually raise name the installation: an
-    unreachable graph is ``ConnectionError: Error 61 connecting to
-    127.0.0.1:6379``, and an unreadable mailstore is a ``PermissionError``
-    carrying the absolute path. Those are the two facts
+    **The exception text does not cross to the browser.** The exceptions these
+    reads actually raise name the installation: an unreachable graph is
+    ``ConnectionError: Error 61 connecting to 127.0.0.1:6379``, and an
+    unreadable mailstore is a ``PermissionError`` carrying the absolute path.
+    Those are the two facts
     :func:`~mailarc_ui.dashboard.components.services_card` refuses to print for
     a reason, and putting them on a var because a read failed would be the same
     disclosure through a side door.
@@ -164,7 +129,7 @@ class DashboardState(rx.State):
     archived: str = UNKNOWN
     accounts: str = UNKNOWN
     queued: str = UNKNOWN
-    users: str = UNKNOWN
+    running: str = UNKNOWN
     last_archived: str = UNKNOWN
 
     health: list[MeterView] = []
@@ -219,13 +184,7 @@ class DashboardState(rx.State):
 
     @rx.var
     def has_notifications(self) -> bool:
-        """Whether the panel has anything to list.
-
-        False is the ordinary state of a healthy archive *and* the state a
-        visitor is shown, and both render the same empty card on purpose — a
-        refusal that looked different from health would tell an anonymous
-        caller that there is something they are not being shown.
-        """
+        """Whether the panel has anything to list."""
         return len(self.notifications) > 0
 
     @rx.event(background=True)
@@ -239,11 +198,10 @@ class DashboardState(rx.State):
         """
         async with self:
             self._reading()
-            allowed = await self._may_see_private()
             chosen = self.range
         readout = Readout()
         try:
-            readout = await self._read_everything(chosen, allowed=allowed)
+            readout = await self._read_everything(chosen)
         finally:
             # In a `finally` because the alternative is six panels spinning for
             # ever over a page that will never say why. Every read below has its
@@ -270,7 +228,7 @@ class DashboardState(rx.State):
         async with self:
             self._apply_series(found)
 
-    async def _read_everything(self, chosen: str, *, allowed: bool) -> Readout:
+    async def _read_everything(self, chosen: str) -> Readout:
         """Ask each panel's question once, and let each one fail on its own."""
         archived, health, archive_error = await self._read_archive()
         counts, counts_error = await _awaited(
@@ -278,12 +236,12 @@ class DashboardState(rx.State):
         )
         series = await self._read_series(chosen)
         storage, storage_error = await _answered(
-            lambda: storage_meters(reads.disk_usage(), with_paths=allowed),
+            lambda: storage_meters(reads.disk_usage()),
             "what the archive occupies on disk",
             [],
         )
-        notifications, notifications_error = await self._read_notifications(
-            allowed=allowed
+        notifications, notifications_error = await _awaited(
+            reads.pending_notifications, "the pending failures", []
         )
         services = await self._read_services(None if counts_error else counts)
         return Readout(
@@ -292,7 +250,7 @@ class DashboardState(rx.State):
             archive_error=archive_error,
             accounts=UNKNOWN if counts_error else thousands(counts.accounts),
             queued=UNKNOWN if counts_error else thousands(counts.queued),
-            users=UNKNOWN if counts_error else thousands(counts.users),
+            running=UNKNOWN if counts_error else thousands(counts.running),
             counts_error=counts_error,
             last_archived=series.last_archived,
             messages_series=series.messages_series,
@@ -344,25 +302,6 @@ class DashboardState(rx.State):
             series_error=error,
         )
 
-    async def _read_notifications(
-        self, *, allowed: bool
-    ) -> tuple[list[NotificationView], str]:
-        """The pending faults — for an administrator, and for nobody else.
-
-        A refusal answers with an empty list and an **empty error**, which is
-        the same thing a healthy archive answers with. That is deliberate: an
-        error, or a count of what is being withheld, would tell an anonymous
-        caller how many things are wrong with this installation, and the count
-        is the fact worth having.
-
-        The read is not made at all rather than made and filtered. Nothing that
-        cannot be shown is fetched, so there is no branch downstream where it
-        could be shown by accident.
-        """
-        if not allowed:
-            return [], ""
-        return await _awaited(reads.pending_notifications, "the pending failures", [])
-
     async def _read_services(self, counts: DashboardCounts | None) -> list[ServiceView]:
         """Whether the machinery is up, as five names and five booleans.
 
@@ -386,36 +325,6 @@ class DashboardState(rx.State):
         )
         return services_of(status, None if vectors_error else vectors, counts)
 
-    async def _may_see_private(self) -> bool:
-        """Whether this session may be shown the two administrator panels.
-
-        Not the page's gate — ``/`` has none, and is meant not to. This is the
-        gate on the *data*, and it is the only one there is: appkit runs an
-        ``on_load`` chain to the end whatever ``check_auth`` returned, so
-        :meth:`load` runs for every visitor, and a handler that ships mailbox
-        addresses has to decide for itself.
-
-        Refused at ``DEBUG`` rather than at ``WARNING``, unlike every other gate
-        in this package: a visitor arriving at a public page and being served
-        the public half of it is the ordinary working of this page, not an
-        incident. Fails closed all the same — see
-        :func:`mailarc_ui.shell.access.granted`.
-        """
-        return await granted(
-            self._current_user,
-            what="the private half of the dashboard",
-            level=logging.DEBUG,
-        )
-
-    async def _current_user(self) -> object | None:  # pragma: no cover
-        """The signed-in user of this session, or ``None``.
-
-        Its own method so :meth:`_may_see_private` can be tested without a
-        running Reflex app; see
-        :func:`mailarc_ui.shell.access.signed_in_user`.
-        """
-        return await signed_in_user(self)
-
     def _reading(self) -> None:
         """Every panel back to "has not answered yet"."""
         self.loading_archive = True
@@ -432,7 +341,7 @@ class DashboardState(rx.State):
         self.archive_error = readout.archive_error
         self.accounts = readout.accounts
         self.queued = readout.queued
-        self.users = readout.users
+        self.running = readout.running
         self.counts_error = readout.counts_error
         self.storage = readout.storage
         self.storage_error = readout.storage_error

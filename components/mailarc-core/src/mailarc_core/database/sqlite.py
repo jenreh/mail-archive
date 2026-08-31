@@ -2,9 +2,10 @@
 
 ``appkit_commons`` exposes exactly one :attr:`DatabaseConfig.url` and hands it
 to both the sync and the async engine. Only an async driver can serve the
-application itself — every ``appkit_user`` state opens an ``AsyncSession`` — so
-the configured URL names ``aiosqlite`` and the sync-only consumers (Alembic and
-Reflex's ``db_url``) ask :func:`sync_database_url` for the pysqlite variant.
+application itself — every page state and the job queue open an
+``AsyncSession`` — so the configured URL names ``aiosqlite`` and the sync-only
+consumers (Alembic and Reflex's ``db_url``) ask :func:`sync_database_url` for
+the pysqlite variant.
 
 SQLite also needs three connection settings that PostgreSQL gave for free:
 write-ahead logging so a reader is not blocked by a writer, enforced foreign
@@ -65,6 +66,11 @@ def ensure_database_directory(url: str) -> None:
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    # The database holds accounts and encrypted credentials — private mail
+    # data. An explicit chmod rather than a mkdir mode, so neither a permissive
+    # umask nor a directory an earlier version already created can leave it
+    # readable to other users.
+    path.parent.chmod(0o700)
     logger.debug("SQLite database directory ready: %s", path.parent)
 
 

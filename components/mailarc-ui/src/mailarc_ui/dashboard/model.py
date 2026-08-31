@@ -287,17 +287,16 @@ class VectorState(BaseModel):
 
 
 class DashboardCounts(BaseModel):
-    """The four numbers the archive's own database answers.
+    """The three numbers the archive's own database answers.
 
     Read in one session and carried together because they are one panel's
-    worth: three of them are tiles in the KPI band and the fourth decides
+    worth: all three are tiles in the KPI band, and the last one also decides
     whether anything is serving the queue.
     """
 
     model_config = ConfigDict(frozen=True)
 
     accounts: int = 0
-    users: int = 0
     queued: int = 0
     running: int = 0
 
@@ -320,7 +319,7 @@ class Readout(BaseModel):
 
     accounts: str = UNKNOWN
     queued: str = UNKNOWN
-    users: str = UNKNOWN
+    running: str = UNKNOWN
     counts_error: str = ""
 
     last_archived: str = UNKNOWN
@@ -409,14 +408,8 @@ def health_meters(totals: ArchiveTotals, coverage: VectorCoverage) -> list[Meter
     ]
 
 
-def storage_meters(usage: StorageUsage, *, with_paths: bool) -> list[MeterView]:
-    """One bar per measured path, of how much of its volume it takes.
-
-    ``with_paths`` is the access split, and it is a parameter rather than a
-    second function so that the ratio, the label and the caption are provably
-    the same for both callers — a visitor sees the archive's shape and an
-    administrator sees where it is, and neither sees a different measurement.
-    """
+def storage_meters(usage: StorageUsage) -> list[MeterView]:
+    """One bar per measured path, of how much of its volume it takes."""
     return [
         MeterView(
             icon=icon,
@@ -424,7 +417,7 @@ def storage_meters(usage: StorageUsage, *, with_paths: bool) -> list[MeterView]:
             percent=one.used_percent,
             value=percent_label(one.used_percent),
             caption=f"{human_bytes(one.used_bytes)} / {human_bytes(one.total_bytes)}",
-            detail=str(one.path) if with_paths else "",
+            detail=str(one.path),
         )
         for icon, one in zip(_DISK_ICONS, usage.paths, strict=False)
     ]

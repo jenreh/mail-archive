@@ -6,6 +6,8 @@ the fake.
 """
 
 import hashlib
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -150,6 +152,34 @@ class TestAtomicity:
 
         assert store.exists(DIGEST, BlobKind.MESSAGE) is False
         assert list(store.root.rglob("*.part")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+class TestPrivacy:
+    """The store root is somebody's actual mail; only its owner may list it."""
+
+    def test_the_root_ends_up_private_whatever_the_umask_says(self, store) -> None:
+        """The umask is opened wide for the write, so a root that relied on
+        `mkdir`'s mode argument would come out world-readable and fail here.
+        """
+        before = os.umask(0o000)
+        try:
+            store.put(EML, BlobKind.MESSAGE)
+        finally:
+            os.umask(before)
+
+        assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
+
+    def test_a_root_left_open_by_an_earlier_version_is_closed_again(
+        self, store
+    ) -> None:
+        """chmod, not a creation mode: what already exists is tightened too."""
+        store.root.mkdir(parents=True)
+        store.root.chmod(0o755)
+
+        store.put(EML, BlobKind.MESSAGE)
+
+        assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
 
 
 class TestDefaults:

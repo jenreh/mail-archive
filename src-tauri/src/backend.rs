@@ -150,7 +150,14 @@ pub struct Vendored {
 pub enum BackendLauncher {
     /// Run from the repository checkout via `uv`. This is what `task tauri:dev`
     /// and the current bundled build both use.
-    Repo { root: PathBuf, env: ReflexEnv },
+    Repo {
+        root: PathBuf,
+        env: ReflexEnv,
+        /// Where the backend keeps the user's archive. `None` — every dev and
+        /// preview run — leaves the backend on its configured default, the
+        /// checkout's `.state/`.
+        data_dir: Option<PathBuf>,
+    },
     /// Run a frozen, self-contained backend shipped as a Tauri sidecar.
     /// Not implemented — see `src-tauri/src/sidecar.rs`.
     Sidecar,
@@ -183,9 +190,13 @@ impl Backend {
         launcher: &BackendLauncher,
         vendored: &Vendored,
     ) -> Result<Self, BackendError> {
-        let (root, env) = match launcher {
+        let (root, env, data_dir) = match launcher {
             BackendLauncher::Sidecar => return Err(BackendError::SidecarNotImplemented),
-            BackendLauncher::Repo { root, env } => (root, *env),
+            BackendLauncher::Repo {
+                root,
+                env,
+                data_dir,
+            } => (root, *env, data_dir.as_deref()),
         };
 
         let uv = resolve_uv(vendored.uv.as_deref()).ok_or(BackendError::UvNotFound)?;
@@ -209,6 +220,28 @@ impl Backend {
         if let Some(venv) = resolve_venv(root) {
             log::info!("Using virtualenv {}", venv.display());
             command.env("UV_PROJECT_ENVIRONMENT", venv);
+        }
+
+        if let Some(dir) = data_dir {
+            // The per-user archive location, stated through the same three
+            // variables `taskfiles/Taskfile.agent.yml` uses to point the app at
+            // its sandbox: every `BaseConfig` reads its own env prefix even
+            // when a module builds a bare config, so nothing can fall back to
+            // the checkout's `.state/`. Note `app_database_url_override` — the
+            // obvious `app_database_url` is accepted and silently ignored,
+            // because `DatabaseConfig.url` is a computed field over a stored
+            // `url_override`.
+            log::info!("Archive data directory: {}", dir.display());
+            command
+                .env(
+                    "app_database_url_override",
+                    format!(
+                        "sqlite+aiosqlite:///{}",
+                        dir.join("mail-archive.db").display()
+                    ),
+                )
+                .env("app_archive_store_dir", dir.join("mailstore"))
+                .env("app_graph_data_dir", dir.join("falkordb"));
         }
 
         if let Some(dir) = vendored.falkordb.as_ref() {

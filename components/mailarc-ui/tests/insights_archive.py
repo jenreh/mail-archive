@@ -6,9 +6,8 @@ would put a ``graph`` and a ``published`` in scope for the accounts, import and
 review tests that have their own idea of what an archive is.
 ``mailarc-analytics`` does the same with its ``planted_graph``.
 
-``FakeGraph``, ``FakeUser`` and ``signed_in_as`` are the parts the search tests
-borrow: a fake session that answers by statement, and the one seam that lets a
-gate be tested without a running Reflex app.
+``FakeGraph`` is the part the search tests borrow: a fake session that answers
+by statement.
 
 The reader under it is the real :class:`AnalyticsReader`. Only the session is
 a fake, and it answers by the catalogue constant it was asked for — so a test
@@ -22,20 +21,10 @@ from typing import Any, cast
 
 import pytest
 from appkit_commons.registry import service_registry
-from who_is_asking import FakeUser, nobody_can_be_established, signed_in_as
 
 from mailarc_analytics import AnalyticsReader, TemplateDirection, TopicSignal
 from mailarc_analytics.queries import catalog
 from mailarc_core.archive.reader import GraphSessionFactory
-
-__all__ = [
-    "FakeUser",
-    "nobody_can_be_established",
-    "signed_in_as",
-]
-"""Re-exported so the insights tests keep one import for their fixtures.
-
-The definitions moved to ``who_is_asking`` once a third state needed them."""
 
 MARCH = datetime(2026, 3, 12, 9, 0, tzinfo=UTC)
 AUGUST = datetime(2026, 8, 21, 16, 0, tzinfo=UTC)

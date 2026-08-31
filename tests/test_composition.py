@@ -465,7 +465,7 @@ class TestTheStorageReader:
 
 
 class TestTheSearch:
-    """The panel at ``/admin/insights`` reads through this and nothing else.
+    """The panel at ``/insights`` reads through this and nothing else.
 
     Its absence was invisible for a whole phase because every test in
     ``mailarc-ui`` registers a search of its own, so these three assertions are

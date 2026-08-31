@@ -10,27 +10,22 @@ be shown.
 
 import appkit_mantine as mn
 import reflex as rx
-from appkit_user.authentication.templates import authenticated_page
 
 from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
 from mailarc_ui.shell import routes
-from mailarc_ui.shell.templates import mailarc_app
+from mailarc_ui.shell.templates import mailarc_app, public_page
 from mailarc_ui.status import GraphStatusState, status_panel
 
 ROUTE = routes.GRAPH_STATUS
-"""Where this page lives; the sidebar reads the same constant."""
+"""Where this page lives; the rail reads the same constant."""
 
 
-@authenticated_page(
+@public_page(
     route=ROUTE,
     title="Graph status",
     description="The live state of the graph server this archive is built on",
     template=mailarc_app,
-    # Administration, for the reason the docstring gives: this page names the
-    # endpoint the graph answers at and how much of the machine it is using.
-    admin_only=True,
-    # ty cannot model reflex event-handler calls; suppress the false positive.
-    on_load=[GraphStatusState.start_polling],  # ty: ignore[invalid-argument-type]
+    on_load=[GraphStatusState.start_polling],
 )
 def graph_status_page() -> rx.Component:
     return mn.stack(

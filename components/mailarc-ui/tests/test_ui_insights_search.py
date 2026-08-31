@@ -25,7 +25,7 @@ from typing import Any, cast
 import pytest
 import reflex as rx
 from appkit_commons.registry import service_registry
-from insights_archive import FakeGraph, FakeUser, signed_in_as
+from insights_archive import FakeGraph
 from pydantic import ValidationError
 from runic.ogm import Vector
 
@@ -50,7 +50,7 @@ from mailarc_ui.insights import (
     search_card,
 )
 from mailarc_ui.insights.model import NO_SUBJECT
-from mailarc_ui.insights.search import NOT_ADMIN, NOTHING_ASKED, SEARCH_FAILED
+from mailarc_ui.insights.search import NOTHING_ASKED, SEARCH_FAILED
 
 MARCH = datetime(2026, 3, 12, 9, 0, tzinfo=UTC)
 DIMENSION = 4
@@ -178,16 +178,9 @@ def online(archive: FakeGraph, embedder: StubEmbedder) -> Iterator[SemanticSearc
 
 
 @pytest.fixture
-def state(monkeypatch: pytest.MonkeyPatch) -> ArchiveSearchState:
-    """The panel's state, read by an administrator.
-
-    Signed in on purpose: a search answers with subjects and sender addresses
-    out of every mailbox in the installation, and ``_may_read`` refuses
-    anybody else. ``TestWhoIsAsking`` is where the refusal is exercised.
-    """
-    instance = ArchiveSearchState()
-    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
-    return instance
+def state() -> ArchiveSearchState:
+    """The panel's state, as the card mounts it."""
+    return ArchiveSearchState()
 
 
 async def _prepare(state: ArchiveSearchState) -> None:
@@ -602,47 +595,6 @@ class TestTheBox:
 
         assert state.error == ""
         assert state.hits, "answered by the path that always works"
-
-
-class TestWhoIsAsking:
-    """The page's ``admin_only`` is a render-time condition and gates nothing
-    that goes over the socket. What this state would send back is subjects and
-    sender addresses out of every mailbox in the installation."""
-
-    async def test_a_non_admin_gets_a_sentence_and_asks_the_graph_nothing(
-        self, state, offline, archive, monkeypatch
-    ) -> None:
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-
-        await _run(state)
-
-        assert state.error == NOT_ADMIN
-        assert state.hits == []
-        assert archive.asked == []
-
-    async def test_a_logged_out_visitor_gets_the_same(
-        self, state, offline, archive, monkeypatch
-    ) -> None:
-        signed_in_as(state, None, monkeypatch)
-
-        await _prepare(state)
-
-        assert state.error == NOT_ADMIN
-        assert state.ready is False
-        assert archive.asked == []
-
-    async def test_a_session_that_cannot_be_read_is_refused_not_trusted(
-        self, state, offline, archive, monkeypatch
-    ) -> None:
-        async def unreachable(_self: object) -> object:
-            raise LookupError("no EventContext")
-
-        monkeypatch.setattr(type(state), "_current_user", unreachable)
-
-        await _run(state)
-
-        assert state.error == NOT_ADMIN
-        assert archive.asked == []
 
 
 class TestTheProjection:

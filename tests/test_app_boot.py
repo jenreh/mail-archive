@@ -45,35 +45,30 @@ published is a panel whose only output is the sentence its lookup raises.
 
 EXPECTED_ROUTES: frozenset[str] = frozenset(
     {
+        routes.SEARCH,
         routes.DASHBOARD,
-        routes.GRAPH_STATUS,
-        routes.ACCOUNTS,
-        routes.REVIEW,
         routes.INSIGHTS,
+        routes.REVIEW,
+        routes.ACCOUNTS,
         routes.EMBEDDER,
-        routes.USERS,
-        routes.PROFILE,
-        "/login",
-        "/password-reset",
-        "/password-reset/confirm",
+        routes.GRAPH_STATUS,
     }
 )
 """What a booted application has to answer at.
 
 ``/`` is on the list and is the one that needs saying: it is the address a
-visitor arrives at, the only page of this application that answers without a
-sign-in, and it reaches Reflex through a decorator of this project's own rather
-than one of appkit's. A boot that quietly dropped its import would leave the
-front door of the archive at a 404 while every test about the dashboard itself
-went on passing.
+visitor arrives at and the page the whole application is built around, and it
+reaches Reflex through a decorator of this project's own. A boot that quietly
+dropped its import would leave the front door of the archive at a 404 while
+every test about the search itself went on passing.
+
+There are no appkit routes on the list any more. The archive is a desktop
+application with no sign-in, so ``/login`` and the two password-reset pages
+are not merely unregistered — they are not part of this interface, and a boot
+that produced one would mean the dependency came back.
 
 A subset check rather than an equality one, so that a page added next does not
 fail here before it fails anywhere that could explain why.
-
-The three appkit routes are on the list because they are the part of the
-interface that could not simply move into a page module: they are created by
-calling a factory, and :func:`mailarc_ui.pages.auth.register_auth_pages` is the
-one call that does it. Without it a user cannot sign in at all.
 """
 
 BOOT_PROBE = f"""
@@ -149,8 +144,8 @@ def test_the_administration_is_reachable(booted: dict[str, Any]) -> None:
 
 
 def test_no_route_is_served_twice(booted: dict[str, Any]) -> None:
-    """Two pages at one path is what a second ``register_auth_pages()`` would
-    produce, and Reflex picks one of them without saying which."""
+    """Two page modules answering at one path is what a copied ``ROUTE``
+    produces, and Reflex picks one of them without saying which."""
     duplicates = sorted(
         {route for route in booted["routes"] if booted["routes"].count(route) > 1}
     )

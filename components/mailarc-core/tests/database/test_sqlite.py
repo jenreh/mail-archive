@@ -1,5 +1,7 @@
 """Tests for the SQLite wiring in :mod:`mailarc_core.database.sqlite`."""
 
+import os
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -53,6 +55,38 @@ class TestEnsureDatabaseDirectory:
 
     def test_is_a_noop_for_an_in_memory_database(self) -> None:
         sqlite.ensure_database_directory("sqlite+aiosqlite:///:memory:")
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+    def test_the_directory_ends_up_private_whatever_the_umask_says(
+        self, tmp_path
+    ) -> None:
+        """The database holds accounts and credentials; only the owner reads it.
+
+        The umask is opened wide for the call, so a directory that relied on
+        `mkdir`'s mode argument would come out world-readable and fail here.
+        """
+        target = tmp_path / "state" / "mail-archive.db"
+
+        before = os.umask(0o000)
+        try:
+            sqlite.ensure_database_directory(f"sqlite+aiosqlite:///{target}")
+        finally:
+            os.umask(before)
+
+        assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+    def test_a_directory_left_open_by_an_earlier_version_is_closed_again(
+        self, tmp_path
+    ) -> None:
+        """chmod, not a creation mode: what already exists is tightened too."""
+        target = tmp_path / "state" / "mail-archive.db"
+        target.parent.mkdir(parents=True)
+        target.parent.chmod(0o755)
+
+        sqlite.ensure_database_directory(f"sqlite+aiosqlite:///{target}")
+
+        assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
 
 
 class TestInstallPragmas:

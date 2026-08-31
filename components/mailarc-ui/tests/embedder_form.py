@@ -29,7 +29,6 @@ from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.database.entities import Base
 from appkit_commons.registry import service_registry
 from cryptography.fernet import Fernet
-from insights_archive import FakeUser, signed_in_as
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from mailarc_analytics.semantic import (
@@ -252,18 +251,9 @@ def searching(composition: Composition) -> StubSearch:
 
 
 @pytest.fixture
-def state(
-    composition: Composition, monkeypatch: pytest.MonkeyPatch
-) -> EmbedderSettingsState:
-    """The form, opened by an administrator.
-
-    Signed in deliberately: this page points the archive's embedder at a host
-    and holds the credential it is used with, and ``TestEveryHandlerIsGated``
-    is where the refusal is exercised instead.
-    """
-    instance = EmbedderSettingsState()
-    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
-    return instance
+def state(composition: Composition) -> EmbedderSettingsState:
+    """The form as a page opens it, against the composed fixtures."""
+    return EmbedderSettingsState()
 
 
 async def drive(handler: Any, state: EmbedderSettingsState) -> None:

@@ -28,16 +28,22 @@ task db:revision -- "add a column"
 task db:downgrade                  # back one
 ```
 
-**Write migrations by hand.** Autogenerate is an anti-pattern here, and it would
-happily drop the tables `appkit_user` owns. The mail-import migration says so in
-its own docstring.
+**Write migrations by hand.** Autogenerate is an anti-pattern here: it drops
+whatever no model in `Base.metadata` declares, and the first revision creates
+tables nothing declares any more. The mail-import migration says so in its own
+docstring.
+
+Those are the `appkit_user` tables, left over from the sign-in the desktop app
+no longer has. The package is gone from the dependencies and no code reads them,
+but the revision stays — history is not something to rewrite for tidiness, and a
+migration that dropped them would have to be written by hand anyway.
 
 `alembic/env.py` imports `mailarc_core.database.entities` purely for the side
 effect — a table is only in `Base.metadata` once its module has run — and asks
 `sync_database_url()` for the blocking URL, because the configured one names
 `aiosqlite`.
 
-Revision chain: `appkit_user` → `mail_import`.
+Revision chain: `appkit_user` → `mail_import` → `semantic_settings`.
 
 ### Graph
 
@@ -96,7 +102,7 @@ run over an unchanged archive writes exactly the same graph.
 The same work is available as a queued job — `kind=derive`, with no account,
 because it is about the whole archive — so a long rebuild reports into a row
 that can be read and cancelled while it runs, instead of holding a terminal.
-**Rebuild** on `/admin/insights` enqueues that job and follows the row; the task
+**Rebuild** on `/insights` enqueues that job and follows the row; the task
 above is the same rebuild with no queue and no worker in the way, which is what
 makes it the one to reach for when the worker is what you are debugging.
 
@@ -191,19 +197,36 @@ task tauri:vendor:verify
 task tauri:build
 ```
 
+One thing to know before you debug a built bundle: a **release** launch keeps
+its data in `~/Library/Application Support/de.rehpoehler.mailarc`, not in
+`.state/`. The shell creates that directory `0700` and hands the backend
+`app_database_url_override`, `app_archive_store_dir` and `app_graph_data_dir`
+pointing into it. `task tauri:dev` sets none of the three, so a debug run is
+still the checkout's archive.
+
 ## Backup and restore
 
-Everything lives in one directory:
+Everything lives in one directory — which directory depends on how it was
+started:
+
+| Started by | Directory |
+| --- | --- |
+| `task run`, `task tauri:dev`, the test suite, anything from this checkout | `.state/` |
+| A **release** build of the macOS `.app` | `~/Library/Application Support/de.rehpoehler.mailarc` |
+
+Same three things inside either one:
 
 ```text
-.state/
-├── mail-archive.db      accounts, credentials, jobs, checkpoints
+<the directory>/
+├── mail-archive.db      mailboxes, credentials, jobs, checkpoints
 ├── mailstore/           the original bytes — this is the archive
 └── falkordb/            the graph's data
 ```
 
 Stop the application first, so SQLite's WAL and FalkorDB's snapshot are both at
-rest, then copy `.state/`.
+rest, then copy the directory. Restore the per-user one under the same account:
+it is `0700` and the app re-applies that on every start, so a directory owned by
+somebody else is one it can neither read nor repair.
 
 What is genuinely irreplaceable is `mailstore/`. The graph can be rebuilt from
 those bytes; the relational ledger can be rebuilt from the graph. Credentials
@@ -211,8 +234,9 @@ cannot be rebuilt from anything — but they can be re-granted, and re-granting 
 cheaper than restoring a leaked one.
 
 `task clean` removes `.state/` entirely, along with `.web/`, `dist/`, `build/`
-and the caches. It destroys the archive. `task db:upgrade` afterwards recreates
-the schema and the default `admin` account, and nothing else.
+and the caches. It destroys the archive in the checkout and touches the per-user
+directory not at all. `task db:upgrade` afterwards recreates the schema, empty,
+and nothing else.
 
 ## Logging
 
@@ -233,9 +257,10 @@ production, `warning`/`error` for actual problems. And never log a secret —
 
 ## Health
 
-The home page reports the graph server: reachable or not, latency, Redis and
-FalkorDB versions, server metrics, the graphs behind the endpoint, and whether
-the version supports the vector KNN queries later phases need.
+**Graph status** — `/admin/status`, behind the rail's Admin popover — reports
+the graph server: reachable or not, latency, Redis and FalkorDB versions, server
+metrics, the graphs behind the endpoint, and whether the version supports the
+vector KNN queries later phases need.
 
 An unreachable server is a **status**, not an error — the reader returns
 `reachable=false` with a reason rather than raising, so the panel renders "down"

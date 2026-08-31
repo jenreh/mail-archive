@@ -24,12 +24,10 @@ from insights_archive import (
     AUGUST,
     COUNTS,
     MARCH,
-    FakeUser,
     fresh,
     graph,
     pairs,
     published,
-    signed_in_as,
 )
 from pydantic import ValidationError
 
@@ -71,18 +69,9 @@ are imported to be used; ``__all__`` is what stops ruff removing them again."""
 
 
 @pytest.fixture
-def state(
-    published: AnalyticsReader, monkeypatch: pytest.MonkeyPatch
-) -> AnalyticsInsightsState:
-    """The state under test, read by an administrator.
-
-    Signed in on purpose rather than by default: this page reads every mailbox
-    of the installation, and :meth:`AnalyticsInsightsState._may_read` refuses
-    anybody else. ``TestWhoIsAsking`` is where the refusal is exercised.
-    """
-    instance = AnalyticsInsightsState()
-    signed_in_as(instance, FakeUser(is_admin=True), monkeypatch)
-    return instance
+def state(published: AnalyticsReader) -> AnalyticsInsightsState:
+    """The state under test, over the published reader."""
+    return AnalyticsInsightsState()
 
 
 def _truth_row(left: str, right: str, together: int) -> CoRecipientRow:
@@ -132,15 +121,12 @@ class TestFindingTheReader:
         finally:
             registry.restore(saved)
 
-    async def test_a_page_without_a_reader_shows_the_sentence(
-        self, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_a_page_without_a_reader_shows_the_sentence(self, graph) -> None:
         registry = service_registry()
         saved = registry.snapshot()
         try:
             registry.restore({})
             state = AnalyticsInsightsState()
-            signed_in_as(state, FakeUser(is_admin=True), monkeypatch)
 
             await _load(state)
 
@@ -149,81 +135,6 @@ class TestFindingTheReader:
             assert graph.asked == []
         finally:
             registry.restore(saved)
-
-
-class TestWhoIsAsking:
-    """``admin_only=True`` on the page does not gate this handler.
-
-    It expands to ``rx.cond(admin_only, rx.cond(is_admin, page, no_permission),
-    page)`` — a condition in the component tree, evaluated in the browser. The
-    ``on_load`` chain is built separately, ``LoginState.check_auth`` sits in
-    front of it, and Reflex runs the rest of the chain whatever that returns.
-    So this handler runs for a logged-out visitor and for a signed-in non-admin
-    alike, and what it would push back is :attr:`pairs` and the disputed pairs
-    of the cross-check: raw mail addresses out of every mailbox in the
-    installation, on a page whose own comment justifies its gate on exactly
-    that. The DOM says no permission; the state delta says everything.
-    """
-
-    async def test_a_non_admin_gets_no_analysis_and_asks_the_graph_nothing(
-        self, published, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        state = AnalyticsInsightsState()
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-
-        await _load(state)
-
-        assert graph.asked == []
-        assert state.pairs == []
-        assert state.groups == []
-        assert state.totals.messages == 0
-        assert state.busy is False, "and no spinner left running either"
-
-    async def test_a_logged_out_visitor_gets_the_same(
-        self, published, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The self-join runs over every message; anonymous is not a reason."""
-        state = AnalyticsInsightsState()
-        signed_in_as(state, None, monkeypatch)
-
-        await _load(state)
-
-        assert graph.asked == []
-        assert state.busy is False
-
-    async def test_the_cross_check_button_is_gated_too(
-        self, published, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A rendered button is not what makes an event reachable.
-
-        Reflex events are addressable by name over the socket, so gating the
-        page's ``on_load`` alone would leave the most expensive read on the
-        page open to anybody with the state's name.
-        """
-        state = AnalyticsInsightsState()
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-
-        await _check_agreement(state)
-
-        assert graph.asked == []
-        assert state.pairs == []
-        assert state.loading_agreement is False
-
-    async def test_a_session_that_cannot_be_read_is_refused_not_trusted(
-        self, published, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Fails closed. "Cannot tell" is not "yes" for everybody's mail."""
-
-        async def unreachable(_self: object) -> object:
-            raise LookupError("no EventContext")
-
-        state = AnalyticsInsightsState()
-        monkeypatch.setattr(type(state), "_current_user", unreachable)
-
-        await _load(state)
-
-        assert graph.asked == []
-        assert state.busy is False
 
 
 class TestTheFirstLook:
@@ -989,181 +900,3 @@ class TestTheComponents:
 
         assert 'agreement_rx_state_?.["color"]' in rendered
         assert 'agreement_rx_state_?.["headline"]' in rendered
-
-
-class TestTheRebuildControlsRefuseAnUngatedCaller:
-    """The three handlers the structural test caught, proven to actually refuse.
-
-    A call to ``_may_read`` in the right place is necessary and not sufficient:
-    what matters is that nothing is queued, nothing is cancelled and no readout
-    is sent. These assert the effect, not the shape.
-    """
-
-    async def test_a_non_admin_cannot_queue_a_rebuild(
-        self, published, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A derive job deletes the whole derived layer before recomputing it."""
-        state = AnalyticsInsightsState()
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-        queued: list[object] = []
-        monkeypatch.setattr(
-            AnalyticsInsightsState,
-            "_queue",
-            lambda self: _RecordingQueue(queued),
-        )
-
-        await AnalyticsInsightsState.start_rebuild.fn(state)  # ty: ignore[unresolved-attribute]
-
-        assert queued == [], "an ungated caller queued a rebuild"
-        assert state.job_id <= 0
-        assert state.rebuild_message
-
-    async def test_a_non_admin_cannot_cancel_somebody_elses_rebuild(
-        self, published, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """``job_id`` is state this session supplied, so it names any job."""
-        state = AnalyticsInsightsState()
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-        state.job_id = 4711
-        cancelled: list[object] = []
-        monkeypatch.setattr(
-            AnalyticsInsightsState,
-            "_queue",
-            lambda self: _RecordingQueue(cancelled),
-        )
-
-        await AnalyticsInsightsState.cancel_rebuild.fn(state)  # ty: ignore[unresolved-attribute]
-
-        assert cancelled == [], "an ungated caller cancelled a job"
-
-    async def test_the_poll_readout_is_gated_not_only_the_load(
-        self, published, graph, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Following the row sends nothing; the readout at the end sends everything.
-
-        Driven with a job that is already over, which is the shape that falls
-        straight through the loop to the terminal read — the path that was
-        ungated.
-        """
-        state = AnalyticsInsightsState()
-        signed_in_as(state, FakeUser(is_admin=False), monkeypatch)
-        state.job_id = 4711
-        state.polling = True
-        monkeypatch.setattr(
-            AnalyticsInsightsState, "_read_job", _no_such_job, raising=False
-        )
-
-        await AnalyticsInsightsState.poll.fn(state)  # ty: ignore[unresolved-attribute]
-
-        assert graph.asked == [], "the poll readout reached the graph ungated"
-        assert state.pairs == []
-        assert state.sent_templates == []
-        assert state.received_templates == []
-
-
-class _RecordingQueue:
-    """A job queue that records instead of acting, so a leak is visible."""
-
-    def __init__(self, seen: list[object]) -> None:
-        self._seen = seen
-
-    async def enqueue(self, kind: object, account_id: int | None = None) -> int:
-        self._seen.append(("enqueue", kind))
-        return 1
-
-    async def request_cancel(self, job_id: int) -> bool:
-        self._seen.append(("cancel", job_id))
-        return True
-
-    async def get(self, job_id: int) -> None:
-        return None
-
-
-async def _no_such_job(self: object, job_id: int) -> None:
-    """The queue has no such row — the loop's fall-through to the final read."""
-    return
-
-
-class TestEveryHandlerThatLeavesDataIsGated:
-    """The gate has to sit on every handler, not on the ones we remembered.
-
-    ``_may_read``'s own docstring explains why: ``admin_only=True`` on the page
-    is a render-time ``rx.cond``, appkit puts ``check_auth`` in front of the
-    ``on_load`` chain but Reflex runs the rest of it regardless, and a Reflex
-    event handler is addressable by name over the websocket. So the gate is
-    per-handler by construction — and a per-handler rule is exactly the kind
-    that rots the next time somebody adds a handler.
-
-    This asserts the rule structurally rather than case by case, so a handler
-    added later cannot quietly skip it.
-    """
-
-    READ_OR_WRITE = (
-        "load",
-        "check_agreement",
-        "poll",
-        "start_rebuild",
-        "cancel_rebuild",
-    )
-    """Handlers that either send archive-wide data out or change the archive.
-
-    ``stop_polling`` is deliberately absent: it only lowers this session's own
-    flag, sends nothing and touches nothing shared.
-    """
-
-    def test_every_such_handler_consults_the_gate(self) -> None:
-        import inspect
-
-        from mailarc_ui.insights import state as module
-
-        source = inspect.getsource(module)
-        bodies = _handler_bodies(source)
-
-        ungated = [
-            name
-            for name in self.READ_OR_WRITE
-            if "_may_read" not in bodies.get(name, "")
-        ]
-
-        assert not ungated, (
-            f"{ungated} send archive-wide data or change the archive without "
-            "consulting _may_read. A Reflex handler is reachable by name over "
-            "the socket, so the page's admin_only decorator does not cover it."
-        )
-
-    def test_the_search_state_holds_the_same_line(self) -> None:
-        import inspect
-
-        from mailarc_ui.insights import search as module
-
-        bodies = _handler_bodies(inspect.getsource(module))
-        ungated = [
-            name
-            for name in ("prepare", "run")
-            if "_may_read" not in bodies.get(name, "")
-        ]
-
-        assert not ungated, f"{ungated} run a search for an ungated caller"
-
-
-def _handler_bodies(source: str) -> dict[str, str]:
-    """Each ``def`` in a module mapped to its own text, by indentation.
-
-    Read off the source rather than off the class, because what is being
-    asserted is that a particular call appears in a particular body — which a
-    bound method cannot answer and a decorator would hide.
-    """
-    import re
-
-    lines = source.splitlines()
-    starts: list[tuple[str, int]] = []
-    for index, line in enumerate(lines):
-        found = re.match(r"\s*(?:async )?def (\w+)\(", line)
-        if found:
-            starts.append((found.group(1), index))
-
-    bodies: dict[str, str] = {}
-    for position, (name, begin) in enumerate(starts):
-        end = starts[position + 1][1] if position + 1 < len(starts) else len(lines)
-        bodies[name] = "\n".join(lines[begin:end])
-    return bodies

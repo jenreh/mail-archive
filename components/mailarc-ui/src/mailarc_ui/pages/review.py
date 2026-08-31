@@ -13,15 +13,14 @@ would silently turn into one very long page.
 
 import appkit_mantine as mn
 import reflex as rx
-from appkit_user.authentication.templates import authenticated_page
 
 from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
 from mailarc_ui.review import MessageReviewState, review_panel
 from mailarc_ui.shell import routes
-from mailarc_ui.shell.templates import mailarc_full_app
+from mailarc_ui.shell.templates import mailarc_full_app, public_page
 
 ROUTE = routes.REVIEW
-"""Where this page lives; the sidebar reads the same constant."""
+"""Where this page lives; the rail reads the same constant."""
 
 
 def _toolbar() -> rx.Component:
@@ -40,16 +39,12 @@ def _toolbar() -> rx.Component:
     )
 
 
-@authenticated_page(
+@public_page(
     route=ROUTE,
     title="Review",
     description="Look into the synced messages and their raw source",
     template=mailarc_full_app,
-    # Admin-only, for the reason `/admin/accounts` is: the archive is every
-    # mailbox of the installation, which is everybody's private mail.
-    admin_only=True,
-    # ty cannot model reflex event-handler calls; suppress the false positive.
-    on_load=[MessageReviewState.load],  # ty: ignore[invalid-argument-type]
+    on_load=[MessageReviewState.load],
 )
 def review_page() -> rx.Component:
     return mn.stack(

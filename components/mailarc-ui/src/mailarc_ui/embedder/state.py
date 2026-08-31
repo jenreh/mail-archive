@@ -25,10 +25,6 @@ has no ``api_key`` parameter to pass it through; forgetting a key is
 :meth:`EmbedderSettingsState.clear_api_key`, its own control saying its own
 sentence.
 
-**Every handler consults the gate.** Not only the ones that write: see
-:meth:`EmbedderSettingsState._may_configure`. ``admin_only=True`` on the page
-is a render-time ``rx.cond`` and covers nothing that travels over the socket.
-
 **The form shows what is in force, not what is stored.** The effective
 configuration is the file, the environment and the stored row merged, and only
 the composition root can perform that merge (§4.1) — so it arrives through
@@ -81,7 +77,6 @@ from mailarc_sync.jobs import JobKind, JobQueue
 from mailarc_ui.embedder.model import (
     EMBED_CANCEL_ASKED,
     EMBED_CANCEL_TOOK_EFFECT,
-    EMBED_NOT_ALLOWED,
     EMBED_RUNNING,
     KEY_CLEARED,
     KEY_NOT_STORED,
@@ -89,7 +84,6 @@ from mailarc_ui.embedder.model import (
     NO_ADVICE,
     NO_EMBED_JOB,
     NO_EMBEDDER_TO_RUN,
-    NOT_ALLOWED,
     REINDEX_FAILED,
     RESET,
     SAVE_FAILED,
@@ -193,10 +187,6 @@ class EmbedderSettingsState(rx.State):
     happening to the archive.
     """
 
-    allowed: bool = False
-    """Whether this session may use the form at all. False until a load says
-    otherwise, so every control is dead before the gate has answered."""
-
     loading: bool = True
     saving: bool = False
     error: str = ""
@@ -249,8 +239,7 @@ class EmbedderSettingsState(rx.State):
         than after it.
         """
         return (
-            self.allowed
-            and not self.loading
+            not self.loading
             and not self.saving
             and not self.reindexing
             and not self.starting
@@ -290,24 +279,23 @@ class EmbedderSettingsState(rx.State):
     def blocked(self) -> bool:
         """Whether every control is dead, which is the state before a load.
 
-        A computed var rather than ``~allowed`` at each call site: ``allowed``
-        is a plain ``bool`` field, and inverting one of those with ``~`` is an
-        integer complement that happens to render correctly — ``ty`` calls it
-        an ``int`` where a ``Var[bool]`` belongs, and Python 3.16 will refuse it
-        outright. Inverting a *computed* var is the supported operation, so the
-        negation is done once, here, in Python.
+        Its own var rather than :attr:`loading` at each call site, because the
+        two answer different questions: one is "a read is out", the other is
+        "there is nothing here to change yet". They coincide today and the
+        components read this one, so what a control is disabled *for* stays
+        stated in one place.
         """
-        return not self.allowed
+        return self.loading
 
     @rx.var
     def can_clear_key(self) -> bool:
-        """Whether there is a stored key to forget, and this caller may."""
-        return self.allowed and self.api_key_stored and not self.saving
+        """Whether there is a stored key to forget."""
+        return self.api_key_stored and not self.saving
 
     @rx.var
     def vector_advice(self) -> Advice:
         """What changing the embedder identity would cost, if anything."""
-        if not self.allowed:
+        if self.loading:
             return NO_ADVICE
         return vector_advice(
             self.in_force, provider=self.provider, model=self.model.strip()
@@ -316,14 +304,14 @@ class EmbedderSettingsState(rx.State):
     @rx.var
     def index_advice(self) -> Advice:
         """What the typed vector length costs against the graph's own index."""
-        if not self.allowed:
+        if self.loading:
             return NO_ADVICE
         return index_advice(self.in_force, dimension=self.dimension)
 
     @rx.var
     def host_advice(self) -> Advice:
         """What moving the embedding API somewhere else costs, key included."""
-        if not self.allowed:
+        if self.loading:
             return NO_ADVICE
         return host_advice(
             self.in_force,
@@ -341,9 +329,7 @@ class EmbedderSettingsState(rx.State):
         vector the graph accepts, and the composition root would drop the whole
         row over it.
         """
-        return (
-            self.allowed and not self.loading and not self.saving and self.dimension > 0
-        )
+        return not self.loading and not self.saving and self.dimension > 0
 
     @rx.var
     def embedder_configured(self) -> bool:
@@ -378,8 +364,7 @@ class EmbedderSettingsState(rx.State):
     def can_embed(self) -> bool:
         """Whether pressing Rebuild the vectors could produce anything."""
         return (
-            self.allowed
-            and self.embedder_configured
+            self.embedder_configured
             and not self.job.active
             and not self.starting
             and not self.loading
@@ -387,7 +372,7 @@ class EmbedderSettingsState(rx.State):
 
     @rx.var
     def can_cancel_embed(self) -> bool:
-        return self.allowed and self.job.active and not self.job.cancel_requested
+        return self.job.active and not self.job.cancel_requested
 
     @rx.event(background=True)
     async def load(self) -> None:
@@ -399,9 +384,6 @@ class EmbedderSettingsState(rx.State):
         settings page.
         """
         async with self:
-            if not await self._may_configure():
-                self._refuse()
-                return
             self.loading = True
             self.error = ""
         try:
@@ -425,9 +407,6 @@ class EmbedderSettingsState(rx.State):
         nothing, which is the only answer that cannot make the form claim
         something the archive will not do.
         """
-        if not await self._may_configure():
-            self._refuse()
-            return
         if value not in {one.value for one in SemanticProvider}:
             logger.warning("Ignoring an unknown embedding provider")
             return
@@ -454,9 +433,6 @@ class EmbedderSettingsState(rx.State):
         is a real choice for the ``text-embedding-3-*`` models, which can be
         asked for fewer floats than they natively produce.
         """
-        if not await self._may_configure():
-            self._refuse()
-            return
         was = self.model
         self.model = value
         if value.strip() == was.strip():
@@ -485,9 +461,6 @@ class EmbedderSettingsState(rx.State):
         — and an illegal thing to save, which :attr:`can_save` is where it is
         refused.
         """
-        if not await self._may_configure():
-            self._refuse()
-            return
         if value == "":
             self.dimension = 0
             return
@@ -504,9 +477,6 @@ class EmbedderSettingsState(rx.State):
         ``http(s)`` URL changes nothing: ``httpx`` would read
         ``gpu.internal:11434`` as a *scheme* and fail naming neither.
         """
-        if not await self._may_configure():
-            self._refuse()
-            return
         if value.strip() and not is_absolute_http(value.strip()):
             logger.warning("Ignoring an embedding base URL that is not an http(s) URL")
             return
@@ -520,9 +490,6 @@ class EmbedderSettingsState(rx.State):
         var, never logged, and never read back out of the database once
         written.
         """
-        if not await self._may_configure():
-            self._refuse()
-            return
         self._typed_key = value
 
     @rx.event(background=True)
@@ -541,9 +508,6 @@ class EmbedderSettingsState(rx.State):
         model.
         """
         async with self:
-            if not await self._may_configure():
-                self._refuse()
-                return
             if self.saving:
                 return
             self.saving = True
@@ -592,9 +556,6 @@ class EmbedderSettingsState(rx.State):
         should have been revoked.
         """
         async with self:
-            if not await self._may_configure():
-                self._refuse()
-                return
             if self.saving:
                 return
             self.saving = True
@@ -625,9 +586,6 @@ class EmbedderSettingsState(rx.State):
         Nothing a message arrived with is touched.
         """
         async with self:
-            if not await self._may_configure():
-                self._refuse()
-                return
             if self.saving or self.reindexing:
                 return
             self.reindexing = True
@@ -657,9 +615,6 @@ class EmbedderSettingsState(rx.State):
         ``config.yaml`` could never get back to it from the browser.
         """
         async with self:
-            if not await self._may_configure():
-                self._refuse()
-                return
             if self.saving:
                 return
             self.saving = True
@@ -690,16 +645,7 @@ class EmbedderSettingsState(rx.State):
         No account: an embed job is about the whole archive, which is why it
         carries no ``account_id`` — and why :meth:`_adopt_open_embed` looks for
         an open job with none.
-
-        Gated like every other handler here. This one queues archive-wide work
-        that sends every message body to the configured provider, which for
-        ``openai`` means uploading the archive to a third party. That is not a
-        thing an authenticated non-administrator may set going.
         """
-        if not await self._may_configure():
-            self._refuse()
-            self.embed_message = EMBED_NOT_ALLOWED
-            return None
         if not self.embedder_configured:
             self.embed_message = NO_EMBEDDER_TO_RUN
             return None
@@ -735,14 +681,7 @@ class EmbedderSettingsState(rx.State):
         batches of vectors. That is not a half-written state needing repair: a
         run only ever looks for messages with no vector under the model in
         force, so the next one continues from exactly where this stopped.
-
-        Gated: :attr:`job_id` is state this session supplied, so without the
-        check a caller could end a rebuild somebody else started.
         """
-        if not await self._may_configure():
-            self._refuse()
-            self.embed_message = EMBED_NOT_ALLOWED
-            return
         if self.job_id <= 0:
             return
         self.cancelling = True
@@ -763,12 +702,9 @@ class EmbedderSettingsState(rx.State):
     def stop_polling(self) -> None:
         """Stop following the rebuild — the page is going away.
 
-        Wired to ``embedder_panel``'s ``on_unmount``. Deliberately **not**
-        gated, and the one handler on this state that is not: it clears a flag
-        in this session's own state and reads nothing, and a gate that could
-        refuse it would leave a background task polling the database for the
-        life of a session — which is the fault it exists to prevent, not one it
-        could cause. ``TestEveryHandlerIsGated`` names it for this reason.
+        Wired to ``embedder_panel``'s ``on_unmount``: without it a user who
+        navigates away during a rebuild leaves a background task hitting the
+        database for the life of the session, one per abandoned page.
         """
         self.polling = False
 
@@ -787,11 +723,6 @@ class EmbedderSettingsState(rx.State):
         three change it — a run that stopped halfway still embedded everything
         up to the batch it stopped on, and the warnings above compare against
         that number.
-
-        The gate is checked again before that read. Following a job row sends
-        nothing the queue would not already tell an authorised caller; the
-        count is a statement about the archive's contents, so the check sits
-        immediately before the read that leaves.
         """
         ticks = 0
         while True:
@@ -828,10 +759,6 @@ class EmbedderSettingsState(rx.State):
                         self.polling = False
                         break
             await asyncio.sleep(self.poll_interval)
-        async with self:
-            if not await self._may_configure():
-                self._refuse()
-                return
         await self._recount()
 
     async def _recount(self) -> None:
@@ -999,86 +926,5 @@ class EmbedderSettingsState(rx.State):
         # unrelated save — and the password box is uncontrolled, so nothing in
         # the DOM contradicted the impression of a clean form.
         self._typed_key = ""
-        self.allowed = True
         self.loading = False
         self.saving = False
-
-    def _refuse(self) -> None:
-        """Show a refused caller nothing at all, and say why.
-
-        Everything is put back to its default rather than merely disabled: the
-        session may have held an administrator's reading a moment ago, and a
-        form that keeps the values while refusing to save them is still a form
-        that displayed them.
-        """
-        self._baseline = None
-        self.in_force = EmbedderReading()
-        self.provider = SemanticProvider.NONE.value
-        self.model = ""
-        self.dimension = 0
-        self.base_url = ""
-        self.api_key_stored = False
-        self.api_key_in_force = False
-        self._typed_key = ""
-        self.allowed = False
-        self.loading = False
-        self.saving = False
-        self.notice = ""
-        self.error = NOT_ALLOWED
-        # The control too, not only the form: the session may have held an
-        # administrator's job a moment ago, and a page that keeps showing a
-        # rebuild it will not let you cancel is worse than one showing none.
-        self.job = NO_EMBED_JOB
-        self.job_id = 0
-        self.starting = False
-        self.cancelling = False
-        self.polling = False
-
-    async def _may_configure(self) -> bool:
-        """Whether this session may change the embedder for the whole archive.
-
-        The gate ``AnalyticsInsightsState._may_read`` states, on a page with a
-        sharper reason for it. ``admin_only=True`` on the page decorator is a
-        render-time ``rx.cond``: appkit puts ``check_auth`` in front of the
-        ``on_load`` chain and Reflex runs the rest of it whatever that returns,
-        and a Reflex event is addressable by name over the websocket whatever
-        the DOM shows. So an ungated handler here would let any authenticated
-        caller point this installation's embedder at a host of their choosing
-        and hand it every message body the next embed job reads — which is a
-        worse outcome than the read the insights page gates.
-
-        On every handler, the four setters included. A setter looks harmless
-        because it only touches this session's own var, but
-        :meth:`set_api_key`'s var is a secret and :meth:`save` writes whatever
-        the setters left behind, so gating the write alone would leave the
-        state one call away from being loaded by somebody who may not save it.
-        The uniform rule is also the one a test can assert; the case-by-case
-        one is the kind that rots.
-
-        Fails closed. A process that cannot say who is asking cannot say they
-        are an administrator.
-        """
-        try:
-            user = await self._current_user()
-        except Exception:
-            logger.exception("Could not establish who is asking; refusing the form")
-            return False
-        if user is None or not getattr(user, "is_admin", False):
-            logger.warning("Refused an embedder settings request: not an admin")
-            return False
-        return True
-
-    async def _current_user(self) -> object | None:  # pragma: no cover
-        """The signed-in user, or ``None`` — Reflex's own session state.
-
-        Its own method, and excluded from coverage, for the reason its two
-        twins on the insights page are: ``get_state`` needs an ``EventContext``
-        context variable only a running Reflex app sets, so these three lines
-        cannot run under pytest. Everything the gate decides sits above them.
-        Imported inside the method because ``appkit_user.authentication.
-        states`` reads its configuration out of the service registry at import.
-        """
-        from appkit_user.authentication.states import UserSession
-
-        session = await self.get_state(UserSession)
-        return session.user

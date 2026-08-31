@@ -1,20 +1,14 @@
-"""The archive at a glance, at ``/`` — the one page that needs no sign-in.
+"""The archive at a glance, at ``/dashboard``.
 
-A4: user pages need no login. This is the page that makes that true, and the
-only one built with :func:`~mailarc_ui.shell.templates.public_page` — appkit's
-``authenticated_page`` puts ``LoginState.check_auth`` in front of every
-``on_load`` and cannot serve a page without a session.
+It used to be the front door. The redesign gave ``/`` to the search, which is
+what somebody opening a mail archive actually came to do, and moved this page
+one click away into the rail — a summary of what the archive holds is
+something a person looks at now and then, not the thing they arrive for.
 
-**Public here means the page, not everything on it.** ``DashboardState.load``
-runs for a signed-out visitor — appkit runs an ``on_load`` chain to the end
-whatever ``check_auth`` returned, and there is no ``check_auth`` in this one at
-all — so the split between what any visitor is shown and what only an
-administrator is shown lives in that state, at the point where data leaves the
-process. :mod:`mailarc_ui.dashboard.state` is where the line is drawn and why.
-
-No search field and no filter button: §1.2 removed the header bar the reference
-design shows, and a page-level search that only one page carried would read as
-one that is broken on the others.
+No search field and no filter button: the header bar the reference design
+shows was dropped, and a page-level search that only one page carried would
+read as one that is broken on the others. The search lives at ``/`` now, which
+is where the rail sends anybody who wants it.
 """
 
 import appkit_mantine as mn
@@ -26,7 +20,7 @@ from mailarc_ui.shell import routes
 from mailarc_ui.shell.templates import public_page
 
 ROUTE = routes.DASHBOARD
-"""Where this page lives; the sidebar reads the same constant."""
+"""Where this page lives; the rail reads the same constant."""
 
 MAX_CONTENT_WIDTH = 1440
 """How wide the dashboard is allowed to get.

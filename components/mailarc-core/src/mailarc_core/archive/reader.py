@@ -1,8 +1,9 @@
 """Reading the archive back: a listing of messages, and the bytes of one.
 
-The writer's mirror image, and deliberately narrower. It answers two questions
-— which messages are here, newest first, and what did this one look like on
-the wire — and projects both onto values nothing above it has to unpack. A
+The writer's mirror image, and deliberately narrower. It answers three
+questions — which messages are here, newest first; which match a search; and
+what did this one look like on the wire — and projects all of them onto
+values nothing above it has to unpack. A
 :class:`~mailarc_core.archive.model.MessageSummary` is a frozen pydantic model,
 so a page can hold a list of them after the session that read them is gone.
 
@@ -34,6 +35,12 @@ from mailarc_core.archive.model import (
     MessageSummary,
 )
 from mailarc_core.archive.repository import AddressRepository, MessageRepository
+from mailarc_core.archive.search import (
+    MessageHit,
+    ScoredId,
+    SearchFilters,
+    SearchPage,
+)
 from mailarc_core.mail.model import LabelKind
 
 logger = logging.getLogger(__name__)
@@ -51,7 +58,7 @@ _KIND_ORDER = {LabelKind.USER: 0, LabelKind.FOLDER: 1, LabelKind.SYSTEM: 2}
 
 
 class ArchiveReader:
-    """The archive as the review page needs it: listings, bytes, and trust.
+    """The archive as its pages need it: listings, search, bytes, and trust.
 
     Reads, plus exactly one write — :meth:`trust_remote_content`, the
     annotation a human leaves on an ``Address`` node. It rides here rather
@@ -76,16 +83,68 @@ class ArchiveReader:
         with self._graph_session() as graph:
             repository = MessageRepository(graph)
             rows = repository.find_recent(limit=limit, offset=offset)
-            labels = repository.find_labels([message.id for message, _ in rows])
-            return [
-                self._summarise(message, sender, labels.get(message.id, []))
-                for message, sender in rows
-            ]
+            return self._summaries(repository, rows)
 
     def count_messages(self) -> int:
         """How many messages the archive holds."""
         with self._graph_session() as graph:
             return MessageRepository(graph).count()
+
+    def search_messages(
+        self, filters: SearchFilters, *, limit: int = 50, offset: int = 0
+    ) -> SearchPage:
+        """One page of whatever ``filters`` ask for — the search page's one call.
+
+        Three shapes behind one signature, told apart by the filters alone so
+        the state above holds no mode flag that could drift from the form:
+
+        * **empty** — the recent listing with its count, exactly what the
+          page shows before anyone types;
+        * **text** (with or without structured narrowing) — full-text ids
+          first, then one hydration pass; ``total`` is ``None`` because
+          counting would mean running the procedure again un-paged, and
+          ``relevance`` is scaled against the best hit of *this* answer — a
+          ranking within one page, not a measurement;
+        * **structured only** — the filtered listing plus its count, no
+          relevance, because a structural filter matches or does not.
+
+        A ``text`` of operators only — ``"()"`` — raises the sanitizer's
+        :class:`ValueError` rather than answering with an empty page that
+        would read as an empty archive.
+        """
+        if filters.empty:
+            hits = tuple(
+                MessageHit(summary=one)
+                for one in self.list_messages(limit=limit, offset=offset)
+            )
+            return SearchPage(hits=hits, total=self.count_messages())
+        with self._graph_session() as graph:
+            repository = MessageRepository(graph)
+            if filters.text.strip():
+                scored = repository.search_fulltext(filters, limit=limit, offset=offset)
+                rows = repository.find_by_ids([one.id for one in scored])
+                summaries = self._summaries(repository, rows)
+                return SearchPage(hits=_ranked(summaries, scored), total=None)
+            rows = repository.find_filtered(filters, limit=limit, offset=offset)
+            summaries = self._summaries(repository, rows)
+            total = repository.count_filtered(filters)
+        hits = tuple(MessageHit(summary=one) for one in summaries)
+        return SearchPage(hits=hits, total=total)
+
+    def messages_by_ids(self, ids: list[str]) -> list[MessageSummary]:
+        """These messages as summaries, in the caller's order.
+
+        The hydration path every *ranked* answer shares: the full-text page
+        above and the analytics component's semantic hits both end as a list
+        of ids whose order is the ranking. An id the graph no longer holds is
+        left out rather than answered with a hole; an empty ask never opens
+        a session.
+        """
+        if not ids:
+            return []
+        with self._graph_session() as graph:
+            repository = MessageRepository(graph)
+            return self._summaries(repository, repository.find_by_ids(ids))
 
     def remote_content_trusted(self, address: str) -> bool:
         """Whether this sender's remote content may load without asking."""
@@ -116,6 +175,19 @@ class ArchiveReader:
             logger.warning("No original stored under %s", digest)
             return None
 
+    def _summaries(
+        self,
+        repository: MessageRepository,
+        rows: list[tuple[Message, Address | None]],
+    ) -> list[MessageSummary]:
+        """A page of rows summarised, labels attached — inside the caller's
+        session, one label statement per page, whatever path produced the rows."""
+        labels = repository.find_labels([message.id for message, _ in rows])
+        return [
+            self._summarise(message, sender, labels.get(message.id, []))
+            for message, sender in rows
+        ]
+
     def _summarise(
         self, message: Message, sender: Address | None, labels: list[Label]
     ) -> MessageSummary:
@@ -133,6 +205,30 @@ class ArchiveReader:
             eml_sha256=message.eml_sha256,
             labels=labels_of(labels),
         )
+
+
+def _ranked(
+    summaries: list[MessageSummary], scored: list[ScoredId]
+) -> tuple[MessageHit, ...]:
+    """Summaries married to their scores, in score order, scaled to ``0..1``.
+
+    The scaling is the analytics package's rule for the same index: a raw
+    RediSearch relevance is unbounded and means nothing across two queries,
+    so the best hit of this answer becomes ``1.0`` and the rest follow. All
+    zeros stay zero rather than dividing by nothing. The ids drive the loop
+    — ``scored`` is the ranking — and a hit whose summary is gone (deleted
+    between the two statements) is dropped rather than rendered empty.
+    """
+    best = max((one.relevance for one in scored), default=0.0)
+    named = {summary.id: summary for summary in summaries}
+    return tuple(
+        MessageHit(
+            summary=named[one.id],
+            relevance=one.relevance / best if best > 0 else 0.0,
+        )
+        for one in scored
+        if one.id in named
+    )
 
 
 def labels_of(labels: list[Label]) -> tuple[MessageLabel, ...]:

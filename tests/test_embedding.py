@@ -195,20 +195,22 @@ def test_the_command_prints_nothing(
     assert capsys.readouterr().out == ""
 
 
-def test_with_no_embedder_the_command_fails_and_names_the_setting(
+def test_with_no_embedder_the_command_fails_and_says_why(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The state every default installation is in. Somebody who typed the
     command asked for vectors, so "nothing to do" would be a lie — and the
-    sentence that says what to change has to survive into the log, because a
-    shell task has nowhere else to put it."""
+    reason has to survive into the log, because a shell task has nowhere else
+    to put it. The log carries the component's own sentence rather than a
+    paraphrase, which is what stops the command and the pages disagreeing
+    about the same state."""
     monkeypatch.setattr(embedding, "semantic_embedder", lambda: None)
 
     with caplog.at_level(logging.ERROR, logger="app.embedding"):
         assert embedding.main() == 1
 
     assert "could not be embedded" in caplog.text
-    assert "app_semantic_provider" in caplog.text
+    assert NO_EMBEDDER in caplog.text
 
 
 async def test_the_no_embedder_refusal_comes_from_the_component(

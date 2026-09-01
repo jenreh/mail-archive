@@ -7,32 +7,53 @@ URL that 404s, an operations note, and three module docstrings — including
 job it documents.
 
 Nothing caught it because the tests pin the route against ``ROUTE`` and the
-navbar, and prose is not either. This is the two-line assertion that closes
+navigation, and prose is not either. This is the two-line assertion that closes
 that gap: the routes are already exported as constants, so the check costs one
 walk over the documentation and the pages.
+
+The mail-client redesign moved four more. Insights left ``/admin/`` for
+``/insights``, the dashboard gave ``/`` to the search and took ``/dashboard``,
+and the sign-in went away entirely — with it ``/login``, ``/profile`` and
+``/admin/users``, three paths that a reader following them now reaches nothing
+at all at. ``/admin/review`` joined them when the review page was removed — the
+search at ``/`` reads a message the same way and had made it a second door onto
+the same reading pane. All of them are in the pattern below, so prose that
+still names one fails here rather than in a browser.
 """
 
 import re
 from pathlib import Path
 
-from app.pages import mail_accounts, mail_embedder, mail_insights, mail_review
+from mailarc_ui.shell import routes
 
 ROOT = Path(__file__).resolve().parent.parent
 
-ROUTES = {
-    mail_accounts.ROUTE,
-    mail_embedder.ROUTE,
-    mail_insights.ROUTE,
-    mail_review.ROUTE,
-}
-"""Where the four admin pages actually live."""
+ROUTES = set(routes.ALL_ROUTES)
+"""Where the pages actually live.
 
-MOVED = re.compile(r"/mail/(accounts|review|insights)\b")
-"""The paths they used to live at, and nothing else.
+Read off ``mailarc_ui.shell.routes`` rather than off the page modules, which is
+where the constants moved to and also the cheaper import: the route table names
+no Reflex component, so this check no longer registers five pages into a
+module-level registry in order to ask what their paths are.
+"""
 
-Deliberately the three names rather than ``/mail/`` in general: a future
-``/mail/something`` is a real route until somebody says otherwise, and a check
-that guessed would go off on the first page nobody has moved.
+MOVED = re.compile(
+    r"/mail/(?:accounts|review|insights)\b"
+    r"|/admin/(?:insights|review|users)\b"
+    r"|(?<![\w/.-])/profile\b"
+    r"|(?<![\w/.-])/login\b"
+)
+"""The paths that no longer answer, and nothing else.
+
+Deliberately spelled out rather than generalised: a future ``/mail/something``
+or ``/admin/something`` is a real route until somebody says otherwise, and a
+check that guessed would go off on the first page nobody has moved.
+
+The two bare paths carry a look-behind because ``/login`` and ``/profile`` are
+also the tails of URLs that have nothing to do with this application —
+``https://login.microsoftonline.com`` is in the configuration guide, and
+``getProfile`` is a Gmail API call the provider guide names. Only a path
+standing on its own is a route somebody could follow.
 """
 
 SEARCHED = ("docs", "app", "components")
@@ -43,13 +64,25 @@ written before the move, and rewriting history there would lose the record of
 what was decided when.
 """
 
+SKIPPED = ("node_modules", ".vitepress")
+"""Directories under ``docs/`` that nobody in this repository wrote.
+
+The documentation site vendors its own toolchain and builds into
+``.vitepress/dist``; neither is prose this project maintains, and a match in
+either says nothing about the archive's routes.
+"""
+
 
 def _files() -> list[Path]:
     """Every Markdown and Python file the check covers."""
     found: list[Path] = []
     for directory in SEARCHED:
         for suffix in ("*.md", "*.py"):
-            found.extend(sorted((ROOT / directory).rglob(suffix)))
+            found.extend(
+                path
+                for path in sorted((ROOT / directory).rglob(suffix))
+                if not any(part in SKIPPED for part in path.parts)
+            )
     return found
 
 
@@ -67,16 +100,18 @@ def test_nothing_sends_a_reader_to_a_route_that_moved() -> None:
     }
 
     assert not stale, (
-        f"{stale} — the admin pages live at {sorted(ROUTES)} and a reader "
-        "following the old path gets a 404"
+        f"{stale} — the pages live at {sorted(ROUTES)} and a reader "
+        "following one of these paths gets a 404"
     )
 
 
-def test_the_admin_pages_agree_on_where_they_are() -> None:
+def test_the_pages_agree_on_where_they_are() -> None:
     """The premise of the check above, so it cannot pass by naming nothing."""
     assert ROUTES == {
+        "/",
+        "/dashboard",
+        "/insights",
         "/admin/accounts",
         "/admin/embedder",
-        "/admin/insights",
-        "/admin/review",
+        "/admin/status",
     }

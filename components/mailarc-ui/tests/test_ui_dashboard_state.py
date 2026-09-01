@@ -1,0 +1,1036 @@
+"""What the dashboard reads, what it refuses to hand over, and how it prints it.
+
+Three groups of claims, and the first one is the reason this file is long.
+
+**It reads.** Every panel fills from the source §7.3 names, and one source that
+throws sets *that* panel's error while the other five keep their numbers. The
+range switch reshapes both series out of one read, because both charts and the
+"last archived" tile come from one statement (§1.3).
+
+**It says only what it may.** A panel's error string is rendered into a
+browser, so it is written by the state and never quoted from an exception — the
+drivers below raise sentences carrying the graph's endpoint and absolute
+filesystem paths, and neither reaches a var.
+
+**It prints.** Bytes, timestamps, counts and the em dash are pure functions
+over a value, tested without a graph, a registry or an event loop.
+"""
+
+import contextlib
+from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, cast
+from unittest.mock import patch
+
+import pytest
+from appkit_commons.database.entities import Base
+from appkit_commons.registry import service_registry
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from mailarc_analytics import AnalyticsReader, ArchivedDay, ArchiveTotals
+from mailarc_analytics.semantic import (
+    SemanticConfig,
+    SemanticControl,
+    SemanticSearch,
+    VectorCoverage,
+)
+from mailarc_core.database.entities import (
+    AccountStatus,
+    MailAccountEntity,
+    MailFailedMessageEntity,
+    MailSyncJobEntity,
+    SyncJobKind,
+    SyncJobState,
+)
+from mailarc_core.graph import GraphHealth
+from mailarc_core.graph.model import GraphServerMode, GraphServerStatus
+from mailarc_core.storage import PathUsage, StorageReader, StorageUsage
+from mailarc_ui.dashboard import DashboardState
+from mailarc_ui.dashboard.model import (
+    DISMISSED_MEMORY,
+    NOTIFICATION_SHOWN,
+    UNKNOWN,
+    DashboardCounts,
+    NotificationView,
+    Readout,
+    ServiceView,
+    day_label,
+    days_in,
+    dismissed_keys,
+    human_bytes,
+    last_archived_label,
+    moment_label,
+    notice_key,
+    notifications_of,
+    percent_label,
+    ratio_percent,
+    remembering,
+    services_of,
+    thousands,
+    undismissed,
+)
+
+READS = "mailarc_ui.dashboard.reads"
+
+NOW = datetime(2025, 8, 7, 23, 1, tzinfo=UTC)
+"""The moment the reference screenshot's "Last Archived" tile prints."""
+
+GIGABYTE = 1024**3
+
+
+class StubReader:
+    """The graph half of the dashboard, scripted.
+
+    Registered under :class:`AnalyticsReader` because that is the key the
+    composition root publishes under and the key the state looks up — a stub
+    behind the same key proves the lookup, which a hand-injected collaborator
+    would not.
+    """
+
+    def __init__(self) -> None:
+        self.totals_error: Exception | None = None
+        self.series_error: Exception | None = None
+        self.asked: list[int] = []
+
+    def totals(self) -> ArchiveTotals:
+        if self.totals_error is not None:
+            raise self.totals_error
+        return ArchiveTotals(
+            messages=12_400,
+            unidentified=124,
+            groups=3,
+            topics=4,
+            templates=2,
+            co_addressed=9,
+        )
+
+    def archived_per_day(self, *, days: int) -> tuple[ArchivedDay, ...]:
+        self.asked.append(days)
+        if self.series_error is not None:
+            raise self.series_error
+        last = NOW.date()
+        return tuple(
+            ArchivedDay(
+                day=(last - timedelta(days=offset)).isoformat(),
+                messages=0 if offset else 7,
+                bytes=0 if offset else 3 * GIGABYTE,
+            )
+            for offset in reversed(range(days))
+        )
+
+
+class StubSearch:
+    """Only the three members the dashboard asks a search for."""
+
+    def __init__(self) -> None:
+        self.available = True
+        self.error: Exception | None = None
+
+    def coverage(self) -> VectorCoverage:
+        if self.error is not None:
+            raise self.error
+        return VectorCoverage(
+            model="text-embedding-3-small",
+            total=12_400,
+            embedded=6_200,
+            unembeddable=0,
+        )
+
+    def index_dimension(self) -> int:
+        if self.error is not None:
+            raise self.error
+        return 1536
+
+
+class StubStorage:
+    """Three measured paths, with absolute paths on every one of them."""
+
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+
+    def usage(self) -> StorageUsage:
+        if self.error is not None:
+            raise self.error
+        return StorageUsage(
+            paths=(
+                PathUsage(
+                    label="Mailstore",
+                    path=Path("/srv/mail-archive/.state/mailstore"),
+                    used_bytes=3 * GIGABYTE,
+                    file_count=1200,
+                    total_bytes=8 * GIGABYTE,
+                    free_bytes=5 * GIGABYTE,
+                ),
+                PathUsage(
+                    label="Graph",
+                    path=Path("/srv/mail-archive/.state/falkordb"),
+                    used_bytes=GIGABYTE,
+                    file_count=4,
+                    total_bytes=8 * GIGABYTE,
+                    free_bytes=5 * GIGABYTE,
+                ),
+                PathUsage(
+                    label="Database",
+                    path=Path("/srv/mail-archive/.state/mail-archive.db"),
+                    used_bytes=GIGABYTE // 2,
+                    file_count=1,
+                    total_bytes=8 * GIGABYTE,
+                    free_bytes=5 * GIGABYTE,
+                ),
+            )
+        )
+
+
+class StubHealth:
+    """The graph server, reachable and new enough for a KNN."""
+
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+        self.reachable = True
+
+    async def status(self) -> GraphServerStatus:
+        if self.error is not None:
+            raise self.error
+        return GraphServerStatus(
+            mode=GraphServerMode.LOCAL,
+            endpoint="localhost:6379",
+            reachable=self.reachable,
+            checked_at=NOW,
+            redis_version="7.2.4",
+            falkordb_version="4.0.9",
+        )
+
+
+class Sessions:
+    """A session factory over one temporary SQLite file."""
+
+    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+        self._factory = factory
+
+    @contextlib.asynccontextmanager
+    async def __call__(self) -> AsyncIterator[AsyncSession]:
+        async with self._factory() as session:
+            yield session
+            await session.commit()
+
+
+@pytest.fixture
+def reader() -> StubReader:
+    return StubReader()
+
+
+@pytest.fixture
+def search() -> StubSearch:
+    return StubSearch()
+
+
+@pytest.fixture
+def storage() -> StubStorage:
+    return StubStorage()
+
+
+@pytest.fixture
+def health() -> StubHealth:
+    return StubHealth()
+
+
+@pytest.fixture
+def published(
+    reader: StubReader,
+    search: StubSearch,
+    storage: StubStorage,
+    health: StubHealth,
+) -> Iterator[None]:
+    """Every service the dashboard reads, left where the composition root
+    leaves it."""
+    services = service_registry()
+    saved = services.snapshot()
+    services.register_as(AnalyticsReader, cast(AnalyticsReader, reader))
+    services.register_as(SemanticSearch, cast(SemanticSearch, search))
+    services.register_as(StorageReader, cast(StorageReader, storage))
+    services.register_as(GraphHealth, cast(GraphHealth, health))
+    services.register_as(
+        SemanticControl,
+        SemanticControl(
+            current=lambda: SemanticConfig(dimension=1536),
+            reload=_never_reloads,
+            reindex=_never_reindexes,
+        ),
+    )
+    yield
+    services.restore(saved)
+
+
+async def _never_reloads() -> SemanticConfig:  # pragma: no cover - never called
+    return SemanticConfig()
+
+
+async def _never_reindexes() -> int:  # pragma: no cover - never called
+    return 0
+
+
+@pytest.fixture
+async def database(tmp_path) -> AsyncIterator[Sessions]:
+    """An archive with one broken account, one failed job and one lost message."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dashboard.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = Sessions(async_sessionmaker(engine, expire_on_commit=False))
+    async with sessions() as session:
+        broken = MailAccountEntity(
+            provider="imap",
+            display_name="Work",
+            email_address="jens@example.com",
+            status=AccountStatus.AUTH_ERROR,
+            last_error="the password was refused",
+            last_sync_at=NOW,
+        )
+        healthy = MailAccountEntity(
+            provider="gmail",
+            display_name="Private",
+            email_address="private@example.com",
+        )
+        session.add_all([broken, healthy])
+        await session.flush()
+        session.add_all(
+            [
+                MailSyncJobEntity(kind=SyncJobKind.IMPORT, state=SyncJobState.QUEUED),
+                MailSyncJobEntity(kind=SyncJobKind.IMPORT, state=SyncJobState.QUEUED),
+                MailSyncJobEntity(
+                    kind=SyncJobKind.DERIVE,
+                    state=SyncJobState.FAILED,
+                    error="the graph went away",
+                    finished_at=NOW,
+                ),
+                MailFailedMessageEntity(
+                    account_id=broken.id,
+                    provider_message_id="18f2",
+                    reason="unparseable",
+                    detail="Date: header from the year 9999",
+                    occurred_at=NOW,
+                ),
+            ]
+        )
+    with patch(f"{READS}.get_asyncdb_session", sessions):
+        yield sessions
+    await engine.dispose()
+
+
+@pytest.fixture
+def state() -> DashboardState:
+    """The dashboard as a page opens it."""
+    return DashboardState()
+
+
+async def _load(state: DashboardState) -> None:
+    """Invoke the page's ``on_load`` the way Reflex invokes a background task."""
+    await DashboardState.load.fn(state)
+
+
+async def _choose(state: DashboardState, value: str) -> None:
+    """The range switch, same reason as :func:`_load`."""
+    await DashboardState.choose_range.fn(state, value)
+
+
+def _notice(message: str, when: str = "now") -> NotificationView:
+    """One notification as the panel would have built it, key and all."""
+    return NotificationView(message=message, when=when, key=notice_key(when, message))
+
+
+def _service(rows: list[ServiceView], name: str) -> bool:
+    """Whether the named row of a checklist came back up."""
+    for one in rows:
+        if one.name == name:
+            return one.up
+    raise AssertionError(f"no service is called {name!r}")
+
+
+def _text_of(state: DashboardState) -> str:
+    """Everything the state would send to a browser, as one searchable string."""
+    return " ".join(
+        [
+            state.archived,
+            state.accounts,
+            state.queued,
+            state.running,
+            state.last_archived,
+            *(f"{one.label} {one.caption}" for one in state.health),
+            *(f"{one.label} {one.caption}" for one in state.storage),
+            *(f"{one.message} {one.when}" for one in state.notifications),
+            *(one.name for one in state.services),
+            state.archive_error,
+            state.counts_error,
+            state.series_error,
+            state.storage_error,
+            state.notifications_error,
+        ]
+    )
+
+
+@pytest.mark.usefixtures("published", "database")
+class TestOneRefresh:
+    """What ``load`` leaves behind when everything answers."""
+
+    async def test_every_panel_fills(self, state: DashboardState) -> None:
+        await _load(state)
+
+        assert state.archived == "12,400"
+        assert state.accounts == "2"
+        assert state.queued == "2"
+        assert state.running == "0"
+        assert state.last_archived != UNKNOWN
+        assert state.health, "the archive-health meters are empty"
+        assert state.storage, "the disk meters are empty"
+        assert state.services, "the services checklist is empty"
+        assert state.messages_series, "the messages chart has no points"
+        assert state.storage_series, "the storage chart has no points"
+        assert state.notifications, "an archive with three faults reports none"
+
+    async def test_no_panel_is_left_spinning(self, state: DashboardState) -> None:
+        await _load(state)
+
+        assert not state.loading_archive
+        assert not state.loading_counts
+        assert not state.loading_series
+        assert not state.loading_storage
+        assert not state.loading_notifications
+        assert not state.loading_services
+
+    async def test_nothing_reports_an_error(self, state: DashboardState) -> None:
+        await _load(state)
+
+        assert state.archive_error == ""
+        assert state.counts_error == ""
+        assert state.series_error == ""
+        assert state.storage_error == ""
+        assert state.notifications_error == ""
+
+    async def test_the_services_checklist_carries_no_endpoint(
+        self, state: DashboardState
+    ) -> None:
+        """Booleans only. A host, a port or a version is administration."""
+        await _load(state)
+
+        assert [one.name for one in state.services]
+        assert all(isinstance(one.up, bool) for one in state.services)
+        for forbidden in ("localhost", "6379", "7.2.4", "4.0.9"):
+            assert forbidden not in _text_of(state)
+
+    async def test_the_last_archived_tile_comes_from_the_series(
+        self, state: DashboardState, reader: StubReader
+    ) -> None:
+        """§1.3: one statement feeds both charts and this tile.
+
+        A graph that is down takes all three with it, and nothing reaches for a
+        second source in SQLite to fill the gap.
+        """
+        reader.series_error = ConnectionError("graph is down")
+
+        await _load(state)
+
+        assert state.last_archived == UNKNOWN
+        assert state.messages_series == []
+        assert state.storage_series == []
+        assert state.archived == "12,400"
+
+
+@pytest.mark.usefixtures("published", "database")
+class TestOneDeadPanel:
+    """A source that throws must cost its own panel and nothing else."""
+
+    async def test_a_dead_graph_leaves_the_database_counts_standing(
+        self, state: DashboardState, reader: StubReader
+    ) -> None:
+        reader.totals_error = ConnectionError("graph is down")
+
+        await _load(state)
+
+        assert state.archive_error
+        assert state.archived == UNKNOWN
+        assert state.health == []
+        assert state.accounts == "2"
+        assert state.running == "0"
+        assert state.storage, "the disk panel went down with the graph"
+
+    async def test_an_unreadable_disk_costs_only_the_disk_panel(
+        self, state: DashboardState, storage: StubStorage
+    ) -> None:
+        storage.error = OSError("the volume is gone")
+
+        await _load(state)
+
+        assert state.storage_error
+        assert state.storage == []
+        assert state.archived == "12,400"
+        assert state.notifications
+
+    async def test_a_projection_that_throws_is_caught_with_its_read(
+        self, state: DashboardState, reader: StubReader, monkeypatch
+    ) -> None:
+        """The read is not the only half that can fail.
+
+        A projection renders dates, and a ``Date:`` header is whatever a sender
+        wrote — one archived mail from the year 9999 raised ``OverflowError``
+        out of every listing at once. So the projection is inside the same
+        guard as the read, and this is what proves it.
+        """
+
+        def explode(_days: object) -> list[dict[str, Any]]:
+            raise OverflowError("date value out of range")
+
+        monkeypatch.setattr("mailarc_ui.dashboard.state.messages_points", explode)
+
+        await _load(state)
+
+        assert state.series_error
+        assert state.archived == "12,400"
+        assert state.storage
+
+
+@pytest.mark.usefixtures("published", "database")
+class TestTheRangeSwitch:
+    """One read, two series, three widths."""
+
+    async def test_it_asks_the_graph_once_for_both_charts(
+        self, state: DashboardState, reader: StubReader
+    ) -> None:
+        await _choose(state, "week")
+
+        assert reader.asked == [days_in("week")]
+        assert len(state.messages_series) == days_in("week")
+        assert len(state.storage_series) == days_in("week")
+
+    async def test_it_reshapes_both_series(
+        self, state: DashboardState, reader: StubReader
+    ) -> None:
+        await _choose(state, "week")
+        weekly = len(state.messages_series)
+
+        await _choose(state, "year")
+
+        assert state.range == "year"
+        assert len(state.messages_series) == days_in("year") != weekly
+        assert len(state.storage_series) == len(state.messages_series)
+
+    async def test_an_unknown_range_falls_back_rather_than_raising(
+        self, state: DashboardState, reader: StubReader
+    ) -> None:
+        """The value arrives over a socket; a browser is not the only caller."""
+        await _choose(state, "decade")
+
+        assert reader.asked == [days_in("month")]
+        assert state.messages_series
+
+
+@pytest.mark.usefixtures("published", "database")
+class TestNothingIsWithheld:
+    """One person owns this archive, so every panel answers in full.
+
+    The single exception is the disk paths, and it is not about who is asking:
+    the page never needed them to say how full a volume is.
+    """
+
+    async def test_the_notifications_are_read_in_full(
+        self, state: DashboardState
+    ) -> None:
+        await _load(state)
+
+        assert "jens@example.com" in _text_of(state)
+        assert "the password was refused" in _text_of(state)
+
+    async def test_the_disk_panel_carries_its_labels_ratios_and_sizes(
+        self, state: DashboardState
+    ) -> None:
+        await _load(state)
+
+        assert [one.label for one in state.storage] == [
+            "Mailstore",
+            "Graph",
+            "Database",
+        ]
+        assert all(one.percent > 0 for one in state.storage)
+        assert all(one.caption for one in state.storage)
+        assert not any(" / " in one.caption for one in state.storage), (
+            "the volume's own size is the same on all three rows; the bar and "
+            "the percentage say how full it is"
+        )
+
+    async def test_the_disk_panel_withholds_the_paths_it_measured(
+        self, state: DashboardState
+    ) -> None:
+        """The one thing this page does keep back, and the reason is §7.
+
+        A row says how much of a volume it takes, never where that volume is:
+        an absolute path is where an installation keeps somebody's mail, and
+        this page needs no sign-in to read.
+        """
+        await _load(state)
+
+        assert "/srv/mail-archive" not in _text_of(state)
+
+
+@pytest.mark.usefixtures("published", "database")
+class TestWhatAFailureIsAllowedToSay:
+    """A panel's error string is written here and never quoted.
+
+    The exceptions these reads actually raise carry the graph's host and port
+    (``ConnectionError: Error 61 connecting to 127.0.0.1:6379``) and absolute
+    filesystem paths (``PermissionError: … '/srv/mail-archive/.state/…'``) —
+    the two facts the services card's own docstring says this page must not
+    print. ``logger.exception`` still has all of it.
+    """
+
+    async def test_a_failing_graph_read_never_quotes_the_endpoint(
+        self, state: DashboardState, reader: StubReader
+    ) -> None:
+        reader.totals_error = ConnectionError(
+            "Error 61 connecting to 127.0.0.1:6379. Connection refused."
+        )
+
+        await _load(state)
+
+        assert state.archive_error
+        printed = _text_of(state)
+        for forbidden in ("6379", "127.0.0.1", "Error 61", "ConnectionError"):
+            assert forbidden not in printed
+
+    async def test_a_failing_disk_read_never_quotes_the_path(
+        self, state: DashboardState, storage: StubStorage
+    ) -> None:
+        storage.error = PermissionError(
+            13, "Permission denied", "/srv/mail-archive/.state/mailstore/ab/cd"
+        )
+
+        await _load(state)
+
+        assert state.storage_error
+        assert "/srv/mail-archive" not in _text_of(state)
+
+    async def test_a_failing_series_read_never_quotes_the_endpoint(
+        self, state: DashboardState, reader: StubReader
+    ) -> None:
+        reader.series_error = ConnectionError(
+            "Error 61 connecting to 127.0.0.1:6379. Connection refused."
+        )
+
+        await _load(state)
+
+        assert state.series_error
+        assert "6379" not in _text_of(state)
+
+    async def test_each_panel_still_says_which_read_failed(
+        self, state: DashboardState, storage: StubStorage
+    ) -> None:
+        """Sanitised is not silent. A reader has to be able to tell a quiet
+        archive from a broken one, which is what the error string is for."""
+        storage.error = OSError("the volume is gone")
+
+        await _load(state)
+
+        assert "disk" in state.storage_error.lower()
+        assert state.archive_error == ""
+
+
+@pytest.mark.usefixtures("published", "database")
+class TestTheServicesChecklistWhenSomethingIsDown:
+    """The card §1.3 promises will say *why* the graph tiles show an em dash.
+
+    ``services_of`` was written for exactly this: every argument is optional and
+    ``None`` means "could not ask", which reads as down. A read that failed has
+    to reach it as a ``None`` rather than blank the whole checklist out behind
+    an alert — the case the card exists for is the case it must still render.
+    """
+
+    async def test_a_failing_vector_read_still_renders_the_checklist(
+        self, search: StubSearch, state: DashboardState
+    ) -> None:
+        search.error = ConnectionError(
+            "Error 61 connecting to 127.0.0.1:6379. Connection refused."
+        )
+
+        await _load(state)
+
+        assert [one.name for one in state.services]
+        assert _service(state.services, "Embedder configured") is False
+        assert _service(state.services, "Vector index dimension matches") is False
+
+    async def test_an_unreachable_graph_still_lists_every_service(
+        self, search: StubSearch, health: StubHealth, state: DashboardState
+    ) -> None:
+        """The whole checklist, with the rows that could not be asked grey."""
+        search.error = ConnectionError("graph is down")
+        health.reachable = False
+
+        await _load(state)
+
+        assert len(state.services) == 5
+        assert _service(state.services, "Graph server reachable") is False
+        assert _service(state.services, "Embedder configured") is False
+
+    async def test_the_checklist_is_split_before_its_last_two_rows(
+        self, state: DashboardState
+    ) -> None:
+        """§5c: one dotted divider, before the final group. The state says
+        where the split falls so no component counts rows."""
+        await _load(state)
+
+        assert state.services_split == len(state.services) - 2
+
+    def test_an_empty_checklist_has_no_split_to_draw(self) -> None:
+        assert DashboardState().services_split == 0
+
+
+class TestHowItPrints:
+    """Pure projections: a value in, the string the reference shows out."""
+
+    @pytest.mark.parametrize(
+        ("value", "printed"),
+        [
+            (0, "0 B"),
+            (512, "512 B"),
+            (3 * 1024**3, "3.0 GB"),
+            (7_500 * 1024**2, "7.3 GB"),
+            (2 * 1024**4, "2.0 TB"),
+        ],
+    )
+    def test_bytes_read_as_a_size(self, value: int, printed: str) -> None:
+        assert human_bytes(value) == printed
+
+    def test_a_timestamp_reads_as_the_reference_prints_it(self) -> None:
+        """``Aug 7, 2025. 23:01`` — in the reader's own zone.
+
+        Built as a local wall clock and given the local offset, so the
+        assertion is about the *shape* of the string and holds in every zone
+        this runs in. What the conversion itself does is the next test.
+        """
+        moment = datetime(2025, 8, 7, 23, 1).astimezone()  # noqa: DTZ001
+
+        printed = moment_label(moment)
+
+        assert printed == "Aug 7, 2025. 23:01"
+
+    def test_a_naive_timestamp_is_read_as_the_archive_wrote_it(self) -> None:
+        """SQLite hands back naive datetimes; every stamp in this archive is UTC.
+
+        Read as local time instead, a stamp would silently move by hours.
+        """
+        assert moment_label(datetime(2025, 8, 7, 23, 1)) == moment_label(  # noqa: DTZ001
+            datetime(2025, 8, 7, 23, 1, tzinfo=UTC)
+        )
+
+    def test_a_day_reads_without_a_time(self) -> None:
+        assert day_label("2025-08-07") == "Aug 7, 2025"
+
+    @pytest.mark.parametrize(
+        "value", ["", "not-a-day", "2025-13-01", "9999-99-99", "None"]
+    )
+    def test_an_unreadable_day_is_an_em_dash(self, value: str) -> None:
+        assert day_label(value) == UNKNOWN
+
+    def test_a_missing_timestamp_is_an_em_dash(self) -> None:
+        assert moment_label(None) == UNKNOWN
+
+    def test_counts_carry_thousands_separators(self) -> None:
+        assert thousands(12_400) == "12,400"
+        assert thousands(0) == "0"
+
+    def test_a_percentage_is_whole(self) -> None:
+        assert percent_label(0.0) == "0%"
+        assert percent_label(72.4) == "72%"
+        assert percent_label(100.0) == "100%"
+
+    def test_the_range_table_is_closed(self) -> None:
+        assert days_in("week") == 7
+        assert days_in("month") == 30
+        assert days_in("year") == 365
+        assert days_in("fortnight") == days_in("month")
+
+
+class TestWhatEachPanelSaysWhenItKnowsNothing:
+    """The empty cases, which is what most of a fresh installation renders."""
+
+    def test_a_ratio_with_nothing_to_divide_by_is_nought(self) -> None:
+        """An archive that holds no messages has no coverage — not a crash."""
+        assert ratio_percent(5, 0) == 0.0
+
+    def test_a_ratio_cannot_overflow_its_track(self) -> None:
+        """Two counts read from two statements can disagree at a commit."""
+        assert ratio_percent(11, 10) == 100.0
+
+    def test_a_series_that_archived_nothing_has_no_last_day(self) -> None:
+        """A day with a nought on it is not "something was archived then"."""
+        quiet = tuple(ArchivedDay(day=f"2025-08-0{one}") for one in range(1, 4))
+
+        assert last_archived_label(quiet) == UNKNOWN
+        assert last_archived_label(()) == UNKNOWN
+
+    def test_a_service_nobody_could_ask_about_reads_as_down(self) -> None:
+        """Grey and not green: a row that stayed up because the question
+        failed would be worse than one that admits it does not know."""
+        rows = services_of(None, None, None)
+
+        assert [one.up for one in rows] == [False] * len(rows)
+        assert all(one.name for one in rows)
+
+    def test_a_worker_is_reported_missing_only_when_work_is_waiting(self) -> None:
+        """An idle worker and a missing one are indistinguishable from here.
+
+        What is observable is the symptom: jobs queued and nothing claiming
+        them. So an empty queue reads as healthy and a served one does too.
+        """
+        stalled = services_of(None, None, DashboardCounts(queued=3))
+        idle = services_of(None, None, DashboardCounts())
+        working = services_of(None, None, DashboardCounts(queued=3, running=1))
+
+        assert _service(stalled, "Sync worker running") is False
+        assert _service(idle, "Sync worker running") is True
+        assert _service(working, "Sync worker running") is True
+
+    def test_a_fault_with_no_timestamp_is_still_reported(self) -> None:
+        """An unrecorded time is not a reason to stop naming a broken mailbox."""
+        account = MailAccountEntity(
+            provider="imap",
+            display_name="Work",
+            email_address="jens@example.com",
+            status=AccountStatus.ERROR,
+            last_error=None,
+        )
+
+        listed = notifications_of([], [account], [])
+
+        assert len(listed) == 1
+        assert "jens@example.com" in listed[0].message
+        assert listed[0].when == UNKNOWN
+
+    def test_no_panel_is_left_spinning_over_an_empty_answer(self) -> None:
+        """Every flag starts true and every flag is cleared by one ``_apply``.
+
+        A read that came back with nothing is still a read that came back, and
+        a card that went on showing a placeholder over it would be claiming
+        the archive had not answered.
+        """
+        state = DashboardState()
+
+        assert state.loading_archive
+        assert state.loading_counts
+        assert state.loading_series
+        assert state.loading_storage
+        assert state.loading_notifications
+        assert state.loading_services
+
+        state._apply(Readout())
+
+        assert not state.loading_archive
+        assert not state.loading_counts
+        assert not state.loading_series
+        assert not state.loading_storage
+        assert not state.loading_notifications
+        assert not state.loading_services
+
+    def test_an_empty_notifications_panel_is_not_a_list(self) -> None:
+        """The one var the card branches on, and it says nothing about why."""
+        state = DashboardState()
+
+        assert state.has_notifications is False
+
+        state.notifications = [_notice("something")]
+
+        assert state.has_notifications is True
+
+
+class TestClosingANotification:
+    """Five on the page, a cross on each, and a memory that survives a reload.
+
+    The panel reads a pool of :data:`NOTIFICATION_LIMIT` faults and draws the
+    top :data:`NOTIFICATION_SHOWN` of them. Everything below turns on one
+    question — what is drawn is *derived* from the pool and the ledger rather
+    than stored — because that is what makes a close land immediately, a reload
+    keep it, and a fault that happened again come back.
+    """
+
+    def test_only_the_newest_few_are_drawn(self) -> None:
+        """The read is a pool; the panel is the top of it."""
+        state = DashboardState()
+        state.notifications = [_notice(f"fault {one}") for one in range(8)]
+
+        assert len(state.visible_notifications) == NOTIFICATION_SHOWN
+        assert state.visible_notifications[0].message == "fault 0"
+
+    def test_a_closed_one_goes_and_the_next_takes_its_place(self) -> None:
+        """The filter runs over the whole pool and the cut comes after it.
+
+        A cut-then-filter would leave four rows and a hole where the fifth was,
+        and a reader who cleared five would be left with an empty card over an
+        archive with three faults still in it.
+        """
+        state = DashboardState()
+        state.notifications = [_notice(f"fault {one}") for one in range(8)]
+        first = state.visible_notifications[0]
+
+        DashboardState.dismiss.fn(state, first.key)
+
+        drawn = [one.message for one in state.visible_notifications]
+        assert first.message not in drawn
+        assert len(drawn) == NOTIFICATION_SHOWN
+        assert drawn[-1] == "fault 5", "nothing moved up to fill the gap"
+
+    def test_closing_the_last_one_leaves_the_healthy_card(self) -> None:
+        """``has_notifications`` reads the drawn list, not the pool.
+
+        Over the pool it would stay true with everything closed, and the card
+        would render an empty list instead of the sentence that says nothing
+        needs attention.
+        """
+        state = DashboardState()
+        state.notifications = [_notice("the only fault")]
+
+        DashboardState.dismiss.fn(state, state.notifications[0].key)
+
+        assert state.visible_notifications == []
+        assert state.has_notifications is False
+
+    def test_a_dismissal_is_remembered_where_a_reload_will_find_it(self) -> None:
+        """The ledger is a state var backed by ``localStorage``, so what the
+        handler writes is what the next page load starts from."""
+        state = DashboardState()
+        state.notifications = [_notice("a fault")]
+
+        DashboardState.dismiss.fn(state, state.notifications[0].key)
+
+        assert state.notifications[0].key in dismissed_keys(state.dismissed)
+
+    def test_a_reloaded_page_hides_what_was_closed_before_it(self) -> None:
+        """The pool is read fresh on every load and carries the same faults;
+        only the ledger tells them apart."""
+        closed = _notice("a fault somebody closed")
+        state = DashboardState()
+        state.dismissed = closed.key
+
+        state.notifications = [closed, _notice("a fault nobody has")]
+
+        assert [one.message for one in state.visible_notifications] == [
+            "a fault nobody has"
+        ]
+
+    def test_an_empty_key_is_not_stored(self) -> None:
+        """It would match no fault and would take a slot in a bounded ledger."""
+        state = DashboardState()
+
+        DashboardState.dismiss.fn(state, "")
+
+        assert state.dismissed == ""
+
+
+class TestTheKeyADismissalIsRememberedBy:
+    """What makes a closed fault stay closed — and what makes a new one open.
+
+    The key is derived from the two strings the panel prints, so it is the
+    fault's identity rather than a row id: the same unchanged fault read again
+    is the same key, and a mailbox that fails again at a later minute is not.
+    """
+
+    def test_the_same_fault_keys_the_same_across_processes(self) -> None:
+        """``hashlib`` and not the built-in ``hash``, which Python salts per
+        process — a salted key would forget every dismissal on restart."""
+        assert notice_key("Aug 31, 2026. 17:31", "auth failed") == notice_key(
+            "Aug 31, 2026. 17:31", "auth failed"
+        )
+        assert notice_key("Aug 31, 2026. 17:31", "auth failed") == "745613f95a59a4ec", (
+            "the key changed shape; every dismissal in every browser is forgotten"
+        )
+
+    def test_a_fault_that_happened_again_is_a_different_key(self) -> None:
+        """A mailbox that failed once and was dismissed must reappear when it
+        fails again — that is a new fault, not the one somebody read."""
+        assert notice_key("Aug 31, 2026. 17:31", "auth failed") != notice_key(
+            "Sep 1, 2026. 09:02", "auth failed"
+        )
+
+    def test_two_different_faults_at_one_moment_key_apart(self) -> None:
+        """Two mailboxes failing in the same minute is ordinary, and closing
+        one of them must not close the other."""
+        assert notice_key("now", "jens@example.com failed") != notice_key(
+            "now", "work@example.com failed"
+        )
+
+    def test_the_ledger_never_stores_what_the_panel_printed(self) -> None:
+        """A digest, because the ledger is written to somebody's disk.
+
+        A notification carries a mailbox address and an error out of private
+        mail; storing the text would leave it in a browser profile long after
+        the fault was cleared.
+        """
+        key = notice_key("now", "jens@example.com — password rejected")
+
+        assert "jens@example.com" not in key
+        assert "password" not in key
+
+    def test_every_notification_a_read_produces_carries_one(self) -> None:
+        """Built where the view is, so no component can draw a row it cannot
+        close."""
+        account = MailAccountEntity(
+            provider="imap",
+            display_name="Work",
+            email_address="jens@example.com",
+            status=AccountStatus.ERROR,
+        )
+
+        listed = notifications_of([], [account], [])
+
+        assert all(one.key for one in listed)
+
+
+class TestTheDismissalLedger:
+    """One string in ``localStorage``, and the three things it has to do."""
+
+    def test_it_keeps_what_was_already_there(self) -> None:
+        assert dismissed_keys(remembering("aaa", "bbb")) == frozenset({"aaa", "bbb"})
+
+    def test_the_same_key_twice_is_stored_once(self) -> None:
+        """Closing a fault, reloading and closing it again is ordinary; each
+        one must not cost a slot in a bounded ledger."""
+        assert remembering(remembering("", "aaa"), "aaa").split() == ["aaa"]
+
+    def test_it_forgets_the_oldest_rather_than_growing_for_ever(self) -> None:
+        """An unbounded string in ``localStorage`` is a leak with a slow fuse.
+
+        What is lost is the oldest dismissal, which is the one whose fault is
+        least likely to still be in a pool of eight.
+        """
+        ledger = ""
+        for one in range(DISMISSED_MEMORY + 10):
+            ledger = remembering(ledger, f"{one:016x}")
+
+        kept = ledger.split()
+        assert len(kept) == DISMISSED_MEMORY
+        assert kept[-1] == f"{DISMISSED_MEMORY + 9:016x}"
+        assert f"{0:016x}" not in kept
+
+    def test_a_ledger_somebody_edited_is_not_a_broken_page(self) -> None:
+        """It arrives from a browser, so it is a suggestion and not a promise.
+
+        Nonsense degrades into keys that match no fault, which shows up as
+        notifications reappearing rather than as an exception on page load.
+        """
+        rows = [_notice("a fault")]
+
+        assert undismissed(rows, "not a key at all") == rows
+        assert undismissed(rows, "") == rows
+
+
+class TestWithoutAComposition:
+    """Nothing is looked up at import, so an unpublished service is a sentence."""
+
+    async def test_a_missing_reader_is_one_panel_saying_so(
+        self, state: DashboardState
+    ) -> None:
+        services = service_registry()
+        saved = services.snapshot()
+        try:
+            await _load(state)
+        finally:
+            services.restore(saved)
+
+        assert state.archive_error
+        assert state.archived == UNKNOWN

@@ -6,7 +6,7 @@
     pending change into a sentence, and every message the page can show. No
     I/O, so the warnings are checkable against a table of cases.
 ``state``
-    :class:`~mailarc_ui.embedder.state.EmbedderSettingsState`: the gate, the
+    :class:`~mailarc_ui.embedder.state.EmbedderSettingsState`: the
     write-only key, the merge read back through
     :class:`~mailarc_analytics.semantic.config.SemanticControl`, the adopt that
     makes a save take effect without a restart, and the ``embed`` job the
@@ -15,7 +15,7 @@
     The form, the key field that cannot show a key, the advice above the Save
     button, and the rebuild card under it.
 
-Its own package and its own route rather than a panel on ``/admin/insights``,
+Its own package and its own route rather than a panel on ``/insights``,
 for three reasons that all point the same way. This one *writes* configuration
 where that page reports on the archive, and a form with archive-wide
 consequences does not belong as the sixth card under five tables somebody
@@ -41,7 +41,6 @@ from mailarc_ui.embedder.model import (
     reindexed,
     EMBED_CANCEL_ASKED,
     EMBED_CANCEL_TOOK_EFFECT,
-    EMBED_NOT_ALLOWED,
     EMBED_REMEDY,
     EMBED_RUNNING,
     KEY_CLEARED,
@@ -52,7 +51,6 @@ from mailarc_ui.embedder.model import (
     NO_EMBED_JOB,
     NO_EMBEDDER_TO_RUN,
     NO_MODEL,
-    NOT_ALLOWED,
     PROVIDER_OPTIONS,
     RESET,
     SAVE_FAILED,
@@ -81,13 +79,11 @@ from mailarc_ui.embedder.state import (
 __all__ = [
     "EMBED_CANCEL_ASKED",
     "EMBED_CANCEL_TOOK_EFFECT",
-    "EMBED_NOT_ALLOWED",
     "EMBED_REMEDY",
     "EMBED_RUNNING",
     "KEY_CLEARED",
     "KEY_NOT_STORED",
     "LOAD_FAILED",
-    "NOT_ALLOWED",
     "NO_ADVICE",
     "NO_CONTROL",
     "NO_EMBEDDER_TO_RUN",

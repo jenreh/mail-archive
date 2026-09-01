@@ -63,7 +63,15 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let vendored = resolve_vendored(app);
-            let launcher = resolve_launcher();
+            let launcher = match resolve_launcher(app) {
+                Ok(launcher) => launcher,
+                Err(message) => {
+                    // The splash polls `startup_failure`, so recording the
+                    // failure here surfaces it exactly like a backend one.
+                    show_error(&handle, &message);
+                    return Ok(());
+                }
+            };
 
             // Boot the backend off-thread so the splash window paints at once.
             std::thread::spawn(move || {
@@ -154,21 +162,64 @@ fn vendored_path(
     exists(&from_repo).then_some(from_repo)
 }
 
-fn resolve_launcher() -> BackendLauncher {
-    match repo_root() {
-        Some(root) => BackendLauncher::Repo {
-            root,
-            env: if cfg!(debug_assertions) {
-                // Hot-reloads the backend and still serves one port.
-                ReflexEnv::Preview
-            } else {
-                ReflexEnv::Prod
-            },
-        },
+fn resolve_launcher(app: &tauri::App) -> Result<BackendLauncher, String> {
+    let Some(root) = repo_root() else {
         // No checkout to run from: this is where the frozen sidecar would take
         // over. Until it exists, fail loudly rather than silently doing nothing.
-        None => BackendLauncher::Sidecar,
+        return Ok(BackendLauncher::Sidecar);
+    };
+    if cfg!(debug_assertions) {
+        // Hot-reloads the backend and still serves one port. A dev run keeps
+        // its data in the checkout's `.state/`, exactly as before.
+        return Ok(BackendLauncher::Repo {
+            root,
+            env: ReflexEnv::Preview,
+            data_dir: None,
+        });
     }
+    // A production launch keeps the user's mail in the per-user application
+    // data directory, never in the checkout. Prepared here, before the backend
+    // exists to race it.
+    let data_dir = prepare_data_dir(app)?;
+    Ok(BackendLauncher::Repo {
+        root,
+        env: ReflexEnv::Prod,
+        data_dir: Some(data_dir),
+    })
+}
+
+/// Create the per-user data directory and make it private to the owner.
+///
+/// Resolves through Tauri's path resolver, so on macOS this is
+/// `~/Library/Application Support/de.rehpoehler.mailarc` — derived from the
+/// bundle identifier in `tauri.conf.json`. The archive in it is somebody's
+/// actual mail, so the permissions are set with an explicit chmod rather than
+/// a creation mode: a permissive umask, or a directory an earlier version left
+/// behind, must not leave it readable to other users.
+fn prepare_data_dir(app: &tauri::App) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve the per-user data directory: {error}"))?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "Could not create the data directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| {
+                format!(
+                    "Could not make the data directory {} private: {error}",
+                    dir.display()
+                )
+            },
+        )?;
+    }
+    Ok(dir)
 }
 
 /// Minimal stderr logger.

@@ -15,8 +15,10 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator, Mapping, Sequence
 from functools import lru_cache, partial
+from pathlib import Path
 from typing import Any
 
+from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.database.session import get_asyncdb_session
 from appkit_commons.registry import service_registry
 from pydantic import ValidationError
@@ -39,11 +41,14 @@ from mailarc_core import (
     GraphServerStatus,
     read_status_async,
 )
+from mailarc_core.database import database_path
 from mailarc_core.database.repositories import SemanticSettingsRepository
 from mailarc_core.graph.client import session as graph_session
+from mailarc_core.graph.health import GraphHealth
 from mailarc_core.mail.config import MailConfig
 from mailarc_core.mail.errors import MailAuthError
 from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY
+from mailarc_core.storage import StorageReader
 from mailarc_google import GmailSource
 from mailarc_google.source.config import GmailConfig
 from mailarc_google.source.oauth import run_consent_async
@@ -57,6 +62,7 @@ from mailarc_sync.engine import (
     ProviderRegistry,
     SyncConfig,
 )
+from mailarc_sync.erase import AccountEraser
 from mailarc_sync.jobs import SessionFactory
 
 logger = logging.getLogger(__name__)
@@ -362,6 +368,71 @@ def graph_startup_error() -> str | None:
     return graph_server().startup_error
 
 
+@lru_cache(maxsize=1)
+def graph_health() -> GraphHealth:
+    """The two questions the status page asks, behind one object.
+
+    A façade over the pair this module already holds — the configuration a
+    fresh snapshot is read over, and the handle that knows why a start failed.
+    Cached like the other handles: it owns nothing, but it is one decision and
+    two objects would be two answers to "which server is being reported on".
+    """
+    return GraphHealth(graph_config(), graph_server())
+
+
+def publish_graph_health() -> GraphHealth:
+    """Leave the façade where the status page can find it.
+
+    Same route and same reason as :func:`publish_archive_reader`, down to the
+    second call being a no-op. This is the one that let a Reflex state leave
+    ``app/``: ``GraphStatusState`` used to import :func:`graph_status` and
+    :func:`graph_startup_error` from this module by name, which is a component
+    importing the application.
+    """
+    services = service_registry()
+    health = graph_health()
+    if services.has(GraphHealth) and services.get(GraphHealth) is health:
+        return health
+    services.register_as(GraphHealth, health)
+    return health
+
+
+@lru_cache(maxsize=1)
+def storage_reader() -> StorageReader:
+    """What the archive occupies on disk, over the paths it actually uses.
+
+    Built here because this is the only module that can name all three: the
+    mailstore belongs to ``mailarc_core.archive``, the graph's data directory
+    to ``mailarc_core.graph`` and the database file to appkit. The reader
+    itself deliberately knows none of that — it measures whatever it is handed,
+    in the order it is handed, and the labels are what a panel prints.
+
+    A database configured in memory contributes no path at all rather than a
+    zero: ``sqlite+aiosqlite:///:memory:`` is what the test profile uses, and a
+    row reading "Database — 0 bytes" would describe a file that does not exist.
+    """
+    paths: dict[str, Path] = {
+        "Mailstore": archive_config().store_dir,
+        "Graph": graph_config().data_dir,
+    }
+    if (database := database_path(str(_registered(DatabaseConfig).url))) is not None:
+        paths["Database"] = database
+    return StorageReader(paths)
+
+
+def publish_storage_reader() -> StorageReader:
+    """Leave the reader where the dashboard's disk panel can find it.
+
+    Same route and same reason as :func:`publish_graph_health`.
+    """
+    services = service_registry()
+    reader = storage_reader()
+    if services.has(StorageReader) and services.get(StorageReader) is reader:
+        return reader
+    services.register_as(StorageReader, reader)
+    return reader
+
+
 @contextlib.asynccontextmanager
 async def graph_server_lifespan() -> AsyncIterator[None]:
     """ASGI lifespan hook: own the graph server for as long as the app runs.
@@ -465,7 +536,7 @@ def archive_reader() -> ArchiveReader:
     """The read side of the archive, wired to this installation's stores.
 
     The same pair the worker writes with — the configured graph and the blob
-    store under ``archive.store_dir`` — so what the review page lists is what
+    store under ``archive.store_dir`` — so what the search page lists is what
     the import wrote. Cached like the other handles: it holds no connection,
     but it is one decision and two objects would be two answers to "where is
     the archive".
@@ -477,7 +548,7 @@ def archive_reader() -> ArchiveReader:
 
 
 def publish_archive_reader() -> ArchiveReader:
-    """Leave the reader where the review page can find it.
+    """Leave the reader where the search page can find it.
 
     Same route and same reason as :func:`publish_provider_registry`:
     ``mailarc-ui`` may not import ``app``, and this is the one module allowed
@@ -545,7 +616,7 @@ def semantic_search() -> SemanticSearch:
     """Both search paths, on the graph the import wrote to.
 
     The same graph as :func:`archive_reader` and :func:`analytics_reader`, for
-    the same reason: a search result is a list of messages the review page is
+    the same reason: a search result is a list of messages the reading pane is
     expected to be able to open, and a second graph would make that a broken
     link rather than a visible mistake.
 
@@ -617,6 +688,39 @@ def publish_semantic_control() -> SemanticControl:
     )
     services.register_as(SemanticControl, control)
     return control
+
+
+@lru_cache(maxsize=1)
+def account_eraser() -> AccountEraser:
+    """The clear-out side of an import, wired to this installation's stores.
+
+    The same pair the worker writes with — the configured graph and the
+    application's database — because clearing a mailbox has to reach exactly
+    what importing it wrote, and a second answer to "which graph" would empty
+    the wrong one.
+
+    Cached like the other handles: it holds no connection, only the two
+    factories that open one.
+    """
+    return AccountEraser(
+        graph_session=partial(graph_session, graph_config()),
+        database_session=get_asyncdb_session,
+    )
+
+
+def publish_account_eraser() -> AccountEraser:
+    """Leave the eraser where the accounts page can find it.
+
+    Same route and same reason as :func:`publish_archive_reader`, down to the
+    second call being a no-op: ``mailarc-ui`` may not import ``app``, and this
+    is the one module allowed to build a component from configuration.
+    """
+    services = service_registry()
+    eraser = account_eraser()
+    if services.has(AccountEraser) and services.get(AccountEraser) is eraser:
+        return eraser
+    services.register_as(AccountEraser, eraser)
+    return eraser
 
 
 def publish_provider_registry() -> ProviderRegistry:

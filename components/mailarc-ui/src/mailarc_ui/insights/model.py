@@ -16,12 +16,6 @@ The projections are named ``…View`` rather than ``…Row`` for one reason:
 A reader looking at two neighbouring lines should not have to work out which
 package a ``TopicRow`` came from.
 
-The last two — :class:`HitView` and :class:`Found` — belong to the search
-panel rather than to an analysis, and are here for the same reason as the
-rest: what a hit *says* is decided without a graph. In particular
-:func:`found_summary` is where a listing of twenty rows is stopped from
-claiming to be a count of the archive.
-
 The sentinels in the middle — :data:`NO_TOTALS` and the three beside it — are
 what keeps ``None`` out of every component. "Nothing has been read yet" is an
 empty view carrying the same fields rather than an absence each of five panels
@@ -45,7 +39,6 @@ from mailarc_analytics import (
     TopicRow,
     TopicSignal,
 )
-from mailarc_analytics.semantic import SearchHit, SearchKind, SearchResult
 from mailarc_sync.jobs import JobState, SyncJob
 from mailarc_ui.imports import percent_of
 
@@ -78,14 +71,6 @@ twenty do. The count of what was left out is shown beside it.
 
 _NO_PERCENT = "—"
 """Stands in while a rebuild has not reported a stage yet."""
-
-NO_SUBJECT = "(no subject)"
-"""What a result row says instead of an empty cell.
-
-A mail with no ``Subject`` is ordinary — automated notifications send them by
-the thousand — and a blank cell in a list of subjects reads as a rendering
-fault rather than as the message it is.
-"""
 
 _STATE_COLORS = {
     JobState.QUEUED: "gray",
@@ -627,121 +612,3 @@ class Readout(BaseModel):
     sent: list[TemplateView] = []
     received: list[TemplateView] = []
     templates_error: str = ""
-
-
-class HitView(BaseModel):
-    """One message a search found, as a result row prints it.
-
-    No body and no bytes, for the reason
-    :class:`~mailarc_analytics.semantic.model.SearchHit` carries none: a
-    listing of twenty subjects that dragged twenty bodies through the socket
-    would move megabytes to render four columns, and the review page is one
-    click away with the original.
-
-    ``score`` is deliberately two fields. The bar takes ``0..100`` and the
-    label prints the number the search actually produced, because the two
-    paths measure different things — a relevance ranked within one full-text
-    answer, a cosine similarity against one query vector — and a bar alone
-    would invite a reader to compare the two.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    message_id: str = ""
-    """The canonical id: what the review page, the MCP tools and every other
-    read in this project key a message on."""
-
-    subject: str = NO_SUBJECT
-    sender: str = ""
-    when: str = ""
-    score: float = 0.0
-    score_label: str = "0.00"
-
-    @classmethod
-    def from_hit(cls, hit: SearchHit) -> HitView:
-        return cls(
-            message_id=hit.message_id,
-            subject=hit.subject or NO_SUBJECT,
-            sender=hit.sender,
-            when=short_date(hit.sent_at),
-            score=round(100.0 * hit.score, 1),
-            score_label=f"{hit.score:.2f}",
-        )
-
-
-class Found(BaseModel):
-    """What one search came back with, before any of it is a state var.
-
-    The same shape and the same reason as :class:`Readout`: a search is read
-    off the state lock and applied under it in one step, so a panel can never
-    show the hits of one query beside the sentence of another.
-
-    ``error`` carries its own colour rather than being red by definition.
-    "The graph did not answer" and "no embedder is configured" are both
-    reasons there are no rows, and only the first is a fault — colouring the
-    second red would tell a user with a perfectly healthy archive that
-    something broke, when what they are reading is a setting they have not
-    set.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    hits: list[HitView] = []
-    summary: str = ""
-    """What the rows above amount to, in one line. Written here rather than in
-    the component for the reason :attr:`AgreementView.disputes_note` is: a
-    Reflex component cannot interpolate a var into a sentence."""
-
-    notice: str = ""
-    """How much of the archive the search could see — empty unless something
-    is missing. Straight off
-    :attr:`~mailarc_analytics.semantic.model.SearchResult.notice`, because a
-    KNN over a half-embedded archive answers short and looks complete."""
-
-    error: str = ""
-    error_color: str = "red"
-
-    @classmethod
-    def from_result(cls, result: SearchResult, *, asked: str, limit: int) -> Found:
-        hits = [HitView.from_hit(one) for one in result.hits]
-        return cls(
-            hits=hits,
-            summary=found_summary(
-                len(hits), asked=asked, limit=limit, kind=result.kind
-            ),
-            notice=result.notice,
-        )
-
-    @classmethod
-    def failed(cls, message: str, *, color: str = "red") -> Found:
-        """No rows, and the sentence that says why — never an empty listing.
-
-        The whole point of the phase's rule, at the last place it can still be
-        broken: a caller that turned an unavailable search into ``Found()``
-        would render "nothing matched", which is a claim about the archive
-        rather than about the configuration.
-        """
-        return cls(error=message, error_color=color)
-
-
-def found_summary(count: int, *, asked: str, limit: int, kind: SearchKind) -> str:
-    """The line under a result table, held to what the search actually proved.
-
-    A full result set is the case that needs care. A search asks for *limit*
-    rows and the store obliges, so a page that read "37 messages match" off a
-    listing of twenty would be inventing a total nobody counted — and a
-    listing that came back *short* of the limit really is everything there is.
-    The two are worded differently for that reason alone.
-
-    The order is named because the two paths rank on different things and
-    neither ranking is obvious from the numbers: full text ranks by relevance
-    within this one answer, a KNN by distance from the query's vector.
-    """
-    order = "closest first" if kind is SearchKind.SEMANTIC else "best match first"
-    if count <= 0:
-        return f"Nothing in the archive matches “{asked}”."
-    if count >= limit:
-        return (
-            f"The {count} strongest matches for “{asked}”, {order} — there may be more."
-        )
-    return f"{_plural(count, 'message')} for “{asked}”, {order}."

@@ -16,9 +16,9 @@ app:
   database:
     type: sqlite
     # appkit_commons hands this ONE url to both the sync and the async engine.
-    # The application only ever opens async sessions (every appkit_user state
-    # does), so it has to name an async driver. The sync-only consumers —
-    # Alembic and Reflex's db_url — convert it back with
+    # The application only ever opens async sessions (every page state and
+    # the job queue do), so it has to name an async driver. The sync-only
+    # consumers — Alembic and Reflex's db_url — convert it back with
     # mailarc_core.database.sqlite.sync_database_url().
     url: sqlite+aiosqlite:///.state/mail-archive.db
     encryption_key: secret:mn-db-encryption-key
@@ -90,20 +90,3 @@ app:
     client_secret: secret:mn-m365-client-secret
     delta_folder: allitems
     default_tenant: common
-
-  authentication:
-    session_timeout: 25 # minutes
-    auth_token_refresh_delta: 10 # minutes
-    server_url: https://localhost
-    server_port: 8080
-
-    #oauth_providers:
-    # - provider: "github"
-    #   client_id: secret:mn-oauth-github-client-id
-    #   client_secret: secret:mn-oauth-github-client-secret
-    #   redirect_url: http://localhost:8080/oauth/github/callback
-    # - provider: "azure"
-    #   client_id: secret:avui-oauth-azure-client-id
-    #   client_secret: secret:avui-oauth-azure-client-secret
-    #   tenant_id: secret:avui-oauth-azure-tenant-id
-    #   redirect_url: http://localhost:8080/oauth/azure/callback

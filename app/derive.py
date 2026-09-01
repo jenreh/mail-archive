@@ -28,7 +28,7 @@ what the worker logs about the same work, not on a stdout only one of the two
 callers has.
 
 Two lines and every one of :class:`~mailarc_analytics.DerivedCounts`'s fourteen
-counts in them, each behind a phrase that names it. ``/admin/insights`` enqueues
+counts in them, each behind a phrase that names it. ``/insights`` enqueues
 a ``derive`` job and follows the row, but a row reports stages and not buckets —
 so these two lines stay the only place the fourteen counts are written down, and
 a run that read a tenth of the archive, or dropped a bucket, has to be

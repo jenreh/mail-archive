@@ -117,6 +117,7 @@ from mailarc_analytics.queries.statements.embedding import (
 )
 from mailarc_analytics.queries.statements.reads import (
     ACCOUNT_ADDRESSES,
+    ARCHIVED_PER_DAY,
     COUNT_MESSAGES,
     COUNT_UNIDENTIFIED,
     MESSAGE_BODIES,
@@ -168,6 +169,7 @@ CATALOG: Mapping[str, Statement] = MappingProxyType(
         "COUNT_UNIDENTIFIED": COUNT_UNIDENTIFIED,
         "COUNT_MESSAGES": COUNT_MESSAGES,
         "MESSAGE_BODIES": MESSAGE_BODIES,
+        "ARCHIVED_PER_DAY": ARCHIVED_PER_DAY,
         "DELETE_GROUPS": DELETE_GROUPS,
         "DELETE_TOPICS": DELETE_TOPICS,
         "DELETE_TEMPLATES": DELETE_TEMPLATES,
@@ -222,6 +224,7 @@ appearance of completeness.
 
 __all__ = [
     "ACCOUNT_ADDRESSES",
+    "ARCHIVED_PER_DAY",
     "CATALOG",
     "CLEAR_EMBEDDINGS",
     "COUNT_CO_ADDRESSED",

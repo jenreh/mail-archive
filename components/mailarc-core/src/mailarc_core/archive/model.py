@@ -225,6 +225,38 @@ class Account(Node, labels=["Account"]):
     address: str | None = Field(default=None, index=True)
     provider: MailProvider | None = Field(default=None)
 
+    copies: Any = Relation(
+        relationship="ARCHIVED_FROM",
+        direction="INCOMING",
+        target="Message",
+        edge_model="ArchivedFrom",
+    )
+    """The messages archived from this mailbox — ``Message.archived_from``, read
+    from the other end.
+
+    Declared here so that a statement can be **rooted at the account**, which
+    is not a matter of taste: runic emits a predicate naming a traversed
+    variable *after* the whole pipeline, so ``a.id = $account`` on a traversal
+    of ``Message.archived_from`` lands behind the ``DELETE`` it was meant to
+    narrow. Rooted at the account it is a root predicate and lands where a
+    reader would put it. :mod:`mailarc_core.archive.purge` is the one caller,
+    and the shape it needs is checked at import time.
+
+    Nothing writes this edge from this side. The writer creates one
+    ``ARCHIVED_FROM`` per copy through :attr:`Message.archived_from`, and this
+    declaration only lets a query walk the same edge backwards — the way
+    :attr:`Address.co_addressed` is declared on a ground-truth node and written
+    by another package.
+
+    Annotated ``Any`` for the reason :attr:`Message.replies_to` is, and it is
+    the same landmine: ``Message`` is declared *below* this class, so runic —
+    which resolves annotations while the class body runs — would abort the
+    whole resolution pass on a forward reference and silently strip the
+    converters off every other field on the node. ``target`` carries the real
+    type as a string, which runic resolves through its registry after both
+    classes exist.
+    """
+
 
 class HasAttachment(Edge, type="HAS_ATTACHMENT"):
     """What *this* message called the attachment and how it carried it."""

@@ -27,6 +27,7 @@ moments.
 """
 
 import logging
+from datetime import UTC, date, datetime, timedelta
 
 from runic.ogm import Session
 
@@ -34,6 +35,7 @@ from mailarc_analytics.derived.model import TemplateDirection
 from mailarc_analytics.queries import catalog
 from mailarc_analytics.queries.catalog import Statement
 from mailarc_analytics.queries.model import (
+    ArchivedDay,
     ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
@@ -87,7 +89,7 @@ archive's worth of pairs in memory.
 class AnalyticsReader:
     """The derived layer as a page needs it.
 
-    Five listings, six counts and one verdict.
+    Six listings, six counts and one verdict.
 
     Read-only, unlike its counterpart in ``mailarc-core``. Nothing here writes,
     because everything it reads is written by ``rebuild-derived`` and a report
@@ -232,6 +234,68 @@ class AnalyticsReader:
             for row in rows
         )
 
+    def archived_per_day(self, *, days: int) -> tuple[ArchivedDay, ...]:
+        """How the archive grew over the last *days* days, one row per day.
+
+        Exactly *days* rows, oldest first, ending on today — a chart's x-axis
+        is a calendar and not a list of the days something happened. The
+        statement answers only about days that have copies on them, so the two
+        things this method does to its answer are the two things a calendar
+        needs: **cut to the window** and **fill the gaps with zeros**. A hole
+        in a series reads as missing data, which is the opposite of what a
+        quiet week means.
+
+        **The window is measured in UTC days**, and it is the archive's own
+        clock rather than a choice made here.
+        :class:`~mailarc_core.archive.writer.MessageArchiver` stamps
+        ``datetime.now(UTC)`` on every ``ARCHIVED_FROM`` edge whose source did
+        not carry a time, and nothing in this repository carries one — a sync
+        run always archives in the present — so every stored stamp is UTC and
+        :data:`~mailarc_analytics.queries.catalog.ARCHIVED_PER_DAY` cuts a UTC
+        date out of it. Anchoring the window on a local *today* would leave the
+        newest column short or empty for anybody east of Greenwich, for as long
+        as their day was ahead of the archive's.
+
+        *days* goes through :func:`_limit`, and the clamped number is the
+        window. **The row ceiling is deliberately wider than it**, which is the
+        one place these two numbers must not be the same. The statement orders
+        by day descending and stops at its ceiling, and not every row it can
+        return belongs to a day inside the window: ``archived_at`` is a wall
+        clock somebody else set, so a restored backup or a machine that ran
+        ahead leaves day-rows *after* today, and those are returned first. Bound
+        to the window itself, the ceiling was then spent on days nobody asked
+        for and the oldest real ones were gap-filled as zeros — a chart saying
+        the archive took nothing in on days it was taking mail in.
+        :func:`_ceiling` is the room that leaves. It cannot buy room above
+        ``MAX_ROWS``, where the window has already been clamped to the same
+        number, and it does not need to: a window that wide is longer than any
+        clock skew worth modelling.
+
+        A day key that does not parse costs that one day and nothing else,
+        the way :func:`~mailarc_analytics.queries.rows.as_datetime` treats an
+        unreadable timestamp: ``left()`` cuts ten characters off whatever the
+        property holds, so a stamp written by something other than the writer
+        comes back as a key no calendar has — and a report that died over one
+        of them would lose the whole chart.
+        """
+        window = _limit(days)
+        with self._graph_session() as graph:
+            rows = rows_of(graph, catalog.ARCHIVED_PER_DAY, {"limit": _ceiling(window)})
+        counted = {
+            found: ArchivedDay(
+                day=found.isoformat(),
+                messages=as_int(row["messages"]),
+                bytes=as_int(row["bytes"]),
+            )
+            for row in rows
+            if (found := _as_day(row["day"])) is not None
+        }
+        last = _today()
+        return tuple(
+            counted.get(one, ArchivedDay(day=one.isoformat()))
+            for one in _span(last - timedelta(days=window - 1), last)
+        )
+
     def templates(
         self, direction: TemplateDirection, *, limit: int = REPORT_LIMIT
     ) -> tuple[TemplateRow, ...]:
@@ -309,6 +373,38 @@ def _count(session: Session, statement: Statement) -> int:
     return as_int(rows[0]["total"]) if rows else 0
 
 
+def _today() -> date:
+    """The day the archiving window ends on, in UTC.
+
+    A function rather than a ``datetime.now(UTC).date()`` spelled into
+    :meth:`AnalyticsReader.archived_per_day`, so the boundary has a name and a
+    place to say *which* today it means. It is also the seam the window's tests
+    pin: a test that read the clock the same way the reader does would agree
+    with it by construction, and fail once a year at midnight.
+    """
+    return datetime.now(UTC).date()
+
+
+def _as_day(value: object) -> date | None:
+    """One ``YYYY-MM-DD`` key as a date, or ``None`` if it is not one.
+
+    ``left(r.archived_at, 10)`` cuts ten characters off whatever the property
+    holds and never fails, so an edge stamped by something other than
+    :class:`~mailarc_core.archive.writer.MessageArchiver` comes back here as a
+    key no calendar has. One day loses its numbers; the chart keeps its shape.
+    """
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        logger.warning("Ignoring unparseable archiving day %r", value)
+        return None
+
+
+def _span(first: date, last: date) -> tuple[date, ...]:
+    """Every day from *first* to *last*, both ends included."""
+    return tuple(first + timedelta(days=one) for one in range((last - first).days + 1))
+
+
 def _limit(value: int) -> int:
     """A row ceiling the statements can actually be bound to.
 
@@ -329,3 +425,20 @@ def _limit(value: int) -> int:
     dicts, in a thread, beside an in-process FalkorDB. A report is a report.
     """
     return min(max(1, value), MAX_ROWS)
+
+
+def _ceiling(window: int) -> int:
+    """How many day-rows :meth:`AnalyticsReader.archived_per_day` reads.
+
+    Wider than the window it is filling, because the statement's ``ORDER BY day
+    DESC`` puts every day-row stamped **after** today in front of the ones the
+    window wants. ``archived_at`` is a wall clock somebody else set — a restored
+    backup, a machine that ran ahead — so those rows exist, and a ceiling equal
+    to the window is spent on them before the real days are reached.
+
+    Twice the window, which tolerates as many skewed days as the chart is wide,
+    and never above ``MAX_ROWS``: the window has already been clamped there, and
+    a year's window with a year of clock skew behind it is not a case worth
+    reading five thousand rows for.
+    """
+    return min(window * 2, MAX_ROWS)

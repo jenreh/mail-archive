@@ -1,7 +1,7 @@
 [project]
 name = "mailarc-ui"
 version = "1.0.0"
-description = "Mail archive UI: the Reflex states and components behind the pages"
+description = "Mail archive UI: the whole interface — pages, shell, states and components"
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }
@@ -13,9 +13,9 @@ dependencies = [
     "mailarc-core",
     "mailarc-sync",
     "mailarc-analytics",
-    "reflex>=0.9.5",
-    "appkit-mantine>=1.10.2",
-    "appkit-user>=1.10.2",
+    "reflex==0.9.10",
+    "appkit-mantine>=1.14.0",
+    "appkit-ui>=1.14.0",
 ]
 
 [build-system]

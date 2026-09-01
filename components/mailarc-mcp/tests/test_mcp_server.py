@@ -49,6 +49,7 @@ from mailarc_analytics.queries.model import (
 from mailarc_analytics.queries.reports import REPORT_LIMIT
 from mailarc_analytics.semantic import (
     MAX_HITS,
+    NO_EMBEDDER,
     SearchHit,
     SearchKind,
     SearchRequest,
@@ -176,14 +177,14 @@ class StubArchive(ArchiveReader):
             graph_session=_never,
             blobs=BlobStore(ArchiveConfig(store_dir=store or Path("/dev/null/never"))),
         )
-        self._summaries = list(summaries)
+        self._canned = list(summaries)
         self.asked: list[tuple[int, int]] = []
 
     def list_messages(
         self, *, limit: int = 50, offset: int = 0
     ) -> list[MessageSummary]:
         self.asked.append((limit, offset))
-        return self._summaries[offset : offset + limit]
+        return self._canned[offset : offset + limit]
 
 
 class StubSearch(SemanticSearch):
@@ -423,9 +424,9 @@ async def test_semantic_search_without_an_embedder_is_an_error_not_a_blank() -> 
     assert answer.is_error is True
     assert answer.data is None
     message = failure_text(answer)
-    assert "no embedder is configured" in message
-    assert "app_semantic_provider" in message
-    assert "Full-text search" in message
+    assert message.strip().endswith(NO_EMBEDDER), (
+        "a model should read the component's own sentence, not a paraphrase"
+    )
 
 
 async def test_a_search_limit_is_clamped_rather_than_refused() -> None:

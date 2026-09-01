@@ -88,6 +88,56 @@ address, one `Attachment` node per file content (twenty messages carrying the
 same PDF share one node, and the filename hangs on the edge, because senders
 rename things).
 
+## Clearing a mailbox
+
+**Clear** on the accounts page deletes everything a mailbox has imported and
+leaves the mailbox itself alone. It is the way to import an account again from
+the beginning — after a provider was set up wrongly, after a folder filter
+changed, or when the archive for that account is simply not what you wanted.
+
+It is not **Delete**. The mailbox keeps its name, its address and the
+credential that opens it, and it stays in the list; only its mail goes. Press
+**Import** afterwards and the full walk starts from nothing, because clearing
+also forgets the two things that would otherwise make a second import a no-op:
+
+* the ledger of provider ids this account has already archived — the table the
+  import subtracts from every listing batch *before* it fetches anything, so an
+  archive emptied without it re-imports nothing at all and reports success;
+* the sync checkpoints, both the full walk's page token and the incremental
+  watermark.
+
+The dialog asks first, and it names the mailbox it is about to empty.
+
+### Mail two mailboxes hold stays
+
+The section above says the same mail arriving through two of your accounts is
+one `Message` node with two `ARCHIVED_FROM` edges. Clearing one of those
+accounts takes its edge and **not** the message: the other account's copy is
+still mail you have, and it stays readable with its sender and its
+attachments. The count that comes back after a clear-out says how many such
+messages stayed, and it is worth reading — a mailbox that reports several
+thousand and clears three is a mailbox where something else is wrong.
+
+### What is not deleted
+
+`Address` nodes survive, which is what keeps "always show pictures from this
+sender" alive across a re-import — that decision is about the address, not
+about which mailbox the mail arrived in. The original bytes stay in the blob
+store as well: it is content-addressed and write-once, so a re-imported message
+finds its own blob already there, and proving that no other message references
+the same bytes is not something worth getting wrong.
+
+The derived layer (groups, topics, templates) is disposable by construction:
+whatever hung off a deleted message goes with it, and the next **Rebuild** on
+the insights page recomputes the rest.
+
+### While an import is running
+
+Clearing is refused while a job is running *or queued* against that mailbox,
+and the page says so. A queued import starts the moment a worker frees up,
+which mid clear-out would leave a graph and a ledger that disagree. Let it
+finish, or cancel it, then clear.
+
 ## When a message is skipped
 
 Some messages will not parse — broken MIME, a truncated multipart, a 404 from
@@ -128,12 +178,14 @@ twice.
 
 ## Looking at what arrived
 
-**Review** in the navigation (`/admin/review`) lists the archive the way a mail
-client would: sender and date on the first line, subject and a paperclip on the
-second, two lines of preview under them, newest first. Under the preview sit
-the labels the provider filed the message under — your own labels in blue,
-folders in teal, the provider's housekeeping (Inbox, Updates, Unread) in grey
-and last. Pick a message and the right half shows it in two tabs:
+**Search** — the page the window opens on, at `/` — is where you look at what
+arrived. Opened with no question in it, it lists the whole archive newest
+first, which is what you want right after an import; filling in a sender, a
+recipient, a date range or the words in a message narrows that list. Under a
+row's preview sit the labels the provider filed the message under — your own
+labels in blue, folders in teal, the provider's housekeeping (Inbox, Updates,
+Unread) in grey and last. Pick a message and the reading pane beside the list
+shows it in two tabs:
 
 - **Message** — the way a mail client renders it: subject, From / To / Cc /
   Date, the attached files with their sizes, and the body. An HTML mail keeps
@@ -154,22 +206,25 @@ A few things are on purpose:
   decision on the sender's address in the graph, so every later message from
   that exact address opens with its pictures. Scripts stay blocked either
   way — trust extends to being seen, never to being run.
-- The list brings in a hundred messages at a time; **Load more** at the bottom
-  appends the next hundred. The count in the header says how far you are.
+- The list brings in a page of messages at a time; **Load more** at the bottom
+  appends the next one. The count above the list says how far you are.
 - A very large source is cut after the first 256 KB, with a note. The rest is
   still on disk; the viewer just declines to render a PDF as base64.
 - A message archived without a stored original — or whose blob has since
   gone missing — says so instead of erroring.
 
-Like the accounts page, the review is **admin-only**: the archive is every
-mailbox of the installation.
+The page reads **every mailbox of the installation** at once, and nothing in
+the application narrows that. There is no sign-in and no per-mailbox
+permission: this is a desktop archive, and the boundary is whoever can open the
+window — the same boundary as the files on disk. Do not run it where that is
+not what you want.
 
 ## Checking what the analyses made of it
 
-**Insights** in the navigation (`/admin/insights`) is the other half: the review
-page shows what the import wrote, this one shows what was *derived* from it —
-who gets addressed together, which of those groups recur, what the mail is
-about, and which of it is written by a machine.
+**Insights** in the rail (`/insights`) is the other half: the search page shows
+what the import wrote, this one shows what was *derived* from it — who gets
+addressed together, which of those groups recur, what the mail is about, and
+which of it is written by a machine.
 
 Nothing is derived until you ask. **Rebuild** queues the work as a job and the
 bar under it climbs in stages, so the page stays usable while a large archive is
@@ -204,8 +259,9 @@ fact read out of a header while the others are a suggestion — and templates
 split into what you send and what you receive, since only the mail you write
 yourself can be automated.
 
-Admin-only, like the review page, and for a stronger reason: a co-recipient
-listing says who writes to whom across every mailbox in the installation.
+The same caveat applies here more sharply than anywhere else: a co-recipient
+listing says who writes to whom across every mailbox in the installation, and
+nothing gates it.
 
 ## Job kinds
 

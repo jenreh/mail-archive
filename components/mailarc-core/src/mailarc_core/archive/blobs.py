@@ -62,6 +62,11 @@ class BlobStore:
             return digest
 
         path.parent.mkdir(parents=True, exist_ok=True)
+        # The store root holds the original bytes of somebody's actual mail —
+        # private data. An explicit chmod rather than a mkdir mode, so a
+        # permissive umask cannot leave it listable by other users; with the
+        # root closed, the fan-out below it is unreachable however it was made.
+        self._root.chmod(0o700)
         _write_atomically(path, data)
         logger.debug("Stored blob %s (%d bytes)", path.name, len(data))
         return digest

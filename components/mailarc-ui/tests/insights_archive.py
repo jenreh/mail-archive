@@ -3,12 +3,11 @@
 A shared module rather than a ``conftest``: what is below belongs to the three
 insights test files and to no others, and a ``conftest`` in this directory
 would put a ``graph`` and a ``published`` in scope for the accounts, import and
-review tests that have their own idea of what an archive is.
+search tests that have their own idea of what an archive is.
 ``mailarc-analytics`` does the same with its ``planted_graph``.
 
-``FakeGraph``, ``FakeUser`` and ``signed_in_as`` are the parts the search tests
-borrow: a fake session that answers by statement, and the one seam that lets a
-gate be tested without a running Reflex app.
+``FakeGraph`` is the part the search tests borrow: a fake session that answers
+by statement.
 
 The reader under it is the real :class:`AnalyticsReader`. Only the session is
 a fake, and it answers by the catalogue constant it was asked for — so a test
@@ -61,8 +60,8 @@ class FakeGraph:
 
     Keyed by the catalogue constant itself, so a test that plants rows for
     ``TOP_CO_ADDRESSED`` also proves the reader ran that statement and not
-    another. Doubles as its own session factory, the way the review tests'
-    fake does.
+    another. Doubles as its own session factory, the way the reading pane's
+    own fake does.
     """
 
     def __init__(self) -> None:
@@ -224,32 +223,6 @@ def fresh(graph: FakeGraph) -> FakeGraph:
     ):
         graph.count(statement, 0)
     return graph
-
-
-class FakeUser:
-    """Just the one attribute the gate reads off a signed-in user."""
-
-    def __init__(self, is_admin: bool) -> None:
-        self.is_admin = is_admin
-
-
-def signed_in_as(
-    state: Any, user: FakeUser | None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Say who is asking, for a state that has no Reflex app under it.
-
-    ``AnalyticsInsightsState._may_read`` goes through ``_current_user``, which
-    goes through ``self.get_state(UserSession)`` — and ``get_state`` needs an
-    ``EventContext`` context variable that only a running Reflex app sets, so a
-    unit test cannot reach it. ``_current_user`` exists as its own method for
-    exactly this: it is the one line that needs the app, and everything the
-    authorisation actually decides sits above it and can be tested.
-    """
-
-    async def current(_self: object) -> FakeUser | None:
-        return user
-
-    monkeypatch.setattr(type(state), "_current_user", current)
 
 
 @pytest.fixture

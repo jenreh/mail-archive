@@ -68,16 +68,66 @@ So the built `.app` is self-contained *with respect to its runtimes*, and not
 yet with respect to its own source. Moving it to a machine without this
 repository will not work.
 
+## Where it keeps your mail
+
+A release launch runs the code out of this checkout but keeps **no data** in
+it. Before the backend exists to race it, the Tauri shell creates the per-user
+application data directory and points the backend at it:
+
+```text
+~/Library/Application Support/de.rehpoehler.mailarc/
+├── mail-archive.db      mailboxes, credentials, jobs, checkpoints
+├── mailstore/           the original bytes — this is the archive
+└── falkordb/            the graph's data
+```
+
+The path comes from the bundle identifier in `tauri.conf.json`
+(`de.rehpoehler.mailarc`) through Tauri's own path resolver, so it moves with
+the identifier and nothing else has to know it.
+
+The directory is then `chmod`-ed to `0700` — an explicit chmod rather than a
+creation mode, because a permissive umask, or a directory an earlier version
+left behind, must not leave somebody's mail readable to every account on the
+Mac. The database file's directory, the blob store's root and the graph's data
+directory each do the same again on the Python side, so every level is private
+whichever of the two created it.
+
+The three settings arrive as environment variables, and the first one is the
+trap worth remembering:
+
+| Variable | Value |
+| --- | --- |
+| `app_database_url_override` | `sqlite+aiosqlite:///<dir>/mail-archive.db` |
+| `app_archive_store_dir` | `<dir>/mailstore` |
+| `app_graph_data_dir` | `<dir>/falkordb` |
+
+It is **`app_database_url_override`**, not `app_database_url`.
+`DatabaseConfig.url` is a computed field over a stored override, so the obvious
+name is accepted and silently ignored — which puts the app straight back on
+`config.yaml`'s `.state/mail-archive.db`.
+
+`task tauri:dev`, `task run` and every other development run set none of the
+three and keep their data in the checkout's `.state/`, unchanged. The built app
+and the checkout therefore never share an archive, which is the point — and
+also why mail you imported while developing is not in the bundled app.
+
+One directory either way: quit the app and copy it, and you have copied the
+archive. See [backup and restore](../developer/operations.md#backup-and-restore)
+for what in it is genuinely irreplaceable.
+
 ## What runs when you launch it
 
 1. The Tauri shell starts.
-2. It launches the Reflex backend through the vendored `uv`, with
+2. It prepares the per-user data directory above — release builds only; a debug
+   run leaves the backend on `.state/`.
+3. It launches the Reflex backend through the vendored `uv`, with
    `PROFILES=prod` — a single port, 8080, because Reflex refuses to start in
    production mode when the frontend and backend ports differ.
-3. The application's ASGI lifespan starts the vendored FalkorDB from
-   `src-tauri/resources/falkordb`, pointed at `.state/falkordb`.
-4. The same lifespan starts the import worker as a child process.
-5. The window loads the frontend.
+4. The application's ASGI lifespan starts the vendored FalkorDB from
+   `src-tauri/resources/falkordb`, pointed at the `falkordb/` directory inside
+   whichever data directory step 2 settled on.
+5. The same lifespan starts the import worker as a child process.
+6. The window loads the frontend on the search page.
 
 If FalkorDB is already serving on the port, the app **adopts** it rather than
 starting a competitor — and on shutdown it leaves an adopted server running,

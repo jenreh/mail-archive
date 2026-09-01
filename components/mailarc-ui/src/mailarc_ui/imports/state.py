@@ -109,11 +109,20 @@ class ImportJobState(rx.State):
     polling: bool = False
     poll_interval: int = 2
 
-    _watched: list[int] = []
-    """The ids this panel started, newest first — the queue answers by id."""
+    _watched: dict[int, list[int]] = {}
+    """Per mailbox, the ids this panel follows, newest first.
+
+    Keyed by account because an import is a mailbox's, not the archive's: two
+    can be open at once, and the panel shows the history of the mailbox it is
+    pointed at rather than of whichever one ran last.
+    """
 
     @rx.var
     def can_start(self) -> bool:
+        """``job`` is the selected mailbox's job — see :meth:`select_account`.
+
+        Which is what keeps a mailbox startable while another one imports.
+        """
         return self.account_id > 0 and not self.job.active
 
     @rx.var
@@ -129,43 +138,64 @@ class ImportJobState(rx.State):
         return len(self.recent) > 0
 
     @rx.event
-    def select_account(self, account_id: int) -> None:
-        """Point the panel at an account; the page decides which one."""
+    async def select_account(self, account_id: int) -> EventCallback[()] | None:
+        """Point the panel at an account; the page decides which one.
+
+        The id is the smaller half. ``job`` drives both buttons, so a job left
+        standing from the mailbox before this one would disable a start this
+        mailbox is entitled to — it is dropped here and looked up again for
+        the account now on screen.
+        """
         self.account_id = account_id
         self.message = ""
+        self.job_id = 0
+        self.job = _IDLE
+        await self._adopt_open_import()
+        await self._sync()
+        return self._follow()
 
     @rx.event
-    async def refresh(self) -> None:
-        """Read the watched jobs back once, for a page that is not polling."""
+    async def refresh(self) -> EventCallback[()] | None:
+        """Read the watched jobs back once — the page's ``on_load``.
+
+        And pick an import back up if this mailbox is running one, so a reload
+        finds the job it forgot instead of offering to queue a second.
+        """
+        await self._adopt_open_import()
         await self._sync()
+        return self._follow()
 
     @rx.event
     async def start_import(self) -> EventCallback[()] | None:
-        """Queue an import for the selected account and start following it."""
+        """Queue an import for the selected account and start following it.
+
+        One import per mailbox, not one per archive: a mailbox that is idle
+        can be queued while another one is still importing, and the worker
+        takes them in turn.
+        """
         if self.account_id <= 0:
             self.message = "Choose an account first."
             return None
         # A panel that has not polled for a while must not refuse a new import
-        # over a job that ended while nobody was looking.
+        # over a job that ended while nobody was looking — nor add a second one
+        # over a job this panel never saw being queued.
+        await self._adopt_open_import()
         await self._sync()
         if self.job.active:
-            self.message = "An import is already running."
+            self.message = "An import is already running for this mailbox."
             return None
         self.starting = True
         try:
             self.job_id = await self._queue().enqueue(JobKind.IMPORT, self.account_id)
         finally:
             self.starting = False
-        self._watched = [self.job_id, *self._watched][:_RECENT_LIMIT]
+        self._watch(self.job_id)
         self.message = ""
         await self._sync()
         logger.info(
             "Started import job %d for account %d", self.job_id, self.account_id
         )
-        if self.polling:
-            return None
-        self.polling = True
-        return ImportJobState.poll
+        return self._follow()
 
     @rx.event
     async def cancel_import(self) -> None:
@@ -203,7 +233,7 @@ class ImportJobState(rx.State):
                 if not self.polling or self.job_id <= 0:
                     self.polling = False
                     return
-                watched = list(self._watched)
+                watched = self._watched_ids()
             try:
                 rows = await self._read(watched)
             except Exception:
@@ -219,6 +249,51 @@ class ImportJobState(rx.State):
                         self.polling = False
                         return
             await asyncio.sleep(self.poll_interval)
+
+    def _follow(self) -> EventCallback[()] | None:
+        """Start the poll, unless one is running or there is nothing to watch."""
+        if self.polling or not self.job.active:
+            return None
+        self.polling = True
+        return ImportJobState.poll
+
+    async def _adopt_open_import(self) -> None:
+        """Follow the import this mailbox is already running, whoever queued it.
+
+        ``job_id`` is per page and starts at zero, so "is this mailbox already
+        importing?" cannot be answered from this state alone: a second tab, or
+        the same tab after a reload, knows about no job and would queue its own
+        over one that is running.
+
+        A queue that cannot answer is not a reason to refuse: the enqueue right
+        after would fail too, and that path already has the message for it.
+        """
+        if self.account_id <= 0:
+            return
+        try:
+            open_job = await self._queue().find_open(JobKind.IMPORT, self.account_id)
+        except Exception:
+            logger.exception("Could not ask the queue for an open import")
+            return
+        if open_job is None:
+            return
+        self.job_id = open_job.id
+        self._watch(open_job.id)
+        logger.info(
+            "Following import job %d for account %d", open_job.id, self.account_id
+        )
+
+    def _watch(self, job_id: int) -> None:
+        """Put a job at the front of its mailbox's history, once."""
+        kept = [watched for watched in self._watched_ids() if watched != job_id]
+        self._watched = {
+            **self._watched,
+            self.account_id: [job_id, *kept][:_RECENT_LIMIT],
+        }
+
+    def _watched_ids(self) -> list[int]:
+        """The ids this panel follows for the mailbox that is on screen."""
+        return list(self._watched.get(self.account_id, []))
 
     def _queue(self) -> JobQueue:
         """Built per call, never at import.
@@ -249,7 +324,7 @@ class ImportJobState(rx.State):
 
     async def _sync(self) -> None:
         """One read, applied — for every handler that is not the poll loop."""
-        self._apply(await self._read(list(self._watched)))
+        self._apply(await self._read(self._watched_ids()))
 
 
 def percent_of(progress: JobProgress) -> float:

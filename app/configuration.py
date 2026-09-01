@@ -7,7 +7,6 @@ from appkit_commons.configuration.configuration import (
     Configuration,
 )
 from appkit_commons.registry import service_registry
-from appkit_user.configuration import AuthenticationConfiguration
 from pydantic import Field
 
 from mailarc_analytics import AnalyticsConfig
@@ -24,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 class AppConfig(ApplicationConfig):
-    authentication: AuthenticationConfiguration
     graph: GraphConfig = Field(default_factory=GraphConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)

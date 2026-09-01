@@ -14,7 +14,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Callable, Iterator
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -41,8 +41,48 @@ from mailarc_core.mail.model import (
 )
 from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY, MailSourceFactory
 from mailarc_sync.engine import FAKE_DESCRIPTOR, FakeMailSource, ProviderRegistry
-from mailarc_ui.accounts.components import accounts_panel
-from mailarc_ui.accounts.state import MailAccountState, provider_registry
+from mailarc_sync.erase import AccountBusy, AccountEraser, EraseCounts
+from mailarc_ui.accounts.components import (
+    account_detail,
+    account_settings,
+    accounts_list,
+    add_account_form,
+)
+from mailarc_ui.accounts.state import (
+    EMAIL_FIELD,
+    HALF_A_CREDENTIAL,
+    NOT_AN_ADDRESS,
+    PICK_A_PROVIDER,
+    PROVIDER_FIELD,
+    MailAccountState,
+    account_eraser,
+    provider_registry,
+)
+from mailarc_ui.imports import ImportJobState
+from mailarc_ui.kit import REQUIRED
+
+
+def _props(node: Any, found: list[str] | None = None) -> list[str]:
+    """Every rendered prop in a tree, both branches of a cond walked.
+
+    The same helper ``test_ui_search_form`` uses, for the same reason: a
+    ``disabled`` that follows a state var is a prop somewhere in a nested
+    render, and reading the source cannot tell a live one from a dead branch.
+    """
+    found = [] if found is None else found
+    if isinstance(node, list):
+        for one in node:
+            _props(one, found)
+        return found
+    if not isinstance(node, dict):
+        return found
+    found.extend(one for one in node.get("props", []) if isinstance(one, str))
+    _props(node.get("children", []), found)
+    for branch in ("true_value", "false_value"):
+        if (subtree := node.get(branch)) is not None:
+            _props(subtree, found)
+    return found
+
 
 STATE_MODULE = "mailarc_ui.accounts.state"
 
@@ -127,6 +167,37 @@ class SessionSpy:
                 raise
 
 
+class StubEraser:
+    """Stands in for the eraser the composition root publishes.
+
+    Registered under :class:`AccountEraser` because that is the key the page
+    reads, and it is a stand-in rather than a real one for the same reason the
+    provider factory here is: what the eraser *does* is proved in
+    ``mailarc-sync`` against real stores. What this file proves is the page —
+    that the confirmation gates it, that the counts become a sentence, and that
+    a mailbox in use is reported as busy rather than as broken.
+    """
+
+    def __init__(self) -> None:
+        self.counts = EraseCounts(messages=12, archived_rows=12, checkpoints=1)
+        self.error: Exception | None = None
+        self.cleared: list[int] = []
+
+    async def erase(self, account_id: int, **_: object) -> EraseCounts:
+        self.cleared.append(account_id)
+        if self.error is not None:
+            raise self.error
+        return self.counts
+
+
+@pytest.fixture
+def eraser(registered: StubFactory) -> StubEraser:
+    """A published eraser, on top of whatever ``registered`` put there."""
+    stub = StubEraser()
+    service_registry().register_as(AccountEraser, cast(AccountEraser, stub))
+    return stub
+
+
 @pytest.fixture
 def registered() -> Iterator[StubFactory]:
     """A registry with two providers, and the encryption key the column needs."""
@@ -162,6 +233,7 @@ async def sessions(tmp_path) -> AsyncIterator[SessionSpy]:
 
 @pytest.fixture
 def state() -> MailAccountState:
+    """The page as it is driven."""
     return MailAccountState()
 
 
@@ -192,9 +264,16 @@ async def _run_consent(state: MailAccountState, account_id: int) -> None:
         patch.object(MailAccountState, "__aenter__", AsyncMock()),
         patch.object(MailAccountState, "__aexit__", AsyncMock(return_value=False)),
     ):
-        await MailAccountState.start_consent.fn(  # ty: ignore[unresolved-attribute]
-            state, account_id
-        )
+        await MailAccountState.start_consent.fn(state, account_id)
+
+
+async def _run_clear(state: MailAccountState) -> None:
+    """Drive the clear-out handler without Reflex's state lock."""
+    with (
+        patch.object(MailAccountState, "__aenter__", AsyncMock()),
+        patch.object(MailAccountState, "__aexit__", AsyncMock(return_value=False)),
+    ):
+        await MailAccountState.clear_account.fn(state)
 
 
 class TestTheGeneratedForm:
@@ -314,9 +393,16 @@ class TestCreateAccount:
             "note": "",
         }
 
-    async def test_shows_the_new_account_and_empties_the_form(
+    async def test_shows_the_new_account_and_opens_it_for_editing(
         self, state, registered, sessions
     ) -> None:
+        """Adding is never the last step, so the form becomes that mailbox's own.
+
+        It used to empty instead. That was right while the page was one column
+        of cards and the form was only ever an *add* form; now the same form
+        edits the mailbox that is open, and emptying it would leave the new
+        mailbox showing blank fields it would then save.
+        """
         await _filled(state)
 
         await state.create_account()
@@ -325,30 +411,36 @@ class TestCreateAccount:
         assert state.accounts[0].display_name == "Work"
         assert state.accounts[0].status == AccountStatus.IDLE
         assert state.has_accounts is True
-        assert state.email_address == ""
+        assert state.selected_id == state.accounts[0].id
+        assert state.email_address == "jens@example.com"
+        assert state.display_name == "Work"
+        assert state.replacing_credentials is False
         assert state._typed == {}
 
-    async def test_a_missing_required_field_lands_in_error(
+    async def test_a_missing_required_field_lands_under_that_field(
         self, state, registered, sessions
     ) -> None:
+        """Under the box, not over the form — see ``kit.validation``."""
         await _filled(state)
         state.set_credential("password", "  ")
 
         await state.create_account()
 
-        assert state.error == "Password is required."
+        assert state.errors["password"] == REQUIRED
+        assert state.error == ""
         assert await _accounts(sessions) == []
 
-    async def test_an_unpicked_provider_lands_in_error(
+    async def test_an_unpicked_provider_lands_under_the_provider_field(
         self, state, registered, sessions
     ) -> None:
         state.set_email_address("jens@example.com")
 
         await state.create_account()
 
-        assert state.error == "Pick a provider first."
+        assert state.errors[PROVIDER_FIELD] == PICK_A_PROVIDER
+        assert await _accounts(sessions) == []
 
-    async def test_a_missing_address_lands_in_error(
+    async def test_a_missing_address_lands_under_the_address_field(
         self, state, registered, sessions
     ) -> None:
         state.select_provider(MailProvider.IMAP.value)
@@ -357,7 +449,8 @@ class TestCreateAccount:
 
         await state.create_account()
 
-        assert state.error == "An email address is required."
+        assert state.errors[EMAIL_FIELD] == REQUIRED
+        assert await _accounts(sessions) == []
 
     async def test_the_database_saying_no_lands_in_error_too(
         self, state, registered, sessions
@@ -531,13 +624,485 @@ class TestTheRegistrySeam:
             services.restore(saved)
 
 
+class TestSelection:
+    """The detail column shows one mailbox, and the id is what says which."""
+
+    async def test_nothing_is_selected_before_a_click(self, state) -> None:
+        assert state.has_selection is False
+        assert state.selected.id == 0
+        assert state.selected.email_address == ""
+
+    async def test_selecting_a_mailbox_opens_it(
+        self, state, registered, sessions
+    ) -> None:
+        await _filled(state)
+        await state.create_account()
+        opened = state.accounts[0]
+
+        state.select(opened.id)
+
+        assert state.has_selection is True
+        assert state.selected.email_address == "jens@example.com"
+
+    async def test_the_new_mailbox_is_the_open_one(
+        self, state, registered, sessions
+    ) -> None:
+        """Adding is never the last step — connecting and importing follow."""
+        await _filled(state)
+
+        await state.create_account()
+
+        assert state.selected_id == state.accounts[0].id
+        assert state.selected.display_name == "Work"
+
+    async def test_the_reading_follows_the_account_not_a_copy(
+        self, state, registered, sessions
+    ) -> None:
+        """`selected` is derived, so a status change reaches the open mailbox."""
+        await _filled(state)
+        await state.create_account()
+        account_id = state.selected_id
+        registered.error = MailAuthError("the mailbox refused us")
+
+        await _run_consent(state, account_id)
+        await state.load()
+
+        assert state.selected.status == AccountStatus.AUTH_ERROR
+        assert state.selected.status_color == "red"
+        assert "refused" in state.selected.last_error
+
+    async def test_asking_for_a_new_one_clears_the_selection(
+        self, state, registered, sessions
+    ) -> None:
+        await _filled(state)
+        await state.create_account()
+
+        state.start_new()
+
+        assert state.has_selection is False
+        assert state.email_address == ""
+        assert state.display_name == ""
+
+    async def test_deleting_the_open_mailbox_puts_the_form_back(
+        self, state, registered, sessions
+    ) -> None:
+        await _filled(state)
+        await state.create_account()
+        account_id = state.selected_id
+
+        await state.delete_account(account_id)
+
+        assert state.has_selection is False
+        assert state.accounts == []
+
+    async def test_deleting_another_mailbox_leaves_the_open_one_open(
+        self, state, registered, sessions
+    ) -> None:
+        await _filled(state)
+        await state.create_account()
+        kept = state.selected_id
+        await _filled(state)
+        state.set_email_address("second@example.com")
+        await state.create_account()
+        dropped = state.selected_id
+        state.select(kept)
+
+        await state.delete_account(dropped)
+
+        assert state.selected_id == kept
+        assert state.selected.email_address == "jens@example.com"
+
+    async def test_the_count_is_spelled_for_one_and_for_many(
+        self, state, registered, sessions
+    ) -> None:
+        assert state.count_label == "0 mailboxes"
+        await _filled(state)
+        await state.create_account()
+
+        assert state.count_label == "1 mailbox"
+
+
+class TestClearingAMailbox:
+    """The page's half of the clear-out: a gate, a sentence, and a refusal.
+
+    Clearing is the one action here that destroys mail, and it sits next to
+    Delete, which looks the same and means something else. So what is tested is
+    mostly the difference between them.
+    """
+
+    async def _open_mailbox(self, state, sessions) -> int:
+        await _filled(state)
+        await state.create_account()
+        return state.selected_id
+
+    async def test_the_button_only_opens_the_confirmation(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """Nothing is deleted by the click that asks."""
+        await self._open_mailbox(state, sessions)
+
+        state.ask_clear()
+
+        assert state.confirming_clear is True
+        assert eraser.cleared == []
+
+    async def test_cancelling_deletes_nothing(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        await self._open_mailbox(state, sessions)
+        state.ask_clear()
+
+        state.cancel_clear()
+
+        assert state.confirming_clear is False
+        assert eraser.cleared == []
+
+    async def test_confirming_clears_the_open_mailbox(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        account_id = await self._open_mailbox(state, sessions)
+        state.ask_clear()
+
+        await _run_clear(state)
+
+        assert eraser.cleared == [account_id]
+        assert state.confirming_clear is False
+        assert state.clearing is False
+
+    async def test_the_mailbox_is_still_there_afterwards(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """The difference from Delete, in one assertion."""
+        account_id = await self._open_mailbox(state, sessions)
+
+        await _run_clear(state)
+
+        assert [row.id for row in state.accounts] == [account_id]
+        assert state.selected_id == account_id
+        assert len(await _accounts(sessions)) == 1
+
+    async def test_the_count_becomes_the_confirmation(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """A clear-out has nothing else to show for itself — the list is
+        unchanged and the mailbox looks exactly as it did."""
+        await self._open_mailbox(state, sessions)
+
+        await _run_clear(state)
+
+        assert state.cleared == "Cleared 12 messages."
+        assert state.error == ""
+
+    async def test_a_shared_copy_is_mentioned_only_when_there_is_one(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """Mail two mailboxes hold stays in the archive, and that is surprising."""
+        await self._open_mailbox(state, sessions)
+        eraser.counts = EraseCounts(messages=3, copies=2)
+
+        await _run_clear(state)
+
+        assert state.cleared == (
+            "Cleared 3 messages. 2 messages stay in the archive under another mailbox."
+        )
+
+    async def test_a_mailbox_with_nothing_imported_says_so(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        await self._open_mailbox(state, sessions)
+        eraser.counts = EraseCounts()
+
+        await _run_clear(state)
+
+        assert state.cleared == "There was nothing imported to clear."
+
+    async def test_one_message_is_not_spelled_as_several(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        await self._open_mailbox(state, sessions)
+        eraser.counts = EraseCounts(messages=1, copies=1)
+
+        await _run_clear(state)
+
+        assert state.cleared == (
+            "Cleared 1 message. 1 message stays in the archive under another mailbox."
+        )
+
+    async def test_a_busy_mailbox_is_reported_as_busy(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """The one failure a person fixes by waiting."""
+        await self._open_mailbox(state, sessions)
+        eraser.error = AccountBusy("An import is still running for this mailbox")
+
+        await _run_clear(state)
+
+        assert state.error == "An import is still running for this mailbox"
+        assert state.cleared == ""
+        assert state.clearing is False
+
+    async def test_a_failure_lands_in_error_and_releases_the_page(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        await self._open_mailbox(state, sessions)
+        eraser.error = ConnectionError("the graph is not answering")
+
+        await _run_clear(state)
+
+        assert state.error == "the graph is not answering"
+        assert state.clearing is False
+
+    async def test_confirming_with_nothing_open_does_nothing(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """There is no mailbox to name, so there is nothing to clear."""
+        await _run_clear(state)
+
+        assert eraser.cleared == []
+        assert state.clearing is False
+
+    async def test_opening_another_mailbox_drops_the_last_notice(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """A count belongs to the mailbox it was counted for."""
+        await self._open_mailbox(state, sessions)
+        await _run_clear(state)
+
+        state.select(0)
+
+        assert state.cleared == ""
+
+    async def test_the_dialog_can_close_itself_but_never_open_itself(
+        self, state, registered, eraser, sessions
+    ) -> None:
+        """``on_open_change`` reports both directions; only one is obeyed.
+
+        A handler that could open a destructive confirmation from a stray
+        event would put it on screen without anybody asking for it.
+        """
+        await self._open_mailbox(state, sessions)
+
+        state.set_confirming_clear(True)
+        assert state.confirming_clear is False
+
+        state.ask_clear()
+        state.set_confirming_clear(False)
+        assert state.confirming_clear is False
+
+
+class TestTheEraserSeam:
+    def test_says_what_is_missing_when_nobody_registered_one(self) -> None:
+        services = service_registry()
+        saved = services.snapshot()
+        services.clear()
+        try:
+            with pytest.raises(RuntimeError, match=r"app\.composition"):
+                account_eraser()
+        finally:
+            services.restore(saved)
+
+
+class TestEditingAMailbox:
+    """The detail column writes back: name, address, and a retyped secret."""
+
+    @staticmethod
+    async def _added(state: MailAccountState) -> int:
+        await _filled(state)
+        await state.create_account()
+        return state.selected_id
+
+    async def test_opening_a_mailbox_fills_the_form_with_its_values(
+        self, state, registered, sessions
+    ) -> None:
+        account_id = await self._added(state)
+        state.start_new()
+
+        state.select(account_id)
+
+        assert state.email_address == "jens@example.com"
+        assert state.display_name == "Work"
+        assert state.provider == MailProvider.IMAP.value
+        assert [field.name for field in state.credential_fields] == [
+            "host",
+            "password",
+            "note",
+        ]
+
+    async def test_opening_a_mailbox_closes_the_credential_fields(
+        self, state, registered, sessions
+    ) -> None:
+        """A stored secret is never shown, so replacing one is asked for."""
+        account_id = await self._added(state)
+        state.replace_credentials()
+
+        state.select(account_id)
+
+        assert state.replacing_credentials is False
+
+    async def test_saving_writes_the_new_name_and_address(
+        self, state, registered, sessions
+    ) -> None:
+        await self._added(state)
+        state.set_display_name("Work archive")
+        state.set_email_address("jens.rehpoehler@example.com")
+
+        await state.save_account()
+
+        accounts = await _accounts(sessions)
+        assert accounts[0].display_name == "Work archive"
+        assert accounts[0].email_address == "jens.rehpoehler@example.com"
+        assert state.selected.email_address == "jens.rehpoehler@example.com"
+        assert state.error == ""
+
+    async def test_saving_without_retyping_keeps_the_stored_secret(
+        self, state, registered, sessions
+    ) -> None:
+        """The form cannot read a secret back, so an untouched box changes none."""
+        await self._added(state)
+        before = (await _credentials(sessions))[0].secret
+        state.set_display_name("Renamed")
+
+        await state.save_account()
+
+        credentials = await _credentials(sessions)
+        assert len(credentials) == 1
+        assert credentials[0].secret == before
+
+    async def test_retyping_replaces_the_secret_in_place(
+        self, state, registered, sessions
+    ) -> None:
+        await self._added(state)
+        state.replace_credentials()
+        state.set_credential("host", "imap.other.example")
+        state.set_credential("password", "new-app-password")
+
+        await state.save_account()
+
+        credentials = await _credentials(sessions)
+        assert len(credentials) == 1
+        assert json.loads(credentials[0].secret) == {
+            "host": "imap.other.example",
+            "password": "new-app-password",
+            "note": "",
+        }
+
+    async def test_half_a_retyped_credential_is_refused(
+        self, state, registered, sessions
+    ) -> None:
+        """Typing into one field commits to all of them: half a secret opens nothing."""
+        await self._added(state)
+        before = (await _credentials(sessions))[0].secret
+        state.replace_credentials()
+        state.set_credential("host", "imap.other.example")
+
+        await state.save_account()
+
+        assert state.errors["password"] == HALF_A_CREDENTIAL
+        assert (await _credentials(sessions))[0].secret == before
+
+    async def test_an_empty_address_is_refused(
+        self, state, registered, sessions
+    ) -> None:
+        await self._added(state)
+        state.set_email_address("   ")
+
+        await state.save_account()
+
+        assert state.errors[EMAIL_FIELD] == REQUIRED
+        assert (await _accounts(sessions))[0].email_address == "jens@example.com"
+
+    async def test_a_mailbox_without_a_name_is_called_by_its_address(
+        self, state, registered, sessions
+    ) -> None:
+        await self._added(state)
+        state.set_display_name("  ")
+
+        await state.save_account()
+
+        assert (await _accounts(sessions))[0].display_name == "jens@example.com"
+
+    async def test_saving_with_nothing_open_says_so(
+        self, state, registered, sessions
+    ) -> None:
+        state.set_email_address("jens@example.com")
+
+        await state.save_account()
+
+        assert "No mailbox is open" in state.error
+
+    async def test_a_provider_this_process_never_registered_still_opens(
+        self, state, registered, sessions
+    ) -> None:
+        """The list shows such a mailbox, so the form beside it must render."""
+        async with sessions() as session:
+            account = MailAccountEntity(
+                provider="something-else",
+                display_name="Imported elsewhere",
+                email_address="old@example.com",
+            )
+            session.add(account)
+            await session.flush()
+            account_id = account.id
+        await state.load()
+
+        state.select(account_id)
+
+        assert state.credential_fields == []
+        assert state.email_address == "old@example.com"
+
+
 class TestComponents:
-    def test_the_panel_compiles(self) -> None:
+    def test_the_list_compiles(self) -> None:
+        """Rendering is the only way to catch a prop appkit_mantine lacks."""
+        rendered = str(accounts_list().render())
+
+        assert "mail_account_state.select" in rendered
+        assert "mail_account_state.start_new" in rendered
+
+    def test_a_click_carries_the_pages_own_handler_too(self) -> None:
+        """The import panel is pointed at the mailbox by the same click.
+
+        Both handlers on one click is the whole seam: without the second, the
+        import panel keeps acting on whatever was selected before.
+        """
+        rendered = str(accounts_list(on_select=ImportJobState.select_account).render())
+
+        assert "mail_account_state.select" in rendered
+        assert "import_job_state.select_account" in rendered
+
+    def test_the_form_compiles(self) -> None:
         """The generated form is a `rx.foreach`; a broken binding fails here."""
-        rendered = str(accounts_panel().render())
+        rendered = str(add_account_form().render())
 
         assert "set_credential" in rendered
+
+    def test_the_detail_column_offers_all_three_actions(self) -> None:
+        rendered = str(account_detail().render())
+
         assert "start_consent" in rendered
+        assert "ask_clear" in rendered
+        assert "delete_account" in rendered
+
+    def test_the_detail_column_edits_the_open_mailbox(self) -> None:
+        """The form writes back, and the credential boxes have to be asked for."""
+        rendered = str(account_settings().render())
+
+        assert "save_account" in rendered
+        assert "replace_credentials" in rendered
+        assert "set_email_address" in rendered
+        assert "set_display_name" in rendered
+
+    def test_clearing_goes_through_a_confirmation(self) -> None:
+        """The button asks; only the dialog's action clears.
+
+        Rendering is the only way to catch this: a ``Clear`` wired straight to
+        ``clear_account`` would look identical in the source of the page.
+        """
+        rendered = str(account_detail().render())
+
+        assert "clear_account" in rendered
+        assert "cancel_clear" in rendered
+        assert "Clear this mailbox?" in rendered
 
 
 class TestTheConsentStep:
@@ -821,3 +1386,160 @@ class TestTheIdentityCheck:
 
         assert (await _accounts(sessions))[0].status == AccountStatus.IDLE
         assert state.error == ""
+
+
+class TestWhatMakesTheFormValid:
+    """The rules, checked where the values are — the shape is ``kit.validation``.
+
+    Every one of these is a message that appears while somebody types, which
+    is the reason the complaint is held in state rather than raised at save
+    time: a form that stays silent until Save and then reports four things at
+    once is a form people submit twice.
+    """
+
+    async def test_an_address_with_no_at_sign_is_refused(self, state) -> None:
+        state.set_email_address("jens.example.com")
+
+        assert state.errors[EMAIL_FIELD] == NOT_AN_ADDRESS
+        assert state.has_errors is True
+
+    async def test_an_address_with_nothing_before_the_at_sign_is_refused(
+        self, state
+    ) -> None:
+        state.set_email_address("@example.com")
+
+        assert state.errors[EMAIL_FIELD] == NOT_AN_ADDRESS
+
+    async def test_a_plausible_address_is_left_alone(self, state) -> None:
+        """Deliberately shallow — the archive is not an address validator, and
+        anything stricter would reject addresses that exist."""
+        state.set_email_address("jens+archive@sub.example.co.uk")
+
+        assert state.errors == {}
+        assert state.has_errors is False
+
+    async def test_fixing_an_address_takes_the_complaint_back(self, state) -> None:
+        state.set_email_address("nope")
+
+        state.set_email_address("jens@example.com")
+
+        assert state.errors == {}
+
+    async def test_a_name_has_no_rule(self, state) -> None:
+        """A mailbox with no name is called by its address."""
+        state.set_email_address("jens@example.com")
+        state.set_display_name("")
+
+        assert state.errors == {}
+
+    async def test_typing_one_credential_makes_the_others_required(
+        self, state, registered
+    ) -> None:
+        """Half a secret opens nothing, so touching one box commits to all."""
+        state.select_provider(MailProvider.IMAP.value)
+
+        state.set_credential("host", "imap.example.com")
+
+        assert state.errors["password"] == HALF_A_CREDENTIAL
+
+    async def test_untouched_credential_boxes_are_not_required(
+        self, state, registered
+    ) -> None:
+        """An empty box means *keep what is stored* — see ``_update``."""
+        state.select_provider(MailProvider.IMAP.value)
+
+        assert state.errors == {}
+        assert state.has_errors is False
+
+    async def test_filling_the_last_box_clears_the_first_ones_complaint(
+        self, state, registered
+    ) -> None:
+        state.select_provider(MailProvider.IMAP.value)
+        state.set_credential("host", "imap.example.com")
+
+        state.set_credential("password", TYPED_PASSWORD)
+
+        assert state.errors == {}
+
+    async def test_opening_another_mailbox_forgets_the_complaints(
+        self, state, registered, sessions
+    ) -> None:
+        """Otherwise the message about the mailbox somebody was looking at a
+        moment ago stays on screen against the values of the next one."""
+        await _filled(state)
+        await state.create_account()
+        state.set_email_address("nope")
+
+        state.select(state.selected_id)
+
+        assert state.errors == {}
+
+    async def test_choosing_a_provider_again_forgets_them_too(
+        self, state, registered
+    ) -> None:
+        """The complaints belonged to fields the descriptor has just rebuilt,
+        so they are about boxes that are not on the page any more."""
+        state.select_provider(MailProvider.IMAP.value)
+        state.set_credential("host", "imap.example.com")
+        assert state.has_errors is True
+
+        state.select_provider(MailProvider.IMAP.value)
+
+        assert state.errors == {}
+
+    async def test_a_form_wrong_in_two_places_says_both(
+        self, state, registered, sessions
+    ) -> None:
+        """Every rule runs rather than the first failing one: a person who
+        fixes one thing and is then told about the next has been made to
+        submit twice to learn what was always on screen."""
+        state.select_provider(MailProvider.IMAP.value)
+
+        await state.create_account()
+
+        assert state.errors[EMAIL_FIELD] == REQUIRED
+        assert state.errors["host"] == REQUIRED
+        assert await _accounts(sessions) == []
+
+
+class TestTheWriteButtonsStayPressable:
+    """A press is how a person asks what is still wrong.
+
+    Read off the render, because the bug this covers is invisible to a state
+    test: ``create_account`` reports every problem at once when it is *called*,
+    and the button was disabled the moment the first one appeared — so the form
+    said "the address is required", went dead, and never mentioned the empty
+    credential beside it. Every state test still passed, because a test calls
+    the handler directly and never meets the button.
+
+    Not every field here complains as it is typed into. A credential box the
+    provider declared is only checked once somebody touches it, so an untouched
+    required one has nothing under it until a press asks.
+    """
+
+    def test_neither_button_goes_dead_on_the_first_complaint(self) -> None:
+        for form in (add_account_form, account_settings):
+            disabled = [
+                prop
+                for prop in _props(form().render())
+                if prop.startswith("disabled:") and "has_errors" in prop
+            ]
+
+            assert disabled == [], (
+                f"{form.__name__} disables its write button on has_errors, "
+                "which is how the second complaint never gets reported"
+            )
+
+    async def test_pressing_twice_still_writes_nothing(
+        self, state, registered, sessions
+    ) -> None:
+        """The other half: a pressable button is only safe because pressing it
+        writes nothing while the form is wrong."""
+        state.select_provider(MailProvider.IMAP.value)
+
+        await state.create_account()
+        await state.create_account()
+
+        assert await _accounts(sessions) == []
+        assert state.errors[EMAIL_FIELD] == REQUIRED
+        assert state.errors["host"] == REQUIRED

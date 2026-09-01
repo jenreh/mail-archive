@@ -78,7 +78,3 @@ app:
     # wants one starts it explicitly and can therefore also stop it; a worker
     # supervised as a child of a preview server is a process nobody reaps.
     supervise_worker: false
-
-  authentication:
-    server_url: http://localhost:8081
-    server_port: 8081

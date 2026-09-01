@@ -22,7 +22,7 @@ failures show up there and nowhere else.
 `mode: local` supervises a `redis-server`, so it only works with
 `backend: falkordb`. Use `mode: remote` for anything else.
 
-**The status page says unreachable but the server is running**
+**Graph status says unreachable but the server is running**
 
 Check the port. An unreachable server is a valid status, not an error — the
 reader returns `reachable=false` with the reason instead of raising, so the page
@@ -105,8 +105,35 @@ the message and in the blob store. A fabricated node would not be.
 ## `task clean` deleted my archive
 
 It does. `task clean` removes `.state/` entirely: the SQLite database, the blob
-store and the graph's data directory. `task db:upgrade` recreates the schema
-and the default `admin` account, but the mail is gone.
+store and the graph's data directory. `task db:upgrade` gives you the schema
+back, empty, but the mail is gone.
+
+It only ever touches this checkout. The **built macOS app** keeps its data in
+`~/Library/Application Support/de.rehpoehler.mailarc`, which no task in this
+repository writes to or deletes.
+
+## The desktop app is empty, but I imported mail
+
+Two archives, and that is on purpose. Anything run out of this checkout —
+`task run`, `task tauri:dev`, the tests — uses `.state/`. Only a **release**
+build of the `.app` uses the per-user directory
+`~/Library/Application Support/de.rehpoehler.mailarc`.
+
+So mail imported while developing is not in the bundled app, and the other way
+round. Connect the mailbox again on whichever side is empty; there is no
+supported way to graft one onto the other, because the blob store is
+content-addressed and write-once and half a copied archive is worse than none.
+
+## I cannot open the app's data directory
+
+`~/Library/Application Support/de.rehpoehler.mailarc` is created `0700` — its
+owner and nobody else. That is deliberate: it holds somebody's actual mail plus
+the encrypted mailbox credentials, and the default umask on a shared Mac would
+otherwise leave it readable to every account on the machine.
+
+Open it as the account that owns it (Finder's **Go → Go to Folder**). Widening
+the mode is not the answer: the app sets it back to `0700` on the next start,
+so the change lasts until the next launch and no longer.
 
 ## Google says "An error occurred" after the unverified-app warning
 

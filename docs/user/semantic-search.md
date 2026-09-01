@@ -9,12 +9,19 @@ for. It needs an **embedder**: a model that turns text into a vector. That is
 the one part of this application which is off by default, and this page is
 about turning it on.
 
+Both live on the search page at `/`, as the two halves of its **Mode** switch.
+Semantic reads the question and nothing else, so choosing it greys out the
+sender, date, attachment and account fields and says so — a form that quietly
+stopped honouring what is typed in it would be a search that lies about what it
+searched.
+
 ## Off is a supported state, not a broken one
 
 `app.semantic.provider` defaults to `none`, and the archive is complete without
-it. Import, review, co-recipients, topics, templates, threads and full-text
-search all work; the two things you do not get are the semantic search box and
-the sixth topic signal.
+it. Import, co-recipients, topics, templates, threads and full-text
+search all work; the two things you do not get are the search page's
+**Semantic** mode — the segment is disabled, with a sentence naming what to
+configure — and the sixth topic signal.
 
 That default is deliberate. The desktop app is meant to need nothing installed,
 and defaulting to a local model server would mean a mail archive that refuses to
@@ -41,10 +48,11 @@ sends nothing anywhere: it talks to a model server on `localhost`.
 
 ### From the application
 
-**Embedder** in the navigation (`/admin/embedder`) sets the five things a person
-can answer — provider, model, dimension, base URL and API key — and stores them
-in the archive's own database. They are laid over the configuration file, so an
-installation that never opens the page behaves exactly as it did.
+**Embedder**, under **Admin** in the rail (`/admin/embedder`), sets the five
+things a person can answer — provider, model, dimension, base URL and API key —
+and stores them in the archive's own database. They are laid over the
+configuration file, so an installation that never opens the page behaves exactly
+as it did.
 
 Four things about that page are worth knowing before you use it:
 
@@ -189,7 +197,9 @@ worth being explicit about the boundary:
   permissions and no authentication of any kind.
 - The transport is stdio only. The boundary is the operating-system process:
   anything on your machine that can run the installed `mail-archive-mcp` command
-  can read your mail, exactly as anything that can read `.state/` can.
+  can read your mail, exactly as anything that can read the archive directory
+  itself can — that is `.state/` from a checkout, and the per-user directory
+  under `~/Library/Application Support/` for the built app.
 - Nothing a model produces is written back. Every tool is read-only, and the
   archive has no path by which a model could add, change or delete anything.
 - **An installation may not have the server at all.** It is an optional extra,

@@ -486,6 +486,62 @@ class TestTheReads:
         assert "m.id IN $ids" in _cypher(CATALOG["MESSAGE_BODIES"])
 
 
+class TestTheArchivingHistory:
+    """The one read here that answers a page rather than a rebuild.
+
+    What it *returns* on a real backend — whether ``left()`` over a
+    datetime-converted column yields a ``YYYY-MM-DD`` key at all — is
+    ``test_queries_archived_per_day_local.py``'s question and cannot be
+    answered here. These are the claims the compiled text can carry.
+    """
+
+    def test_a_caller_may_only_supply_the_row_ceiling(self) -> None:
+        """One day is one row, so the ceiling is a number of *days* — and it is
+        the only thing a caller reaches. The ten characters a day key is cut to
+        are the statement's own, auto-bound as ``$p0`` the way every fixed
+        literal in this catalogue is."""
+        statement = _built(CATALOG["ARCHIVED_PER_DAY"])
+
+        assert parameters_of(statement) == ("limit",)
+        assert statement.build()[1] == {"p0": 10}
+
+    def test_the_day_key_is_cut_out_of_the_stored_timestamp(self) -> None:
+        """``left(r.archived_at, 10)`` — the store cuts it, not Python, because
+        the alternative is reading every edge in the archive to group it."""
+        assert "left(r.archived_at, $p0) AS day" in _cypher(CATALOG["ARCHIVED_PER_DAY"])
+
+    def test_it_counts_and_sums_under_the_names_the_reader_uses(self) -> None:
+        """An aggregate without an ``.as_()`` is keyed by its raw Cypher, and
+        every consumer reads ``row["messages"]``."""
+        statement = _cypher(CATALOG["ARCHIVED_PER_DAY"])
+
+        assert "count(m) AS messages" in statement
+        assert "sum(m.size_bytes) AS bytes" in statement
+
+    def test_an_edge_without_a_stamp_is_left_out_rather_than_bucketed(
+        self,
+    ) -> None:
+        """``archived_at`` is nullable on the edge, and a null day key would
+        collect every undated copy into one bucket the chart cannot place."""
+        assert "r.archived_at IS NOT NULL" in _cypher(CATALOG["ARCHIVED_PER_DAY"])
+
+    def test_the_ceiling_keeps_the_newest_days_and_not_the_oldest(self) -> None:
+        """The one place this statement departs from its siblings, and the
+        reason is the ``LIMIT``.
+
+        Every other listing is ordered by the number that matters, so cutting
+        it keeps the interesting rows. This one is ordered by *time*, and a
+        chart of the last week wants the newest days — an ascending order under
+        the same ceiling would hand back the oldest days in the archive and an
+        empty chart. So the store orders newest first and the reader turns the
+        window round again.
+        """
+        statement = _cypher(CATALOG["ARCHIVED_PER_DAY"])
+
+        assert "ORDER BY day DESC" in statement
+        assert statement.index("ORDER BY day DESC") < statement.index("LIMIT $limit")
+
+
 class TestTheDeletes:
     """Batched, counted, and each naming exactly one derived thing."""
 

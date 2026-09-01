@@ -248,6 +248,7 @@ def test_every_statement_runs_with_its_parameters_bound(
             ["id", "senders", "addressed", "blind_copied", "threads", "attachments"],
         ),
         ("MESSAGE_BODIES", ["id", "body_clean"]),
+        ("ARCHIVED_PER_DAY", ["day", "messages", "bytes"]),
         ("COUNT_UNIDENTIFIED", ["total"]),
         ("CO_RECIPIENTS", ["left_id", "right_id", "together"]),
         (

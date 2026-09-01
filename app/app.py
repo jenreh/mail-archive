@@ -1,37 +1,42 @@
+"""The application: what it publishes, which pages it serves, what it owns.
+
+Everything visual lives in ``mailarc-ui`` now — the styles, the theme, the
+shell, the pages. What is left here is the five things only the application
+layer can do: set the log levels, hand the composition root's objects to the
+browser half through the service registry, register the archive's Mantine
+theme before ``rx.App`` builds the provider that reads it, name the page
+modules whose import registers them, and own the three background lifespans.
+"""
+
 import logging
 
 import reflex as rx
 from appkit_commons.middleware import ForceHTTPSMiddleware
-from appkit_user.authentication.pages import (  # noqa: F401
-    azure_oauth_callback_page,
-    github_oauth_callback_page,
-)
-from appkit_user.user_management.pages import (
-    create_login_page,
-    create_password_reset_confirm_page,
-    create_password_reset_request_page,
-    create_profile_page,
-)
 from starlette.types import ASGIApp
 
-from app.components.navbar import app_navbar
 from app.composition import (
     graph_server_lifespan,
+    publish_account_eraser,
     publish_analytics_reader,
     publish_archive_reader,
+    publish_graph_health,
     publish_provider_registry,
     publish_semantic_control,
     publish_semantic_search,
+    publish_storage_reader,
     semantic_settings_lifespan,
     sync_worker_lifespan,
 )
-from app.pages.home import home_page  # noqa: F401
-from app.pages.mail_accounts import mail_accounts_page  # noqa: F401
-from app.pages.mail_embedder import mail_embedder_page  # noqa: F401
-from app.pages.mail_insights import mail_insights_page  # noqa: F401
-from app.pages.mail_review import mail_review_page  # noqa: F401
-from app.pages.users import users_page  # noqa: F401
-from app.styles import base_style, base_stylesheets
+from mailarc_ui.pages import (  # noqa: F401  # imported for their route registration
+    accounts,
+    dashboard,
+    embedder,
+    insights,
+    search,
+    status,
+)
+from mailarc_ui.styles import base_style, base_stylesheets
+from mailarc_ui.theme import set_mailarc_theme
 
 logging.basicConfig(level=logging.DEBUG)
 # Three libraries that write somebody's secret into the log at DEBUG, pinned by
@@ -60,14 +65,6 @@ for _noisy in ("oauthlib", "requests_oauthlib", "aiosqlite"):
 # nobody has set one — but that default is somebody else's and is only in force
 # while this file is imported after sqlalchemy.
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-create_login_page()
-create_profile_page(
-    app_navbar(),
-    class_name="w-full gap-6 max-w-[800px]",
-    padding="2rem",
-)
-create_password_reset_request_page()
-create_password_reset_confirm_page()
 
 
 # Middleware transformer for HTTPS redirect
@@ -76,9 +73,11 @@ def add_https_middleware(asgi_app: ASGIApp) -> ASGIApp:
     return ForceHTTPSMiddleware(asgi_app)
 
 
-# The accounts page reads which providers exist, the review page reads the
-# archive, and the insights page reads both what was derived from it and the
-# search over it — all four out of the service registry: `mailarc-ui` is a
+# The accounts page reads which providers exist and how a mailbox is cleared
+# out again, the search page reads the archive, the insights page reads both
+# what was derived from it and the search over it, the status page reads the
+# graph server and the dashboard's disk panel reads the paths the archive
+# occupies — all of them out of the service registry: `mailarc-ui` is a
 # component and may not import `app`, so the composition root leaves its
 # decisions there for it. The search is published even with no embedder
 # configured: its full-text half needs none, and that is the half a default
@@ -87,10 +86,19 @@ def add_https_middleware(asgi_app: ASGIApp) -> ASGIApp:
 # form that writes a setting nothing re-reads would be a form that silently
 # does nothing until the next restart.
 publish_provider_registry()
+publish_account_eraser()
 publish_archive_reader()
 publish_analytics_reader()
 publish_semantic_search()
 publish_semantic_control()
+publish_graph_health()
+publish_storage_reader()
+
+# The archive's own Mantine theme — the coral accent, the warm grays, Inter and
+# the radius scale — before `rx.App`, and that order is the whole requirement:
+# the theme is forwarded to the root `MantineProvider` that wraps every page,
+# and a provider already built reads whatever was registered when it was.
+set_mailarc_theme()
 
 app = rx.App(
     stylesheets=base_stylesheets,

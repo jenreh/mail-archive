@@ -1,0 +1,78 @@
+"""What every page of the archive is styled with, in one place.
+
+Here rather than in ``app/`` because this is user interface and ``mailarc-ui``
+is where the user interface lives: ``app/`` keeps the composition root, the
+configuration and the entry points, and hands this list to ``rx.App``.
+``assets/`` stays at the repository root — Reflex serves it from there, and a
+stylesheet named here is a path into that directory, not an import.
+"""
+
+import reflex as rx
+
+accent_bg_color = rx.color("accent", 2)
+accent_color = rx.color("accent", 3)
+accent_text_color = rx.color("accent", 9)
+border = f"1px solid {rx.color('gray', 5)}"
+border_radius = "var(--radius-2)"
+box_shadow = "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)"
+box_shadow_right_light = "inset -5px -5px 15px -5px rgba(0, 0, 0, 0.1)"
+box_shadow_right_dark = "inset -5px -5px 15px -5px rgba(0.9, 0.9, 0.9, 0.1)"
+box_shadow_light = "0 1px 10px -0.5px rgba(0, 0, 0, 0.1)"
+box_shadow_dark = "0 1px 10px -0.5px rgba(0.8, 0.8, 0.8, 0.1)"
+content_max_width = "1280px"
+gray_bg_color = rx.color("gray", 3)
+max_width = "1480px"
+sidebar_bg = rx.color("gray", 2)
+
+sidebar_width = ["100%", "100%", "100%", "375px", "450px"]
+text_color = rx.color("gray", 11)
+
+markdown_style = {
+    "code": lambda text: rx.code(text, color_scheme="gray"),
+    "codeblock": lambda text, **props: rx.code_block(text, **props, margin_y="1em"),
+    "a": lambda text, **props: rx.link(
+        text,
+        **props,
+        font_weight="bold",
+        text_decoration="underline",
+        text_decoration_color=accent_text_color,
+    ),
+}
+
+image_props = {
+    "decoding": "auto",
+    "loading": "eager",
+    "vertical_align": "middle",
+    "object_fit": "contain",
+    "width": "100%",
+    "height": ["400px", "500px", "650px", "850px"],
+}
+
+button_props = {
+    "size": "2",
+    "cursor": "pointer",
+    "variant": "outline",
+}
+
+FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+"""The application face — Inter everywhere, with the platform stack behind it."""
+
+MONO_FONT_FAMILY = "'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace"
+"""The mono face the uppercase field labels and technical detail lines wear."""
+
+base_stylesheets = [
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
+    "https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;600&display=swap",
+    "css/react-zoom.css",
+    "css/appkit.css",
+    # After appkit's, deliberately: this is where the archive's own design
+    # tokens live, and a tie between the two has to go to the later file.
+    "css/mail-archive.css",
+]
+
+base_style = {
+    "font_family": "Inter",
+    rx.icon: {
+        "stroke_width": "1.5px",
+    },
+}

@@ -45,7 +45,6 @@ from embedder_form import (
     sessions,
     state,
 )
-from insights_archive import FakeUser, signed_in_as
 from sqlalchemy import select
 
 from mailarc_analytics.semantic import SemanticProvider
@@ -54,7 +53,6 @@ from mailarc_sync.jobs import JobKind, JobQueue
 from mailarc_ui.embedder import (
     EMBED_CANCEL_ASKED,
     EMBED_CANCEL_TOOK_EFFECT,
-    EMBED_NOT_ALLOWED,
     EMBED_RUNNING,
     NO_EMBEDDER_TO_RUN,
     UNSAVED_BEFORE_EMBED,
@@ -188,7 +186,7 @@ class TestStartingARebuild:
         assert following.job.active is True
 
     async def test_a_reloaded_page_follows_the_run_instead_of_queueing(
-        self, following, queue, searching, monkeypatch
+        self, following, queue, searching
     ) -> None:
         """Two open tabs, or one tab after a reload, would queue two.
 
@@ -203,7 +201,6 @@ class TestStartingARebuild:
         with patch(f"{STATE_MODULE}.JobQueue", Mock(return_value=queue)):
             second_tab = EmbedderSettingsState()
             second_tab.poll_interval = 0
-            signed_in_as(second_tab, FakeUser(is_admin=True), monkeypatch)
             await load_form(second_tab)
             assert await second_tab.start_embed() is not None
 
@@ -608,103 +605,6 @@ class TestFollowingTheRun:
         following.stop_polling()
 
         assert following.polling is False
-
-
-class TestTheRebuildControlIsGated:
-    """The gate, on the two handlers that reach the queue.
-
-    Sharper here than on the insights page's twin. This one queues archive-wide
-    work that sends every message body to the configured provider — which for
-    ``openai`` means uploading the whole archive to a third party — and
-    ``admin_only=True`` on the page is a render-time ``rx.cond`` that covers
-    nothing addressable by name over the socket.
-    """
-
-    @pytest.fixture
-    def intruder(
-        self, following: EmbedderSettingsState, monkeypatch: pytest.MonkeyPatch
-    ) -> EmbedderSettingsState:
-        signed_in_as(following, FakeUser(is_admin=False), monkeypatch)
-        return following
-
-    async def test_a_non_admin_cannot_queue_a_rebuild(
-        self, following, queue, searching, monkeypatch
-    ) -> None:
-        await _with_an_embedder(following)
-        signed_in_as(following, FakeUser(is_admin=False), monkeypatch)
-
-        assert await following.start_embed() is None
-
-        assert following.embed_message == EMBED_NOT_ALLOWED
-        assert await _job_count(queue) == 0
-        assert following.polling is False
-
-    async def test_a_non_admin_cannot_cancel_somebody_else_s_rebuild(
-        self, following, queue, searching, monkeypatch
-    ) -> None:
-        """``job_id`` is state this session supplied, so without the check a
-        caller could end a rebuild somebody else started."""
-        await _with_an_embedder(following)
-        await following.start_embed()
-        watched = following.job_id
-        signed_in_as(following, FakeUser(is_admin=False), monkeypatch)
-
-        await following.cancel_embed()
-
-        assert following.embed_message == EMBED_NOT_ALLOWED
-        assert await queue.is_cancel_requested(watched) is False
-
-    async def test_a_refused_caller_is_shown_no_job_at_all(
-        self, following, queue, searching, monkeypatch
-    ) -> None:
-        """The page's own rule — a refused caller sees nothing — applied to the
-        control. A session may have held an administrator's job a moment ago."""
-        await _with_an_embedder(following)
-        await following.start_embed()
-        signed_in_as(following, FakeUser(is_admin=False), monkeypatch)
-
-        await following.start_embed()
-
-        assert following.has_embed_job is False
-        assert following.job_id == 0
-        assert following.polling is False
-
-    async def test_a_process_that_cannot_say_who_is_asking_refuses(
-        self, following, queue, searching
-    ) -> None:
-        """Fails closed: "cannot tell" is not "yes" for a control that uploads
-        an archive."""
-        await _with_an_embedder(following)
-
-        with patch.object(
-            EmbedderSettingsState,
-            "_current_user",
-            AsyncMock(side_effect=RuntimeError("no session")),
-        ):
-            assert await following.start_embed() is None
-
-        assert following.embed_message == EMBED_NOT_ALLOWED
-        assert await _job_count(queue) == 0
-
-    async def test_the_poll_checks_again_before_the_read_that_leaves(
-        self, following, queue, searching, monkeypatch
-    ) -> None:
-        """Following a row sends nothing the queue would not tell an authorised
-        caller; the count is a statement about the archive's contents, so the
-        check sits immediately before the read that leaves."""
-        await _with_an_embedder(following)
-        await following.start_embed()
-        await queue.claim(WORKER, LEASE_SECONDS)
-        await queue.succeed(following.job_id)
-        searching.embedded = 1200
-        before = searching.asked
-        signed_in_as(following, FakeUser(is_admin=False), monkeypatch)
-
-        with patch.object(asyncio, "sleep", _forbidden_sleep()):
-            await _run_poll(following)
-
-        assert searching.asked == before  # nothing was counted for them
-        assert following.in_force.embedded == 0
 
 
 class TestTheControlOnAPageThatCannotRead:

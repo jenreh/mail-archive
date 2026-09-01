@@ -42,7 +42,7 @@ from mailarc_analytics.semantic import (
 )
 from mailarc_core import GraphConfig, GraphServerMode
 from mailarc_sync.jobs import SessionFactory
-from mailarc_ui.insights.search import archive_search as search_the_ui_sees
+from mailarc_ui.search.reads import semantic_search as search_the_ui_sees
 
 
 @pytest.fixture(autouse=True)

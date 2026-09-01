@@ -9,7 +9,9 @@ to some sixteen hundred lines together, and the house limit is a thousand per
 file.
 
 ``reads``
-    The six plain reads a rebuild opens with, and the two counts that frame it.
+    The plain reads a rebuild opens with, the two counts that frame it, and the
+    one read that answers a page instead: ``ARCHIVED_PER_DAY``, which buckets
+    the provenance edge by the day a copy was archived on.
 ``writes``
     The four batched deletions a rebuild starts with, and the seven upserts the
     three analyses finish with.
@@ -27,7 +29,10 @@ Split by the question asked rather than by Cypher keyword, so a statement and
 the one it is the complement of stay in the same file: ``COUNT_UNIDENTIFIED``
 sits beside the read whose filter it inverts, and both counts of the archive's
 population sit beside the paged read that defines it. A split by keyword would
-have put the two halves of every cross-check in different modules.
+have put the two halves of every cross-check in different modules. It is also
+why ``ARCHIVED_PER_DAY`` is in ``reads`` although a page and not a rebuild asks
+it: it reads the same ground truth the rebuild's reads do, and grouping it with
+the report listings would have split "what the archive holds" across two files.
 
 **Nothing is re-exported here.** The surface is ``catalog.py``, which imports
 each name from its family module and writes it out again in

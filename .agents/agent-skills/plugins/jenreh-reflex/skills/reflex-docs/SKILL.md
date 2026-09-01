@@ -155,3 +155,36 @@ Reflex is an open-source framework for building full-stack web applications in p
 
 - Built-in SQLModel integration for database tables
 - Define models, run queries, set up relationships
+
+## Version gotchas (verified against 0.9.8)
+
+Things that changed and now contradict most docs and pre-trained knowledge.
+Check the installed source under `site-packages/reflex/` before trusting either.
+
+**`rx.Base` is gone.** It raises `AttributeError: No reflex attribute Base`.
+Use a pydantic `BaseModel` for models held in state vars — Reflex ships a
+serializer for it and resolves `row.field` inside `rx.foreach`. (A
+`@dataclasses.dataclass` also works, but prefer `BaseModel` so the project has
+one model system.)
+
+**`prod` and `preview` always serve a single port.** `_run_prod` /
+`_run_preview` take one port, and `_run` exits with *"In prod mode, frontend
+and backend must run on the same port"* whenever `frontend_port !=
+backend_port`. The `--single-port` flag only validates; it does not change
+behaviour. Align the ports in configuration — a kit default of 8080/3030 makes
+`reflex run --env prod` fail before it starts.
+
+- `--env dev` — Vite dev server + separate backend, ports must **differ**
+- `--env preview` — single port, backend still hot-reloads
+- `--env prod` — single port, fully built frontend
+
+**`/index` and `/` collide.** Two pages on them raise `RouteValueError` during
+compile.
+
+**States cannot be instantiated outside pytest.** `MyState()` raises
+`ReflexRuntimeError` unless `PYTEST_CURRENT_TEST` is set. Probe state behaviour
+from a test file, never `python -c`.
+
+**Background handlers reject direct calls.** `await state.handler()` raises;
+use `MyState.handler.fn(state)` in tests, `yield`/`return MyState.handler` in
+app code.

@@ -116,22 +116,159 @@ Full rules in **python-coding** skill. Key:
 - Files ≤ 1000 lines.
 - Coverage ≥ 80%.
 - Type annotations on all functions/methods.
-- **Architecture**: hexagonal (domain → application → ports ← adapters; interfaces deliver).
+- **Value objects are pydantic models, never `@dataclass`** — immutable ones get
+  `model_config = ConfigDict(frozen=True)`. This includes Reflex state var
+  types: Reflex serialises `BaseModel` and resolves `row.field` inside
+  `rx.foreach`.
+- **Architecture**: UI on top of components (see §6). Introduce an abstraction
+  when there is a second implementation, not in anticipation of one.
 
 ---
 
 ## 6) Architecture Layers
 
-```
+A uv workspace: a Reflex application on top of eight first-party components, one
+of which an installation may leave out. Three of them are mail providers and
+they are siblings — none imports another.
+
+```sh
 mail-archive/
-├── ...
+├── app/                       pages, routes, composition root, worker,
+│   │                          MCP entry point
+│   ├── composition.py         builds the components from configuration
+│   ├── configuration.py       AppConfig (composes each component's config)
+│   └── mcp_server.py          `mail-archive-mcp` — thin; nothing imports it
+├── components/
+│   ├── mailarc-core/          domain, mail source port, graph ground truth,
+│   │                          SQLite, blob store — no browser, no provider
+│   ├── mailarc-sync/          engine, job queue, worker loop, provider registry,
+│   │                          account clear-out (the engine's inverse)
+│   ├── mailarc-analytics/     derived nodes, analysis queries, embeddings
+│   ├── mailarc-google/        Gmail, behind the mail source port
+│   ├── mailarc-imap/          any IMAP mailbox — the provider with NO consent
+│   │                          runner; the account form writes its secret
+│   ├── mailarc-m365/          Microsoft 365 over Graph — delegated (browser)
+│   │                          and app-only (no browser), one runner for both
+│   ├── mailarc-mcp/           the six read-only MCP tools — OPTIONAL, see below
+│   └── mailarc-ui/            Reflex states + components
+├── scripts/                   build-time tooling (never runs on a user machine)
+└── src-tauri/                 the macOS desktop shell
 ```
+
+The hierarchy *is* the import table — read it as the layering:
+
+| Module | may import | may **not** import |
+| --- | --- | --- |
+| `mailarc-core` | appkit-commons, runic.ogm, pydantic, sqlalchemy | Reflex, any provider |
+| `mailarc-google` | `mailarc-core`, httpx, google-auth | `mailarc-sync`, another provider, Reflex |
+| `mailarc-imap` | `mailarc-core`, imapclient | `mailarc-sync`, another provider, Reflex |
+| `mailarc-m365` | `mailarc-core`, httpx, msal | `mailarc-sync`, another provider, Reflex |
+| `mailarc-sync` | `mailarc-core` | any provider, Reflex |
+| `mailarc-analytics` | `mailarc-core` | `mailarc-sync`, Reflex |
+| `mailarc-mcp` | `mailarc-core`, `-analytics`, fastmcp | `mailarc-sync`, any provider, Reflex |
+| `mailarc-ui` | `mailarc-core`, `-sync`, `-analytics`, reflex, appkit-mantine/-ui | `app` |
+| `app` | everything | — |
+
+**A provider may not reach into a sibling**, which is why `mailarc-m365` holds
+its own copy of the loopback redirect listener and of `retry_after_seconds`:
+`mailarc-google` has both, and the only place they could be shared is
+`mailarc-core`. Three copies is where a shared home stops being speculative.
+
+**No module imports `runic.rag`, `app` included.** Email already carries an
+exact graph in its headers — senders, recipients, threads, labels — so an LLM
+extraction would only lay a probabilistic layer over ground truth. A model
+reads the archive at query time through the MCP server; it never writes to it.
 
 Key rules:
 
-- Use-cases import `ports/` only (never `adapters/`).
-- Adapters import `domain/` and their external library only.
-- Composition root is the **only** place that knows both ports and adapters.
+- `app/` may import a component. A component **never** imports `app`.
+- **`mailarc-ui` is the only component allowed to see Reflex** or an `appkit`
+  UI package; every other one must stay usable from a CLI, a worker or a test.
+  `components/mailarc-core/tests/test_isolation.py` enforces that exemption and
+  the `runic.rag` ban from a subprocess — but it names its packages in three
+  hand-written tuples rather than discovering them, so `mailarc_imap` and
+  `mailarc_m365` are **not yet in its probes**. Both hold the rules today (each
+  has an equivalent check in its own suite); the subprocess enforcement is one
+  edit behind.
+- `app` is the only place that knows concrete implementations:
+  `registry.register(GmailSource.DESCRIPTOR, …)` happens in
+  `app/composition.py`, and the worker entrypoint is `app/worker.py` — else
+  `mailarc-sync` would have to know the providers. Every provider is registered
+  with `Source.using(config())` — never `create`, which would read a config off
+  the environment and cut this module out — plus a consent runner where the
+  provider has a browser step. **A component config must also be a field on
+  `AppConfig`**, or its `app.<name>` block in `configuration/config.yaml` is
+  dropped in silence (`model_config['extra']` is `ignore`).
+- Inside a component: one package per capability, with fixed file roles.
+  `__init__.py` is the public surface, `model.py` holds value objects and knows
+  no I/O, `config.py` the `BaseConfig`, `ports.py` only once a second
+  implementation exists; every other module is one responsibility.
+  `mailarc_core.graph` is the worked example.
+- `app/composition.py` is the **only** module that builds a component from
+  configuration. States and pages ask it; they never construct anything.
+- A `Protocol` earns its place when a second implementation exists. One
+  implementation behind a port is indirection, not architecture.
+- **`mailarc-mcp` is optional and must stay optional.** It sits behind
+  `[project.optional-dependencies] mcp`, so `uv sync` resolves the desktop
+  bundle (83 distributions) and `uv sync --extra mcp` the web deployment (125)
+  — `fastmcp` alone is around sixty and a desktop archive serves no MCP.
+  `app/mcp_server.py` is the console script's entry point and the only module
+  under `app/` allowed to name the component; **nothing may import that module,
+  `mailarc_mcp` or `fastmcp` at import time**, or `app/app.py` and
+  `app/worker.py` stop starting on exactly the installation the extra exists to
+  produce. `tests/test_mcp_server.py` reads every module in `app/` and checks;
+  `task tauri:deps` prints both resolutions. A developer environment is the web
+  one — `task install` syncs `--extra mcp`.
+
+---
+
+## 6b) Never Touch the Real Archive
+
+A developer machine holds one live archive and it is real mail: accounts and
+encrypted credentials in `.state/mail-archive.db`, the original bytes of every
+imported message in `.state/mailstore`, the graph in `.state/falkordb`. The blob
+store is content-addressed and write-once, so anything written into it cannot
+afterwards be told apart from a genuinely archived message.
+
+Two mechanisms keep work away from it. Do not defeat either.
+
+- **Tests** are sealed by the root `conftest.py`: it redirects every `app_*`
+  setting into a temporary directory before collection and fails the run if
+  `.state` changes while the suite is running. Never point a test at `.state`,
+  and never construct a config that writes without passing an explicit path.
+- **Driving the application** — a preview server, a rebuild, a worker, a browser
+  check — goes through the **`agent:` task namespace**, never the real one:
+
+  ```sh
+  task agent:app                              # app on 8081/3031
+  task agent:worker                           # worker against the same sandbox
+  task agent:derive                           # rebuild the derived layer
+  task agent:exec -- uv run python -c '...'   # anything else
+  task agent:check                            # show what the sandbox resolves to
+  task agent:clean                            # delete it
+  ```
+
+  **`PROFILES=agent_test` on its own is NOT enough**, and this is the trap:
+  the profile YAML nests its settings under `app.archive`, `app.graph` and so
+  on, which reach a component only through the composition root. A module that
+  builds a bare config — `MessageArchiver(ArchiveConfig())`, which is what
+  `planted_graph.py` does — gets its own settings source, finds nothing at the
+  YAML top level, and falls back to the field default, which is the REAL store.
+  Observed: `PROFILES=agent_test` → `ArchiveConfig().store_dir == .state/mailstore`.
+  `taskfiles/Taskfile.agent.yml` exports the `app_*` variables that close that
+  gap; use it rather than setting `PROFILES` by hand. `.state-agent/` is
+  gitignored and disposable.
+
+**`PROFILES` belongs in the entry point, never in `.env`.** `appkit_commons`
+calls `load_dotenv(override=True)` at import, so a value in `.env` beats the
+real process environment and pins every entry point to one profile — which is
+how `PROFILES=prod task tauri:dev` silently ran the dev profile. Each task
+exports its own.
+
+**The database override env var is `app_database_url_override`, not
+`app_database_url`.** `DatabaseConfig.url` is a computed field over a stored
+`url_override`; the obvious name is accepted and silently ignored, and the
+config falls through to `config.yaml` — the real archive.
 
 ---
 

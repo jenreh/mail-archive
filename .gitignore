@@ -115,3 +115,22 @@ wheels/
 docs/.vitepress/cache
 docs/.vitepress/dist
 docs/node_modules
+
+reflex.lock/
+
+# Tauri desktop shell
+src-tauri/target/
+src-tauri/gen/
+# Vendored runtimes (FalkorDB, uv) — rebuild with `task tauri:vendor`
+src-tauri/resources/
+src-tauri/icons/
+# Local FalkorDB data
+.state/
+# Everything an agent driving the application is allowed to write.
+.state-agent/
+.playwright-mcp/
+.task/
+
+# OAuth client secrets / tokens of the prototypes
+**/token.json
+**/*secret*.json

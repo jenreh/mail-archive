@@ -9,8 +9,15 @@ description: >
 
 # Testing Reflex State
 
-Reflex `State` is a plain Python class — no browser or runtime needed.
-Test it directly with `pytest` and `pytest-asyncio`.
+Reflex `State` needs no browser or server — test it directly with `pytest` and
+`pytest-asyncio`.
+
+> **It is not a plain Python class, though.** `State.__init__` raises
+> `ReflexRuntimeError: State classes should not be instantiated directly`
+> unless `PYTEST_CURRENT_TEST` is in the environment
+> (`reflex.utils.exec.is_testing_env`). So `MyState()` works inside a test and
+> fails in a REPL, a scratch script, or a `python -c` probe. Verify state
+> behaviour with a real test file, not an ad-hoc snippet.
 
 ## Setup
 
@@ -40,11 +47,11 @@ tests/unit/
 **Base vars** → test defaults directly
 **Sync handlers** → call on instance, assert result
 **Async handlers** → `await`, assert `is_loading is False` after
-**Streaming handlers** → consume with `async for`
+**Streaming handlers** → consume with `async for` (only if the handler yields)
 **Computed vars** → mutate base vars, assert property
-**Substates** → instantiate subclass independently
+**Substates** → instantiate subclass independently (inside a test; see note above)
 **External I/O** → `unittest.mock.patch` at `myapp.state.*`
-**Background tasks** → patch `__aenter__`/`__aexit__`
+**Background tasks** → `await MyState.handler.fn(state)`, patch `__aenter__`/`__aexit__`
 
 See [references/PATTERNS.md](references/PATTERNS.md) for full code examples.
 See [references/FIXTURES.md](references/FIXTURES.md) for shared fixture setup.
@@ -55,7 +62,8 @@ See [references/FIXTURES.md](references/FIXTURES.md) for shared fixture setup.
 **Async handler?** → Use `await`, check loading flag resets
 **Handler bound to Radix UI component?** → Add `str` AND `list[str]` test cases
 **Handler calls API/DB?** → Mock with `AsyncMock`, test both success and failure
-**Background task (`@rx.event(background=True)`)?** → Patch context manager
+**Background task (`@rx.event(background=True)`)?** → Patch the context manager AND
+call it via `MyState.handler.fn(state)` — a direct `state.handler()` raises
 
 ## Run
 

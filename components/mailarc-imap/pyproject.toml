@@ -1,0 +1,35 @@
+[project]
+name = "mailarc-imap"
+version = "1.0.0"
+description = "Mail archive IMAP adapter: folders, UID paging and RFC 5322 fetch"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Jens Rehpöhler" }]
+
+# Hangs off the core plus the one thing an IMAP adapter needs itself: a client
+# that speaks RFC 3501. Never a sibling component — not `mailarc-sync`, which
+# drives this adapter through the port and must not be able to name it, and not
+# `mailarc-google`, whose loopback server and OAuth module are the obvious thing
+# to reach for and are out of reach on purpose.
+#
+# `imapclient` and not `aioimaplib`: the async one is GPL-3.0 and this project
+# is MIT with a distributed desktop bundle, so it cannot be shipped. `imapclient`
+# is BSD-3-Clause and blocking; the port is async, and the blocking half belongs
+# in `asyncio.to_thread` the way the core reaches runic.
+dependencies = [
+    "imapclient>=3.1.0",
+    "mailarc-core",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mailarc_imap"]
+
+[tool.pytest.ini_options]
+cache_dir = "../../.cache/pytest"
+testpaths = ["tests"]
+asyncio_mode = "auto"

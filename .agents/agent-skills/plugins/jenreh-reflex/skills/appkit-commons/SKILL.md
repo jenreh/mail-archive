@@ -59,7 +59,11 @@ from appkit_commons.configuration.logging import init_logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-load_dotenv(override=True)
+# `appkit_commons` already calls load_dotenv(override=True) at import, so this
+# is redundant. Prefer plain `load_dotenv()` here: `override=True` makes `.env`
+# beat real environment variables, which breaks per-entry-point PROFILES.
+# See "Profile pitfalls" below.
+load_dotenv()
 configuration = configure()
 init_logging(configuration)
 ```
@@ -106,7 +110,44 @@ app:
     echo: true
 ```
 
-Set active profile via `PROFILE=development` env var. Multiple profiles merge in order.
+Set active profiles via the **`PROFILES`** env var (plural, comma-separated).
+`appkit_commons` reads only this name — `PROFILE` singular is silently ignored.
+Profiles merge left to right, so the last one wins on conflicts:
+
+```bash
+PROFILES=local,prod      # config.yaml -> config.local.yaml -> config.prod.yaml
+```
+
+### Profile pitfalls
+
+Two behaviours make profiles fail in ways the YAML never explains.
+
+**1. `.env` beats the real environment.** `appkit_commons/__init__.py` runs
+`load_dotenv(override=True)` at import. Any key in `.env` — `PROFILES`
+included — overwrites what the caller exported, so `PROFILES=prod myapp` does
+nothing when `.env` also sets it.
+
+> Leave `PROFILES` **out of `.env`** and export it per entry point (Taskfile
+> `env:` block, container entrypoint, launcher). Keep it commented in
+> `.env.default` with a note saying why, or someone will helpfully "fix" it.
+
+**2. Only one profile set is safe per process.** `YamlConfigReader.read_file`
+is `@lru_cache`d while `__merge` mutates `master` in place, so the first merge
+permanently rewrites the cached `config.yaml` dict. A later merge with
+different profiles inherits the earlier values.
+
+The symptom is a *partially* applied profile: keys the new profile sets look
+right, keys it does not set keep the previous profile's values. Example — merge
+`prod` (which sets `backend_port: 8080`) then `local` (which sets only
+`frontend_port`), and `backend_port` stays 8080 instead of returning to the
+base 3030.
+
+> Never call `configure()` twice with different profiles in one process, and do
+> not build an in-process "profile override" helper: the first merge can happen
+> at import of `appkit_user`/`appkit_commons`, before your code runs. The
+> profile has to be correct in the environment from the very start.
+
+When config looks half-applied, suspect this cache — not your YAML.
 
 ### Environment overrides
 

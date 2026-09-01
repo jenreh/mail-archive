@@ -1,0 +1,42 @@
+[project]
+name = "mailarc-core"
+version = "1.0.0"
+description = "Mail archive core: graph server lifecycle, status and storage wiring"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Jens Rehpöhler" }]
+
+# Deliberately free of Reflex and every appkit UI package: this component is
+# the part of the system a CLI, a worker or a test can use without a browser.
+dependencies = [
+    "appkit-commons>=1.14.0",
+    "falkordb>=1.7.0",
+    "pydantic>=2.13.4",
+    "runic-py>=0.6.0",
+    # `[asyncio]` because that extra is the only unconditional source of
+    # `greenlet`, which every `AsyncSession` in this component needs.
+    # SQLAlchemy's own requirement carries a `platform_machine` marker that
+    # names `aarch64` but not Apple Silicon's `arm64`, so on this machine a
+    # bare `sqlalchemy` installs without it and the first `engine.begin()`
+    # raises "the greenlet library is required". It was arriving through
+    # `appkit-user` until that package was dropped.
+    "sqlalchemy[asyncio]>=2.0.52",
+    "alembic==1.19.1",
+    "aiosqlite==0.22.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mailarc_core"]
+
+[tool.pytest.ini_options]
+cache_dir = "../../.cache/pytest"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "graph_local: starts the vendored FalkorDB (needs `task tauri:vendor`)",
+]

@@ -65,7 +65,30 @@ class MyFeatureState(UserSession):  # auth needed
 
 ### State variable conventions
 
+Define `MyModel` as a **pydantic `BaseModel`**. `rx.Base` was removed in
+Reflex 0.9 — referencing it now fails at import with
+`AttributeError: No reflex attribute Base`. `BaseModel` is the replacement:
+Reflex registers a serializer for it (`reflex_base/utils/serializers.py`) and
+lists it as an `ObjectVar` python type (`reflex_base/vars/object.py`), so it
+survives serialisation and supports attribute access inside `rx.foreach` —
+`row.name` compiles to `row_rx_state_?.["name"]`. It also validates whatever
+you project onto it, which a dataclass does not.
+
+A `@dataclasses.dataclass` still works as a state var type, but do not reach
+for one: keep a single model system across the project.
+
+Keep these view models in the interfaces layer and project domain objects onto
+them, so components never import domain types directly.
+
 ```python
+from pydantic import BaseModel
+
+
+class MyModel(BaseModel):
+    name: str
+    total: str      # pre-formatted for display
+
+
 class MyFeatureState(rx.State):
     # Data — typed, always with a default
     items: list[MyModel] = []
@@ -279,6 +302,12 @@ def create_my_feature_page(navbar: rx.Component, route: str = "/my-feature", tit
 # Register in app/app.py:
 create_my_feature_page(app_navbar())
 ```
+
+> **`/index` and `/` are the same route.** Registering both raises
+> `RouteValueError: ... with route `index` or `/` ... already exists` at compile
+> time, not at import, so it surfaces as a failed `reflex run` rather than a
+> traceback where you edited. The kit template ships a placeholder page at
+> `/index`; delete it before adding your own landing page at `/`.
 
 ---
 

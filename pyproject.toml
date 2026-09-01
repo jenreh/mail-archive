@@ -16,16 +16,65 @@ classifiers = [
 ]
 
 dependencies = [
-    "appkit-user>=1.10.2",
-    "appkit-mantine>=1.10.2",
-    "psycopg[binary,pool]>=3.3.4",
-    "reflex>=0.9.5",
-    "sqlalchemy>=2.0.49",
-    "alembic>=1.18.4",
-    "runic-py>=0.3.6",
+    "mailarc-core",
+    "mailarc-sync",
+    "mailarc-analytics",
+    "mailarc-google",
+    "mailarc-imap",
+    "mailarc-m365",
+    "mailarc-ui",
 ]
 
+[project.optional-dependencies]
+# The MCP server, and a heavy tree for a desktop app: `fastmcp` is a
+# meta-package for `fastmcp-slim[client,server]`, so installing it pulls ~40
+# packages including `keyring` (and `secretstorage`/`jeepney` on Linux),
+# `authlib`, `pyjwt`, `uvicorn`, `watchfiles` and `websockets` — into a
+# private-mail process whose server only ever speaks stdio, and into the Tauri
+# bundle. The measurement that put it here rather than in `dependencies`:
+# `fastmcp-slim[server]` resolves to 65 distributions against `fastmcp`'s 66,
+# so the slim route buys almost nothing and bare `fastmcp-slim` has no server
+# at all (`from fastmcp import FastMCP` raises); there is no smaller version of
+# this dependency to pick, only the choice of whether to install it. Adding it
+# moved **no pinned version** — the `uv.lock` diff changes no existing
+# `version =`, and pydantic 2.13.4, starlette 1.6.0, httpx 0.28.1 and anyio
+# 4.14.2 are all untouched — so the extra is genuinely additive and leaving it
+# out changes nothing else in the resolution.
+#
+# So it is an extra, and `mailarc-mcp` is where the server itself lives. `uv
+# sync` gives the desktop bundle, which serves no MCP and carries none of this;
+# `uv sync --extra mcp` gives the web deployment, and the Dockerfile's
+# `--all-extras` picks it up already. Nothing under `app/` imports the entry
+# point at module level, so the application starts either way.
+mcp = ["mailarc-mcp"]
+
+# `components/*` are first-party libraries built and versioned with the app.
+# The web application depends on them; none of them may depend back on it.
+[tool.uv.workspace]
+members = ["components/*"]
+
+[tool.uv.sources]
+mailarc-core = { workspace = true }
+mailarc-sync = { workspace = true }
+mailarc-analytics = { workspace = true }
+mailarc-google = { workspace = true }
+mailarc-imap = { workspace = true }
+mailarc-m365 = { workspace = true }
+mailarc-mcp = { workspace = true }
+mailarc-ui = { workspace = true }
+
 [dependency-groups]
+# `uv sync` installs the root's dependency closure and nothing else, so a
+# workspace member no one depends on yet would not be importable. Seven of the
+# eight are in that closure: `mailarc-analytics` joined it when the `derive` job
+# and `task graph:rebuild-derived` gave the application a reason to import it,
+# and `mailarc-imap` and `mailarc-m365` were born in it because
+# `app/composition.py` registers a provider the moment the provider exists — a
+# mailbox nothing can build is not a feature an installation may decline.
+# `mailarc-mcp` is deliberately outside it and reachable only through the `mcp`
+# extra — which is also why `task install` asks for that extra, since the test
+# suite covers the component and a checkout that could not run it would be
+# green for the wrong reason.
 dev = [
     "bump-my-version>=1.3.0",
     "detect-secrets>=1.5.0",
@@ -34,14 +83,18 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
     "pytest-httpserver>=1.1.5",
-    "ruff>=0.15.13",
-    "ty>=0.0.49",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.16.4",
+    "ty>=0.0.74",
     "types-PyYAML>=6.0.12.20260510",
 ]
 
 [project.scripts]
 # mail_archive = "mail_archive.cli.main:app"
-# mail_archive-mcp = "mail_archive.mcp_server.server:main"
+# The name the scaffold reserved was `mail_archive-mcp` against a package named
+# `mail_archive`; this application's package is `app`, and a console script is
+# spelled with hyphens because that is what a user types.
+mail-archive-mcp = "app.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/jenreh/mail-archive"
@@ -53,6 +106,7 @@ packages = ["app"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/app",
+    "/components",
     "README.md",
     "pyproject.toml",
 ]
@@ -103,7 +157,12 @@ extend-exclude = [
     ".vscode",
     "build",
     "dist",
-    "docs",
+    # Not `docs` as a whole: `docs/diagrams/` holds the Python that generates
+    # every diagram in the documentation, and it belongs in the same gate as
+    # the rest of the project. Only what npm and VitePress produce is excluded.
+    "docs/.vitepress/cache",
+    "docs/.vitepress/dist",
+    "docs/node_modules",
 ]
 
 [tool.ruff.lint]
@@ -178,6 +237,17 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "I001"]
+# Shared test material that is not itself a test module — `tests/worker_doubles.py`
+# and the like get the same allowances as the modules they serve, because a
+# stand-in has unused parameters by definition: it exists to be called with the
+# real thing's signature and to ignore most of it.
+"*_doubles.py" = [
+    "S101",
+    "ANN001",
+    "ARG002",
+    "ARG005",
+    "SLF001",
+]
 "test_**.py" = [
     "S101",
     "PLR2004",
@@ -205,19 +275,61 @@ docstring-code-line-length = "dynamic"
 exclude = ["*.pyi"]
 
 [tool.ruff.lint.isort]
-known-local-folder = ["app"]
+known-local-folder = [
+    "app",
+    # Shared test material that pytest puts on `sys.path` by directory rather
+    # than by package, so isort would otherwise file it under third party.
+    "engine_doubles",
+    # The test package itself: `tests/worker_doubles.py` is shared test
+    # material, and an import of it belongs beside `app`, not among the
+    # third-party packages isort would otherwise file it under.
+    "tests",
+    "mailarc_core",
+    "mailarc_sync",
+    "mailarc_analytics",
+    "mailarc_google",
+    "mailarc_imap",
+    "mailarc_m365",
+    "mailarc_mcp",
+    "mailarc_ui",
+]
 
 [tool.pytest.ini_options]
 cache_dir = ".cache/pytest"
-testpaths = ["tests"]
+testpaths = [
+    "tests",
+    "components/mailarc-core/tests",
+    "components/mailarc-sync/tests",
+    "components/mailarc-analytics/tests",
+    "components/mailarc-google/tests",
+    "components/mailarc-imap/tests",
+    "components/mailarc-m365/tests",
+    "components/mailarc-mcp/tests",
+    "components/mailarc-ui/tests",
+]
 asyncio_mode = "auto"
+# A cap, not a budget: nothing here comes near a minute, and the slowest test in
+# the suite starts a real FalkorDB. It exists because the failure mode it turns
+# red is otherwise invisible — a source whose cursor stops advancing makes the
+# engine's page loop spin, and without a timeout CI reports "the job hung" after
+# however long its own limit is, instead of naming the two tests that failed.
+timeout = 60
 markers = [
-    "sonos_live: requires real Sonos hardware on the network",
+    "graph_local: starts the vendored FalkorDB (needs `task tauri:vendor`)",
 ]
 
 # Type checking with `ty` (Astral). Run via `task typecheck` (uv run ty check).
+# `.venv` is never used on this machine (see `.env`'s UV_PROJECT_ENVIRONMENT); point ty
+# at the real interpreter explicitly instead of relying on its `.venv` auto-discovery.
 [tool.ty.environment]
 python-version = "3.14"
+python = ".venv.mac"
+# `scripts/` is never installed; its own tests add it to sys.path at import time.
+# `components/mailarc-imap/tests` is on the list for the same reason and one
+# more: `tests/test_composition.py` borrows that component's in-process IMAP
+# server rather than growing a second one, and appends the directory to
+# `sys.path` itself — pytest resolves the import, ty needs telling.
+extra-paths = ["scripts", "components/mailarc-imap/tests"]
 
 [tool.ty.src]
 exclude = [
@@ -236,7 +348,17 @@ unresolved-import = "warn"
 
 [tool.coverage.run]
 branch = true
-source = ["app"]
+source = [
+    "app",
+    "components/mailarc-core/src/mailarc_core",
+    "components/mailarc-sync/src/mailarc_sync",
+    "components/mailarc-analytics/src/mailarc_analytics",
+    "components/mailarc-google/src/mailarc_google",
+    "components/mailarc-imap/src/mailarc_imap",
+    "components/mailarc-m365/src/mailarc_m365",
+    "components/mailarc-mcp/src/mailarc_mcp",
+    "components/mailarc-ui/src/mailarc_ui",
+]
 omit = []
 
 [tool.coverage.report]

@@ -7,7 +7,12 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-from app import configuration
+from app import settings
+
+# Imported for its side effect: a table is only in Base.metadata once its
+# module has run, and Alembic compares against that metadata.
+from mailarc_core.database import entities  # noqa: F401
+from mailarc_core.database.sqlite import sync_database_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -32,12 +37,12 @@ target_metadata = [Base.metadata]  # , SQLModel.metadata]
 
 
 def get_database_url() -> str:
-    """Get database URL, trying multiple sources."""
+    """The blocking URL Alembic needs; the configured one names an async driver."""
 
-    return configuration.app.database.url
+    return sync_database_url(settings.app.database.url)  # ty: ignore[unresolved-attribute]
 
 
-def include_object(
+def include_objects(
     obj: Any, name: str, type_: str, reflected: bool, compare_to: Any | None
 ) -> bool:
     # Exclude specific tables
@@ -114,7 +119,6 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            include_object=include_object,
             compare_type=True,
             compare_server_default=True,
             render_as_batch=True,

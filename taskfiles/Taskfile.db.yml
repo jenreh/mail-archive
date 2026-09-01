@@ -4,6 +4,21 @@ version: "3"
 
 silent: true
 
+# alembic reads DatabaseConfig, so these commands must run under the same profile as the
+# application. Set per task and not in `.env`: appkit loads that file with
+# override=True, which would pin every entry point to one profile.
+#
+# A LITERAL value, never a template. `{{.PROFILES}}` resolves against the global
+# var scope, where Taskfile.tauri.yml declares `PROFILES: prod` — so templating it
+# here silently ran migrations under the prod profile.
+#
+# And in each task's own `env:`, never a file-level one. go-task merges a
+# file-level block into ONE environment shared by every task in the PROJECT, so
+# a header block here does not scope to this namespace — it hands `PROFILES` to
+# `task run`, to the agent sandbox, and to namespaces this file has never heard
+# of. `tests/test_taskfile_isolation.py` runs `task env-probe` and reads what
+# arrives, which is the only place the difference is visible.
+
 vars:
   RUNNER: uv run
 
@@ -19,21 +34,31 @@ tasks:
   revision:
     desc: |
       Create new Alembic migration (Usage: task db:revision -- "your message here")
+    env:
+      PROFILES: local
     cmds:
       - '{{.RUNNER}} alembic revision -m "{{.CLI_ARGS}}"'
 
   current:
     desc: Run alembic current (check migration status)
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} alembic current"
 
   history:
     desc: Show alembic migration history
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} alembic history"
 
   upgrade:
     desc: Run alembic upgrade head
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} alembic upgrade head"
 
   downgrade:
     desc: Downgrade database by one revision
+    env:
+      PROFILES: local
     cmd: "{{.RUNNER}} alembic downgrade -1"

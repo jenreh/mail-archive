@@ -1,0 +1,33 @@
+[package]
+name = "mail-archive"
+version = "1.0.0"
+description = "Email archive and analysis"
+authors = ["Jens Rehpöhler"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+# The desktop entry point lives in the library so it can be reused (and, later,
+# so the mobile targets can call the same `run()`).
+name = "mail_archive_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+# Small blocking HTTP client, used only to poll the backend's health endpoint.
+ureq = { version = "2", default-features = false }
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

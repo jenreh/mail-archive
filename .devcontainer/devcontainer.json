@@ -34,7 +34,7 @@
 				"GitHub.vscode-pull-request-github",
 				"humao.rest-client",
 				"ms-azuretools.vscode-containers",
-				"ms-ossdata.vscode-pgsql",
+				"qwtel.sqlite-viewer",
 				"ms-python.python",
 				"mutantdino.resourcemonitor",
 				"naumovs.color-highlight",
@@ -55,8 +55,10 @@
 		},
 		"ghcr.io/devcontainers/features/git:1.3.8": {},
 		"ghcr.io/devcontainers/features/github-cli:1.1.0": {},
+		"ghcr.io/devcontainers/features/git:1.3.5": {},
+		"ghcr.io/devcontainers/features/github-cli:1.1.1": {},
 		"ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.0": {},
-		"ghcr.io/devcontainers/features/node:2.0.0": {
+		"ghcr.io/devcontainers/features/node:2.1.0": {
 			"version": "24"
 		}
 	},

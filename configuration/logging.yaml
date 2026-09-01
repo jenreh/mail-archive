@@ -74,7 +74,3 @@ loggers:
     level: WARNING
     handlers: [console]
     propagate: 0
-  alembic.ddl.postgresql:
-    level: WARNING
-    handlers: [console]
-    propagate: 0

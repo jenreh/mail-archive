@@ -1,0 +1,62 @@
+# The profile the pytest suite runs the *composed* application config under.
+#
+# The root `conftest.py` redirects every `app_*` environment variable into a
+# per-run temporary directory, and for a bare `ArchiveConfig()` or
+# `GraphConfig()` that is enough. It is not enough for `AppConfig`, and the
+# reason is a source-order rule rather than a mistake: appkit's
+# `BaseConfig.settings_customise_sources` returns `init_settings` FIRST, and
+# `Configuration[AppConfig]` validates the YAML mapping under `app.database` /
+# `app.graph` into the nested settings classes — so those values arrive as init
+# kwargs and outrank every environment variable. Measured from inside a sealed
+# run before this file existed:
+#
+#     database.url    = sqlite+aiosqlite:///.state/mail-archive.db
+#     graph.host:port = 127.0.0.1:6379
+#     graph.graph_name= mail-archive
+#
+# That is the real archive, and the developer's own FalkorDB. The only lever
+# that beats an init kwarg is another init kwarg, which is what a profile is:
+# `conftest.py` sets `PROFILES=test`, so this file is merged over `config.yaml`
+# and the highest-priority source is the one naming the sandbox.
+#
+# It overrides exactly the keys `config.yaml` names that point at the real
+# archive. `graph.data_dir` and `archive.store_dir` are deliberately absent —
+# `config.yaml` does not mention them either, so no init kwarg exists for them
+# and the conftest's environment variables win, which puts them in the same
+# per-run temporary directory a bare config lands in. One sandbox, reached two
+# ways. `tests/test_conftest_sandbox.py` asserts the *resolved* values of all
+# five, so a key added to `config.yaml` later turns that split into a red test
+# rather than back into a silent write.
+
+profile: test
+
+app:
+  environment: test
+
+  database:
+    type: sqlite
+    # Not a file. This file is static and the suite's sandbox is a temporary
+    # directory whose name is invented per run, so there is no path here that
+    # could name it — and any fixed path would be a second sandbox to keep
+    # track of. An in-memory database is the one a static file can name, and
+    # it fails in the right direction: a test that reaches the composed
+    # database without setting one up gets "no such table" rather than the
+    # accounts and the encrypted credentials of a real mailbox.
+    # Quoted: a plain YAML scalar ending in a colon reads as a mapping key.
+    url: "sqlite+aiosqlite:///:memory:"
+    encryption_key: test-key-not-a-secret-0000000000
+
+  graph:
+    mode: local
+    backend: falkordb
+    host: 127.0.0.1
+    # Port 0 is never listening, so a test that forgot to start its own server
+    # fails to connect instead of connecting to whatever is running on 6379 —
+    # which on a developer machine is the real archive. The suites that need a
+    # real server start one on a port they picked and pass the config
+    # explicitly (`components/*/tests/**/conftest.py`).
+    port: 0
+    # A different name as well as a different port: a server somehow reached on
+    # the wrong port would still not serve `mail-archive`. Same value the
+    # conftest's `app_graph_graph_name` override uses, so both ways in agree.
+    graph_name: mail-archive-sandbox

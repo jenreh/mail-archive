@@ -342,6 +342,40 @@ class TestSyncCheckpointRepository:
 
         assert found is None
 
+    async def test_forgets_every_scope_of_one_mailbox(self, session) -> None:
+        """What makes a cleared mailbox importable rather than merely empty.
+
+        Every scope, not the one a caller happens to name: a full walk resumes
+        from one row and a delta from another, and a clear-out that left either
+        standing would re-import nothing and call it a success.
+        """
+        mine = await stored_account(session)
+        other = await stored_account(session, email_address="other@example.com")
+        repository = SyncCheckpointRepository()
+        await repository.upsert_cursor(session, mine.id, "full", "page-token", 100)
+        await repository.upsert_cursor(session, mine.id, "incremental", "hist=9", 100)
+        await repository.upsert_cursor(session, other.id, "full", "theirs", 1)
+
+        removed = await repository.delete_for_account(session, mine.id)
+
+        assert removed == 2
+        assert (
+            await repository.find_by_account_and_scope(session, mine.id, "full") is None
+        )
+        assert (
+            await repository.find_by_account_and_scope(session, other.id, "full")
+        ) is not None
+
+    async def test_a_mailbox_that_never_ran_has_nothing_to_forget(
+        self, session
+    ) -> None:
+        account = await stored_account(session)
+
+        assert (
+            await SyncCheckpointRepository().delete_for_account(session, account.id)
+            == 0
+        )
+
 
 class TestSyncJobRepository:
     async def test_finds_the_queued_jobs_oldest_first(self, session) -> None:
@@ -525,6 +559,62 @@ class TestSyncJobRepository:
 
         assert [job.id for job in found] == [running.id]
 
+    async def test_finds_the_queued_job_as_well_as_the_running_one(
+        self, session
+    ) -> None:
+        """One state wider than :meth:`find_running_for_account`, deliberately.
+
+        A caller about to destroy what a job would write has to count the
+        queued one: it starts the moment a worker frees up, which mid
+        clear-out is a half-imported mailbox.
+        """
+        mine = await stored_account(session)
+        other = await stored_account(session, email_address="other@example.com")
+        running = MailSyncJobEntity(
+            kind=SyncJobKind.IMPORT, account_id=mine.id, state=SyncJobState.RUNNING
+        )
+        queued = MailSyncJobEntity(kind=SyncJobKind.IMPORT, account_id=mine.id)
+        session.add_all(
+            [
+                running,
+                queued,
+                MailSyncJobEntity(
+                    kind=SyncJobKind.IMPORT,
+                    account_id=mine.id,
+                    state=SyncJobState.SUCCEEDED,
+                ),
+                MailSyncJobEntity(kind=SyncJobKind.IMPORT, account_id=other.id),
+            ]
+        )
+        await session.flush()
+
+        found = await SyncJobRepository().find_open_for_account(session, mine.id)
+
+        assert [job.id for job in found] == [running.id, queued.id]
+
+    async def test_a_finished_history_leaves_the_mailbox_idle(self, session) -> None:
+        """A cancelled or failed import is not a reason to refuse anything."""
+        account = await stored_account(session)
+        session.add_all(
+            [
+                MailSyncJobEntity(
+                    kind=SyncJobKind.IMPORT,
+                    account_id=account.id,
+                    state=SyncJobState.FAILED,
+                ),
+                MailSyncJobEntity(
+                    kind=SyncJobKind.IMPORT,
+                    account_id=account.id,
+                    state=SyncJobState.CANCELLED,
+                ),
+            ]
+        )
+        await session.flush()
+
+        found = await SyncJobRepository().find_open_for_account(session, account.id)
+
+        assert found == []
+
 
 class TestArchivedMessageRepository:
     async def test_returns_exactly_the_ids_it_already_knows(self, session) -> None:
@@ -571,6 +661,42 @@ class TestArchivedMessageRepository:
         assert [(row.provider_message_id, row.canonical_id) for row in rows] == [
             ("18f0", "sha-a")
         ]
+
+    async def test_forgets_one_mailbox_and_leaves_the_other_alone(
+        self, session
+    ) -> None:
+        """The other half of an importable mailbox.
+
+        The import subtracts this table from every listing batch before it
+        fetches anything, so rows left here after the graph was emptied make
+        the next import skip exactly the messages that are gone.
+        """
+        mine = await stored_account(session)
+        other = await stored_account(session, email_address="other@example.com")
+        repository = ArchivedMessageRepository()
+        await repository.record_many(session, mine.id, {"a": "sha-a", "b": "sha-b"})
+        await repository.record_many(session, other.id, {"c": "sha-c"})
+
+        removed = await repository.delete_for_account(session, mine.id)
+
+        assert removed == 2
+        assert (
+            await repository.find_known_provider_ids(session, mine.id, ["a", "b"])
+            == set()
+        )
+        assert await repository.find_known_provider_ids(session, other.id, ["c"]) == {
+            "c"
+        }
+
+    async def test_a_mailbox_with_nothing_archived_removes_nothing(
+        self, session
+    ) -> None:
+        account = await stored_account(session)
+
+        assert (
+            await ArchivedMessageRepository().delete_for_account(session, account.id)
+            == 0
+        )
 
 
 class TestFailedMessageRepository:
@@ -638,6 +764,30 @@ class TestFailedMessageRepository:
         found = await FailedMessageRepository().find_recent(session, limit=0)
 
         assert len(found) == 1
+
+
+class TestClearingTheFailureLedger:
+    async def test_forgets_one_mailboxs_failures_only(self, session) -> None:
+        """They name provider ids that no longer exist once a mailbox is cleared."""
+        mine = await stored_account(session)
+        other = await stored_account(session, email_address="other@example.com")
+        repository = FailedMessageRepository()
+        await repository.record(session, mine.id, "18f0", "permanent")
+        await repository.record(session, mine.id, "18f1", "permanent")
+        await repository.record(session, other.id, "18f2", "permanent")
+
+        removed = await repository.delete_for_account(session, mine.id)
+
+        assert removed == 2
+        remaining = await repository.find_recent(session)
+        assert [row.account_id for row in remaining] == [other.id]
+
+    async def test_a_clean_mailbox_removes_nothing(self, session) -> None:
+        account = await stored_account(session)
+
+        assert (
+            await FailedMessageRepository().delete_for_account(session, account.id) == 0
+        )
 
 
 class TestTheFailurePageCap:

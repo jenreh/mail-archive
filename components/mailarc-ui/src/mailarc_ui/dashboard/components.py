@@ -20,7 +20,16 @@ import reflex as rx
 
 from mailarc_ui.dashboard.model import MONTH, WEEK, YEAR, MeterView
 from mailarc_ui.dashboard.state import DashboardState
-from mailarc_ui.kit import CardTone, card_heading, panel_card
+from mailarc_ui.kit import (
+    CardTone,
+    card_heading,
+    empty_panel,
+    message,
+    meter_bar,
+    panel_card,
+    placeholder_block,
+    range_switch,
+)
 
 RANGE_CHOICES: list[dict[str, str]] = [
     {"label": "Last week", "value": WEEK},
@@ -103,14 +112,7 @@ def _band_error() -> rx.Component:
         rx.fragment(),
         rx.cond(
             DashboardState.counts_error != "",
-            mn.alert(
-                DashboardState.counts_error,
-                color="red",
-                variant="light",
-                icon=rx.icon("triangle-alert", size=16),
-                py="xs",
-                w="100%",
-            ),
+            message(DashboardState.counts_error, "failure", w="100%"),
             rx.fragment(),
         ),
     )
@@ -165,17 +167,16 @@ def notifications_card() -> rx.Component:
                 rx.cond(
                     DashboardState.has_notifications,
                     mn.stack(
-                        rx.foreach(DashboardState.notifications, _notification),
+                        rx.foreach(DashboardState.visible_notifications, _notification),
                         gap=10,
                         w="100%",
                     ),
                     mn.box(
-                        mn.empty_state(
-                            icon=rx.icon("check", size=28),
-                            title="Nothing needs attention",
-                            description="No failed imports, no stalled jobs, no "
-                            "account waiting to be reconnected.",
-                            align="center",
+                        empty_panel(
+                            "check",
+                            "Nothing needs attention",
+                            "No failed imports, no stalled jobs, no account "
+                            "waiting to be reconnected.",
                         ),
                         class_name="ma-panel",
                         w="100%",
@@ -246,21 +247,57 @@ def storage_card() -> rx.Component:
 
 
 def _cards() -> rx.Component:
-    """Three across, then a chart beside the checklist, then a chart.
+    """Two columns, each flowing on its own: the measurements, then the state.
 
-    ``mn.grid`` rather than ``mn.simple_grid``: two of the six cards span two
-    columns of three, and a simple grid has one width for every cell.
+    **Two columns and not a grid of six, because a grid row is as tall as its
+    tallest cell.** Laid out three across, the two short statistics cards sat in
+    the same row as the notifications list, which is the tallest card on the
+    page — so the row was the list's height and the charts underneath started
+    below a band of empty white as deep as the cards themselves. Nothing was
+    wrong with either card; the gap was the row.
+
+    Columns have no rows to align, so the left one closes up: the two
+    statistics cards, then the first chart directly under them. What is left
+    over lands at the foot of the shorter column, which is where slack belongs.
+
+    Which card goes where follows from what each column is. The left is the
+    archive measured — how much of it there is, what it occupies, how it grew —
+    and the right is whether it is currently well: what needs attention, and
+    what is running.
     """
     return mn.grid(
-        mn.grid_col(system_card(), span={"base": 12, "md": 6, "lg": 4}),
-        mn.grid_col(disk_card(), span={"base": 12, "md": 6, "lg": 4}),
-        mn.grid_col(notifications_card(), span={"base": 12, "md": 12, "lg": 4}),
-        mn.grid_col(messages_card(), span={"base": 12, "lg": 8}),
-        mn.grid_col(services_card(), span={"base": 12, "lg": 4}),
-        mn.grid_col(storage_card(), span={"base": 12, "lg": 8}),
+        mn.grid_col(_measurements(), span={"base": 12, "lg": 8}),
+        mn.grid_col(_condition(), span={"base": 12, "lg": 4}),
         gutter="lg",
         w="100%",
     )
+
+
+def _measurements() -> rx.Component:
+    """The wide column: the two statistics cards, then both charts.
+
+    The pair stays side by side down to ``md`` — at ``lg`` this column is two
+    thirds of a capped 1440px, so each card gets about 460px, which is roughly
+    what a meter row was drawn at and appreciably more than the ~250px three
+    across used to leave it.
+    """
+    return mn.stack(
+        mn.simple_grid(
+            system_card(),
+            disk_card(),
+            cols={"base": 1, "md": 2},
+            spacing="lg",
+        ),
+        messages_card(),
+        storage_card(),
+        gap="lg",
+        w="100%",
+    )
+
+
+def _condition() -> rx.Component:
+    """The narrow column: what needs attention, over what is running."""
+    return mn.stack(notifications_card(), services_card(), gap="lg", w="100%")
 
 
 def _chart_card(icon: str, title: str, chart: rx.Component) -> rx.Component:
@@ -288,13 +325,10 @@ def _chart_card(icon: str, title: str, chart: rx.Component) -> rx.Component:
 
 def _range_switch() -> rx.Component:
     """The same switch above both charts, bound to the one var they share."""
-    return mn.segmented_control(
+    return range_switch(
         data=RANGE_CHOICES,
         value=DashboardState.range,
         on_change=DashboardState.choose_range,
-        size="xs",
-        radius="md",
-        class_name="ma-range",
     )
 
 
@@ -310,13 +344,7 @@ def _panel(loading: Any, error: Any, body: rx.Component) -> rx.Component:
         loading,
         rx.cond(
             error != "",
-            mn.alert(
-                error,
-                color="red",
-                variant="light",
-                icon=rx.icon("triangle-alert", size=16),
-                py="xs",
-            ),
+            message(error, "failure"),
             body,
         ),
     )
@@ -329,7 +357,7 @@ def _while_reading(loading: Any, body: rx.Component) -> rx.Component:
     checklist row already says "could not ask" by going grey, so a failed read
     is a rendering that card has rather than a state it has to be replaced by.
     """
-    return rx.cond(loading, mn.skeleton(h=96, radius="md", w="100%"), body)
+    return rx.cond(loading, placeholder_block(), body)
 
 
 def _meters(rows: Any, tone: CardTone) -> rx.Component:
@@ -350,44 +378,40 @@ def _meters(rows: Any, tone: CardTone) -> rx.Component:
 
 
 def _meter_row(row: MeterView, tone: CardTone) -> rx.Component:
-    """A tinted chip, a label, a striped bar and the percentage."""
+    """A tinted chip, a label over its size, a striped bar and the percentage.
+
+    The size goes **under** the label rather than beside it. Beside it, the two
+    shared one line with the bar and the figure, and a narrow card cut both of
+    them at once: ``Mailst… 67.7 KB / 4…`` — a name cut in half next to a size
+    cut in half, which says less than either would alone. Stacked, the label has
+    the block's width to itself and so does the size, and measured on the
+    running page neither ellipses any more at any width the cards are drawn at.
+
+    No path here, and that is deliberate — see :attr:`MeterView.caption`.
+    """
     return mn.group(
         mn.center(rx.icon(row.icon, size=16), class_name=f"ma-chip ma-chip--{tone}"),
         mn.stack(
-            mn.group(
-                mn.text(row.label, class_name="ma-row-label"),
-                mn.text(row.caption, class_name="ma-row-caption ma-tabular"),
-                gap=6,
-                align="baseline",
-                wrap="nowrap",
-            ),
+            mn.text(row.label, class_name="ma-row-label"),
             rx.cond(
-                row.detail != "",
-                mn.text(row.detail, class_name="ma-row-detail"),
+                row.caption != "",
+                mn.text(row.caption, class_name="ma-row-caption ma-tabular"),
                 rx.fragment(),
             ),
             gap=2,
             class_name="ma-row-text",
         ),
-        mn.progress(
-            value=row.percent,
-            color=_METER_COLORS[tone],
-            size=8,
-            radius="xl",
-            striped=True,
-            animated=False,
-            class_name="ma-meter",
-        ),
+        meter_bar(row.percent, _METER_COLORS[tone]),
         mn.text(row.value, class_name="ma-row-value ma-tabular"),
         justify="space-between",
         align="center",
         # One line, always. The reference row is a chip, a label, a bar and a
         # figure across a single line, and that shape is what makes it read as a
         # meter; wrapping it turns one row into two and the card into a list of
-        # stacked fragments. Three cards across a 1440px laptop leave this row
-        # about 250px against the 450px the design was drawn at, so something
-        # has to give — `.ma-meter` shrinks and the label ellipses, which is the
-        # same truncation the notification text already uses.
+        # stacked fragments. Two cards across the wide column of a 1440px laptop
+        # leave this row about 460px, near the 450px the design was drawn at —
+        # but a narrow window still squeezes it, so `.ma-meter` shrinks and the
+        # label ellipses, which is the truncation the notification text uses.
         wrap="nowrap",
         gap="sm",
         w="100%",
@@ -395,7 +419,15 @@ def _meter_row(row: MeterView, tone: CardTone) -> rx.Component:
 
 
 def _notification(row: Any) -> rx.Component:
-    """One pending fault: a glyph, two clamped lines, and when it happened."""
+    """One pending fault: a glyph, two clamped lines, when, and a way out.
+
+    The cross is the only control on this page that changes anything, and what
+    it changes is this browser's reading of the archive rather than the archive:
+    :meth:`~mailarc_ui.dashboard.state.DashboardState.dismiss` remembers the
+    row's key and the panel redraws without it. Nothing is deleted — the failed
+    job, the broken mailbox and the message the import gave up on are all still
+    where they were read from.
+    """
     return mn.group(
         mn.center(
             rx.icon("info", size=14),
@@ -406,6 +438,15 @@ def _notification(row: Any) -> rx.Component:
             mn.text(row.when, class_name="ma-notice-when ma-tabular"),
             gap=2,
             style={"minWidth": 0, "flex": 1},
+        ),
+        mn.close_button(
+            on_click=DashboardState.dismiss(row.key),
+            size="sm",
+            radius="xl",
+            variant="subtle",
+            icon_size=14,
+            aria_label="Stop showing this notification",
+            class_name="ma-notice-close",
         ),
         align="flex-start",
         wrap="nowrap",

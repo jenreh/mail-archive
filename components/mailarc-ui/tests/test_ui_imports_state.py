@@ -97,6 +97,20 @@ async def account_id(session_factory: SessionFactory) -> int:
 
 
 @pytest.fixture
+async def other_account_id(session_factory: SessionFactory) -> int:
+    """A second mailbox. An import belongs to one, which takes two to show."""
+    async with session_factory() as session:
+        account = MailAccountEntity(
+            provider="fake",
+            display_name="Private",
+            email_address="jens@example.org",
+        )
+        session.add(account)
+        await session.flush()
+        return account.id
+
+
+@pytest.fixture
 def state(queue: JobQueue, account_id: int) -> Iterator[ImportJobState]:
     """The state under test, with the queue it builds pointed at our file.
 
@@ -123,7 +137,7 @@ async def _run_poll(state: ImportJobState) -> None:
     Reflex refuses a direct `state.poll()` call on a background handler, so go
     through the EventHandler's wrapped function.
     """
-    await ImportJobState.poll.fn(state)  # ty: ignore[unresolved-attribute]
+    await ImportJobState.poll.fn(state)
 
 
 def _stopping_sleep(state: ImportJobState, after: int = 1) -> AsyncMock:
@@ -182,19 +196,19 @@ class TestDefaults:
         assert state.can_cancel is False
         assert state.polling is False
 
-    def test_start_needs_an_account(self, state) -> None:
+    async def test_start_needs_an_account(self, state) -> None:
         assert state.can_start is True
 
-        state.select_account(0)
+        await state.select_account(0)
 
         assert state.can_start is False
 
-    def test_select_account_points_the_panel_and_clears_the_message(
+    async def test_select_account_points_the_panel_and_clears_the_message(
         self, state
     ) -> None:
         state.message = "Choose an account first."
 
-        state.select_account(42)
+        await state.select_account(42)
 
         assert state.account_id == 42
         assert state.message == ""
@@ -233,7 +247,7 @@ class TestStartImport:
     async def test_without_an_account_it_asks_for_one(
         self, state, session_factory
     ) -> None:
-        state.select_account(0)
+        await state.select_account(0)
 
         assert await state.start_import() is None
         assert state.message == "Choose an account first."
@@ -248,7 +262,7 @@ class TestStartImport:
 
         assert await state.start_import() is None
         assert state.job_id == first
-        assert state.message == "An import is already running."
+        assert state.message == "An import is already running for this mailbox."
         assert await _job_count(session_factory) == 1
 
     async def test_the_history_stops_at_a_handful(self, state, queue) -> None:
@@ -275,6 +289,107 @@ class TestStartImport:
         assert state.job_id != first
         assert await _job_count(session_factory) == 2
         assert [row.job_id for row in state.recent] == [state.job_id, first]
+
+
+class TestMultipleMailboxes:
+    """An import belongs to a mailbox, so two of them can be queued at once.
+
+    The panel is one and the mailbox under it changes, which is the whole
+    difficulty: every reading it holds has to be re-pointed with the selection,
+    or the mailbox on screen inherits the state of the one before it.
+    """
+
+    async def test_an_import_elsewhere_leaves_this_mailbox_startable(
+        self, state, other_account_id
+    ) -> None:
+        await state.start_import()
+        running = state.job_id
+        assert running > 0
+
+        await state.select_account(other_account_id)
+
+        assert state.job_id == 0
+        assert state.job.active is False
+        assert state.can_start is True
+        assert state.recent == []
+
+    async def test_each_mailbox_queues_its_own_import(
+        self, state, session_factory, other_account_id
+    ) -> None:
+        await state.start_import()
+        first = state.job_id
+
+        await state.select_account(other_account_id)
+        await state.start_import()
+
+        assert state.job_id != first
+        assert state.job.account_id == other_account_id
+        assert state.job.active is True
+        assert await _job_count(session_factory) == 2
+        assert [row.job_id for row in state.recent] == [state.job_id]
+
+    async def test_the_history_belongs_to_the_mailbox_it_is_shown_under(
+        self, state, queue, account_id, other_account_id
+    ) -> None:
+        await state.start_import()
+        first = state.job_id
+        await queue.succeed(first)
+        await state.select_account(other_account_id)
+        await state.start_import()
+        second = state.job_id
+
+        await state.select_account(account_id)
+
+        assert second != first
+        assert [row.job_id for row in state.recent] == [first]
+
+    async def test_a_mailbox_that_is_already_importing_is_picked_up(
+        self, state, queue, account_id
+    ) -> None:
+        """A reload, or a second tab: this panel started no job of its own."""
+        elsewhere = await queue.enqueue(JobKind.IMPORT, account_id)
+
+        result = await state.select_account(account_id)
+
+        assert state.job_id == elsewhere
+        assert state.job.active is True
+        assert state.can_start is False
+        assert state.polling is True
+        assert result is ImportJobState.poll
+        assert [row.job_id for row in state.recent] == [elsewhere]
+
+    async def test_the_page_load_picks_an_open_import_up_too(
+        self, state, queue, account_id
+    ) -> None:
+        elsewhere = await queue.enqueue(JobKind.IMPORT, account_id)
+
+        result = await state.refresh()
+
+        assert state.job_id == elsewhere
+        assert state.can_start is False
+        assert result is ImportJobState.poll
+
+    async def test_it_does_not_queue_a_second_import_over_an_open_one(
+        self, state, queue, session_factory, account_id
+    ) -> None:
+        await queue.enqueue(JobKind.IMPORT, account_id)
+
+        assert await state.start_import() is None
+        assert state.message == "An import is already running for this mailbox."
+        assert await _job_count(session_factory) == 1
+
+    async def test_an_unreachable_queue_does_not_stop_the_selection(
+        self, state, queue, account_id
+    ) -> None:
+        """The enqueue right after would fail too, and it has the message."""
+        with patch.object(
+            queue, "find_open", AsyncMock(side_effect=RuntimeError("db went away"))
+        ):
+            await state.select_account(account_id)
+
+        assert state.account_id == account_id
+        assert state.job_id == 0
+        assert state.can_start is True
 
 
 class TestPercentage:

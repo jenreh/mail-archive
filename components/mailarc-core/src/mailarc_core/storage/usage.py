@@ -4,7 +4,7 @@
 against a real disk, and :func:`shutil.disk_usage` is a syscall of its own, so
 an event loop must never call :meth:`StorageReader.usage` directly: the
 caller's contract is ``await asyncio.to_thread(reader.usage)``, exactly as
-``mailarc_ui``'s review state already does around the blocking archive reads.
+``mailarc_ui``'s search state already does around the blocking archive reads.
 
 Nothing here raises. A storage panel is asked to render on installations where
 the mailstore has not been created yet, where the graph directory belongs to

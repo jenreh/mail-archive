@@ -24,7 +24,6 @@ INSIGHTS = "/insights"
 ``/admin/``: it is something a reader of the archive looks at rather than
 something an operator maintains."""
 
-REVIEW = "/admin/review"
 ACCOUNTS = "/admin/accounts"
 EMBEDDER = "/admin/embedder"
 GRAPH_STATUS = "/admin/status"
@@ -33,12 +32,11 @@ ALL_ROUTES: tuple[str, ...] = (
     SEARCH,
     DASHBOARD,
     INSIGHTS,
-    REVIEW,
     ACCOUNTS,
     EMBEDDER,
     GRAPH_STATUS,
 )
-"""In the order the rail shows them — the three menu items, then the four the
+"""In the order the rail shows them — the three menu items, then the three the
 admin popover holds — so a reader of either sees the same application. A tuple
 because a route table is not something a caller edits."""
 
@@ -49,6 +47,5 @@ __all__ = [
     "EMBEDDER",
     "GRAPH_STATUS",
     "INSIGHTS",
-    "REVIEW",
     "SEARCH",
 ]

@@ -15,10 +15,9 @@
 ``components``
     The result list and the three-column panel a page drops in.
 
-The reading pane is not here. It is
-:mod:`mailarc_ui.message_detail`, shared with the review page under
-``/admin/review``, and handed this page's state class so each keeps its own
-open message.
+The reading pane is not here. It is :mod:`mailarc_ui.message_detail`, which
+takes a state class rather than naming one, and is handed this page's so the
+open message belongs to this page.
 """
 
 from mailarc_ui.search.components import LIST_WIDTH, result_list, search_panel

@@ -232,21 +232,21 @@ async def _load(state: MailSearchState) -> None:
     """The page's ``on_load``, the way Reflex invokes a background task."""
     enter, leave = _unlocked()
     with enter, leave:
-        await MailSearchState.load.fn(state)  # ty: ignore[unresolved-attribute]
+        await MailSearchState.load.fn(state)
 
 
 async def _submit(state: MailSearchState) -> None:
     """The Search button, same reason as :func:`_load`."""
     enter, leave = _unlocked()
     with enter, leave:
-        await MailSearchState.submit.fn(state)  # ty: ignore[unresolved-attribute]
+        await MailSearchState.submit.fn(state)
 
 
 async def _load_more(state: MailSearchState) -> None:
     """The Load more button, same reason as :func:`_load`."""
     enter, leave = _unlocked()
     with enter, leave:
-        await MailSearchState.load_more.fn(state)  # ty: ignore[unresolved-attribute]
+        await MailSearchState.load_more.fn(state)
 
 
 class TestTheFormAsFilters:

@@ -101,7 +101,7 @@ async def _run_poll(state: AnalyticsInsightsState) -> None:
     Reflex refuses a direct call on a background handler, so go through the
     EventHandler's wrapped function.
     """
-    await AnalyticsInsightsState.poll.fn(state)  # ty: ignore[unresolved-attribute]
+    await AnalyticsInsightsState.poll.fn(state)
 
 
 def _stopping_sleep(state: AnalyticsInsightsState, after: int = 1) -> AsyncMock:
@@ -163,12 +163,12 @@ async def _load(state: AnalyticsInsightsState) -> None:
     two mutations, so Reflex refuses a direct call on it; going through the
     ``EventHandler``'s wrapped function is the same code the app runs.
     """
-    await AnalyticsInsightsState.load.fn(state)  # ty: ignore[unresolved-attribute]
+    await AnalyticsInsightsState.load.fn(state)
 
 
 async def _check_agreement(state: AnalyticsInsightsState) -> None:
     """The Cross-check button, same reason as :func:`_load`."""
-    await AnalyticsInsightsState.check_agreement.fn(state)  # ty: ignore[unresolved-attribute]
+    await AnalyticsInsightsState.check_agreement.fn(state)
 
 
 class TestRebuilding:

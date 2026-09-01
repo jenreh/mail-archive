@@ -6,9 +6,16 @@ not tidiness: an empty list is a *valid answer* to a search, and a user reading
 one concludes that their archive holds nothing about the thing they looked for.
 Every hour they then spend not looking again was bought by us saving an
 exception. So the three states in which a vector search cannot run raise, and
-each message names the remedy that fixes it — the settings page first and the
-configuration file second, in that order, because that is the order of both
-reachability and precedence (:data:`SETTINGS_PAGE`, :data:`STORED_WINS`).
+each message names the capability that stopped and the reason it did.
+
+The remedies used to be in these sentences too — the settings page, the
+providers and their trade-off, the configuration keys. They are short now on
+purpose: a reader meets one of these at the moment they wanted an answer, and
+a paragraph there is read as an obstacle rather than as help. The fix belongs
+on the page that performs it. Where a message still has a remedy a reader
+cannot find on their own it keeps it — :func:`dimension_mismatch` names the
+page and the task, because nothing about a wrong index length suggests either
+(:data:`SETTINGS_PAGE`, :data:`STORED_WINS`).
 
 Deliberately **not** a :class:`~mailarc_core.mail.errors.MailError`. That
 taxonomy answers one question — retry, re-consent, or skip this message — and
@@ -27,6 +34,9 @@ an MCP tool or a page can turn the pair into one readable failure with a single
 
 SETTINGS_PAGE = "/admin/embedder"
 """Where a person changes the embedder, named in every remedy that has one.
+
+Which is now :func:`dimension_mismatch` alone; the short states leave the fix
+to the page. The pin below still matters for exactly that one.
 
 A route rather than a setting name because a route is what most readers can
 actually reach: on the desktop bundle there is no shell into the application's
@@ -47,34 +57,16 @@ of these sentences exports a variable, restarts, and meets the identical
 message with nothing to show for it.
 """
 
-NO_EMBEDDER = (
-    "Semantic search is off: no embedder is configured. Choose one on the "
-    f"{SETTINGS_PAGE} page — 'ollama' is a local model needing no account and "
-    "no key, 'openai' uploads message text to a third party and needs a key — "
-    "then run the embed job to compute the vectors. The same settings are "
-    "app_semantic_provider and app_semantic_api_key in the configuration "
-    f"file or the environment, but {STORED_WINS}. Full-text search, "
-    "correspondents, topics and templates all work without an embedder."
-)
+NO_EMBEDDER = "Semantic search: no embedder is configured."
 """The message every embedder-off surface shows, word for word.
 
 One constant rather than one sentence per caller: the MCP tool, the insights
 panel, the embed job and the search all reach this state, and four
-hand-written variants would be four chances to describe the fix wrongly.
-
-It names the page **first** and the environment second, in that order, because
-that is the order of both reachability and precedence. It used to name only
-``app_semantic_provider``, which was true when the environment was the only way
-to configure an embedder and became actively wrong when the settings row
-started winning the merge: a user who exported the variable and restarted got
-this same sentence back and no explanation.
+hand-written variants would be four chances to describe it differently.
 """
 
-NO_VECTOR_INDEX = (
-    "Semantic search is off: the graph has no vector index on Message."
-    "embedding. Run `task graph:upgrade` to apply the migrations, then run "
-    "the embed job."
-)
+
+NO_VECTOR_INDEX = "Semantic search: the graph has no vector index"
 """Vectors may be stored, but nothing can find them.
 
 Its own message because the fix is a different one: the embedder is configured
@@ -84,10 +76,7 @@ right.
 """
 
 
-NO_FULLTEXT_INDEX = (
-    "Search is off: the graph has no full-text index on Message.subject and "
-    "Message.body_text. Run `task graph:upgrade` to apply the migrations."
-)
+NO_FULLTEXT_INDEX = "Fulltext search: the graph has no full-text index"
 """The archive cannot be searched at all — the baseline migration is missing.
 
 Separate from :data:`NO_VECTOR_INDEX` because it is a different half of the
@@ -104,9 +93,10 @@ class SemanticUnavailable(SemanticError):
     """The archive cannot answer vector questions as it currently stands.
 
     Not a failure of the search — a statement about the configuration or the
-    schema, with the remedy in the message. Callers show it verbatim: it is
-    written for the person who has to act on it, and paraphrasing it upstream
-    loses the setting name.
+    schema. Callers show it verbatim rather than rewording it: the message is
+    one sentence shared by the page, the job, the command and the MCP tool,
+    and a caller that paraphrases is a caller describing one installation in a
+    second way its reader has to reconcile with the first.
     """
 
 

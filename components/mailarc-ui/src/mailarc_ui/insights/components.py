@@ -1,21 +1,26 @@
 """The insights panels: what a rebuild wrote, and whether A1 can be believed.
 
-Layout and nothing else. Every value comes from a state —
-:class:`AnalyticsInsightsState` for the analyses,
-:class:`~mailarc_ui.insights.search.ArchiveSearchState` for the search box;
-nothing here opens a graph or runs a statement. The order down the page is the
-order a person checks an analysis in — what is in the archive, what a rebuild
-made of it, then whether the one derived thing that can be verified still
-verifies, then the three listings — so the sceptical question comes before the
-findings that depend on the answer. The search card is the exception and sits
-near the top: it is the one thing here that answers over a fresh archive
-nobody has derived anything from.
+Layout and nothing else. Every value comes from
+:class:`AnalyticsInsightsState`; nothing here opens a graph or runs a
+statement. The order down the page is the order a person checks an analysis in
+— what is in the archive, what a rebuild made of it, then whether the one
+derived thing that can be verified still verifies, then the three listings —
+so the sceptical question comes before the findings that depend on the answer.
+
+Finding a message is not one of them. This page had a search box of its own
+while the archive still opened on a dashboard; the redesign made search the
+front door (``/``), with filters, an account picker and a reading pane beside
+the results, and a second smaller box here answered the same question worse.
 
 The cross-check panel is deliberately the loudest thing on the page. It is the
 only panel that can say something is *wrong* rather than merely say what was
 found, and the verdict's colour is the whole of that message: red only when the
 edge claims more than the archive supports, because that is the one direction
 nothing legitimate produces.
+
+Every listing is a :func:`~mailarc_ui.kit.scroll_table`: twelve rows with the
+column names pinned above them, because these are rankings and a ranking is
+read from the top.
 """
 
 import appkit_mantine as mn
@@ -24,14 +29,26 @@ import reflex as rx
 from mailarc_ui.insights.model import (
     DisputeView,
     GroupView,
-    HitView,
     PairView,
     TemplateView,
     TopicView,
 )
-from mailarc_ui.insights.search import SEARCH_PATHS, ArchiveSearchState
 from mailarc_ui.insights.state import AnalyticsInsightsState
-from mailarc_ui.kit import card_heading, panel_card, stat_tile
+from mailarc_ui.kit import (
+    card_heading,
+    empty_panel,
+    job_progress,
+    message,
+    panel_card,
+    primary_button,
+    score_bar,
+    scroll_table,
+    soft_button,
+    spinner,
+    stat_tile,
+    status_badge,
+    toned_message,
+)
 
 KEY_COLUMN = {"width": 140}
 """A digest column: wide enough for twelve characters, and no wider."""
@@ -55,7 +72,7 @@ def totals_card() -> rx.Component:
             card_heading("database", "The archive, and what was derived"),
             rx.cond(
                 AnalyticsInsightsState.loading_totals,
-                mn.group(mn.loader(size="sm"), justify="center", py="lg"),
+                spinner(),
                 mn.simple_grid(
                     stat_tile("Messages", AnalyticsInsightsState.totals.messages),
                     stat_tile(
@@ -84,31 +101,28 @@ def totals_card() -> rx.Component:
 def rebuild_controls() -> rx.Component:
     """Rebuild, cancel, re-check, refresh — everything that starts work."""
     return mn.group(
-        mn.button(
+        primary_button(
             "Rebuild",
             on_click=AnalyticsInsightsState.start_rebuild,
             loading=AnalyticsInsightsState.starting,
             disabled=~AnalyticsInsightsState.can_rebuild,
             left_section=rx.icon("play", size=14),
-            variant="filled",
             size="xs",
         ),
-        mn.button(
+        soft_button(
             "Cancel",
             on_click=AnalyticsInsightsState.cancel_rebuild,
             loading=AnalyticsInsightsState.cancelling,
             disabled=~AnalyticsInsightsState.can_cancel,
             left_section=rx.icon("square", size=14),
-            variant="light",
             color="red",
             size="xs",
         ),
-        mn.button(
+        soft_button(
             "Refresh",
             on_click=AnalyticsInsightsState.load,
             loading=AnalyticsInsightsState.busy,
             left_section=rx.icon("refresh-cw", size=14),
-            variant="light",
             size="xs",
         ),
         gap="sm",
@@ -140,57 +154,27 @@ def rebuild_card() -> rx.Component:
             ),
             rx.cond(
                 AnalyticsInsightsState.has_job,
-                mn.group(
-                    mn.badge(
-                        AnalyticsInsightsState.job.status,
-                        color=AnalyticsInsightsState.job.status_color,
-                        variant="light",
-                        size="sm",
-                    ),
-                    mn.progress(
-                        value=AnalyticsInsightsState.job.percent,
-                        color="blue",
-                        size="lg",
-                        striped=AnalyticsInsightsState.job.active,
-                        animated=AnalyticsInsightsState.job.active,
-                        flex="1",
-                    ),
-                    mn.text(
-                        AnalyticsInsightsState.job.percent_label,
-                        size="sm",
-                        fw=600,
-                        w=52,
-                        ta="right",
-                    ),
-                    mn.text(
-                        AnalyticsInsightsState.job.stages_label,
-                        size="sm",
-                        c="dimmed",
-                    ),
-                    gap="sm",
-                    align="center",
-                    w="100%",
+                job_progress(
+                    AnalyticsInsightsState.job.percent,
+                    AnalyticsInsightsState.job.percent_label,
+                    AnalyticsInsightsState.job.stages_label,
+                    AnalyticsInsightsState.job.active,
+                    status=AnalyticsInsightsState.job.status,
+                    status_color=AnalyticsInsightsState.job.status_color,
                 ),
                 mn.text(""),
             ),
             rx.cond(
                 AnalyticsInsightsState.rebuild_message != "",
-                mn.alert(
-                    AnalyticsInsightsState.rebuild_message,
-                    color="yellow",
-                    variant="light",
-                    py="xs",
-                ),
+                message(AnalyticsInsightsState.rebuild_message, "warning"),
                 mn.text(""),
             ),
             rx.cond(
                 AnalyticsInsightsState.job.error != "",
-                mn.alert(
+                message(
                     AnalyticsInsightsState.job.error,
+                    "failure",
                     title="The rebuild stopped with an error",
-                    color="red",
-                    variant="light",
-                    icon=rx.icon("triangle-alert", size=16),
                 ),
                 mn.text(""),
             ),
@@ -201,16 +185,15 @@ def rebuild_card() -> rx.Component:
 
 def _verdict() -> rx.Component:
     """The headline, the sentence under it, and how much it covered."""
-    return mn.alert(
+    return toned_message(
         mn.stack(
             mn.text(AnalyticsInsightsState.agreement.headline, fw=700, size="sm"),
             mn.text(AnalyticsInsightsState.agreement.detail, size="xs"),
             mn.text(AnalyticsInsightsState.agreement.coverage, size="xs", c="dimmed"),
             gap=4,
         ),
-        color=AnalyticsInsightsState.agreement.color,
-        variant="light",
-        icon=rx.icon("scale", size=16),
+        AnalyticsInsightsState.agreement.color,
+        icon="scale",
     )
 
 
@@ -233,18 +216,14 @@ def _dispute_row(row: DisputeView) -> rx.Component:
         mn.table.td(mn.text(row.right_id, size="sm"), style=ADDRESS_COLUMN),
         mn.table.td(row.truth),
         mn.table.td(row.edge),
-        mn.table.td(
-            mn.badge(
-                row.note, color=row.note_color, variant="light", size="sm", tt="none"
-            )
-        ),
+        mn.table.td(status_badge(row.note, row.note_color)),
     )
 
 
 def disputes_table() -> rx.Component:
     """Every pair the two readings of A1 disagree about, loudest first."""
     return mn.stack(
-        mn.table(
+        scroll_table(
             mn.table.thead(
                 mn.table.tr(
                     mn.table.th("Address"),
@@ -257,9 +236,6 @@ def disputes_table() -> rx.Component:
             mn.table.tbody(
                 rx.foreach(AnalyticsInsightsState.agreement.disputes, _dispute_row)
             ),
-            striped=True,
-            highlight_on_hover=True,
-            tabular_nums=True,
         ),
         mn.text(AnalyticsInsightsState.agreement.disputes_note, size="xs", c="dimmed"),
         gap="xs",
@@ -277,7 +253,7 @@ def _pair_row(row: PairView) -> rx.Component:
 
 def pairs_table() -> rx.Component:
     """A1 itself: who keeps being written to together, heaviest pair first."""
-    return mn.table(
+    return scroll_table(
         mn.table.thead(
             mn.table.tr(
                 mn.table.th("Address"),
@@ -287,9 +263,6 @@ def pairs_table() -> rx.Component:
             ),
         ),
         mn.table.tbody(rx.foreach(AnalyticsInsightsState.pairs, _pair_row)),
-        striped=True,
-        highlight_on_hover=True,
-        tabular_nums=True,
     )
 
 
@@ -305,12 +278,11 @@ def agreement_card() -> rx.Component:
         mn.stack(
             mn.group(
                 card_heading("scale", "Co-addressed pairs, checked twice"),
-                mn.button(
+                soft_button(
                     "Re-check",
                     on_click=AnalyticsInsightsState.check_agreement,
                     loading=AnalyticsInsightsState.loading_agreement,
                     left_section=rx.icon("refresh-cw", size=14),
-                    variant="light",
                     size="xs",
                 ),
                 justify="space-between",
@@ -329,7 +301,7 @@ def agreement_card() -> rx.Component:
                 _panel_error(AnalyticsInsightsState.agreement_error),
                 rx.cond(
                     AnalyticsInsightsState.loading_agreement,
-                    mn.group(mn.loader(size="sm"), justify="center", py="lg"),
+                    spinner(),
                     mn.stack(
                         _verdict(),
                         _agreement_counts(),
@@ -376,7 +348,7 @@ def groups_card() -> rx.Component:
         loading=AnalyticsInsightsState.loading_groups,
         anything=AnalyticsInsightsState.groups,
         nothing="No group met the size and message thresholds.",
-        body=mn.table(
+        body=scroll_table(
             mn.table.thead(
                 mn.table.tr(
                     mn.table.th("Key"),
@@ -386,9 +358,6 @@ def groups_card() -> rx.Component:
                 ),
             ),
             mn.table.tbody(rx.foreach(AnalyticsInsightsState.groups, _group_row)),
-            striped=True,
-            highlight_on_hover=True,
-            tabular_nums=True,
         ),
     )
 
@@ -396,15 +365,7 @@ def groups_card() -> rx.Component:
 def _topic_row(row: TopicView) -> rx.Component:
     return mn.table.tr(
         mn.table.td(mn.text(row.label, size="sm", line_clamp=2)),
-        mn.table.td(
-            mn.badge(
-                row.method,
-                color=row.method_color,
-                variant="light",
-                size="sm",
-                tt="none",
-            )
-        ),
+        mn.table.td(status_badge(row.method, row.method_color)),
         mn.table.td(row.messages),
         mn.table.td(mn.code(row.key), style=KEY_COLUMN),
     )
@@ -430,7 +391,7 @@ def topics_card() -> rx.Component:
         loading=AnalyticsInsightsState.loading_topics,
         anything=AnalyticsInsightsState.topics,
         nothing="Nothing clustered above the topic score threshold.",
-        body=mn.table(
+        body=scroll_table(
             mn.table.thead(
                 mn.table.tr(
                     mn.table.th("Topic"),
@@ -440,9 +401,6 @@ def topics_card() -> rx.Component:
                 ),
             ),
             mn.table.tbody(rx.foreach(AnalyticsInsightsState.topics, _topic_row)),
-            striped=True,
-            highlight_on_hover=True,
-            tabular_nums=True,
         ),
     )
 
@@ -451,7 +409,7 @@ def _template_row(row: TemplateView) -> rx.Component:
     return mn.table.tr(
         mn.table.td(
             mn.group(
-                mn.progress(value=row.score, color="grape", size="sm", w=64),
+                score_bar(row.score),
                 mn.text(row.score_label, size="sm", fw=600),
                 gap="xs",
                 wrap="nowrap",
@@ -465,7 +423,7 @@ def _template_row(row: TemplateView) -> rx.Component:
 
 
 def _template_table(rows: rx.Var | list[TemplateView]) -> rx.Component:
-    return mn.table(
+    return scroll_table(
         mn.table.thead(
             mn.table.tr(
                 mn.table.th("Automatable"),
@@ -475,9 +433,6 @@ def _template_table(rows: rx.Var | list[TemplateView]) -> rx.Component:
             ),
         ),
         mn.table.tbody(rx.foreach(rows, _template_row)),
-        striped=True,
-        highlight_on_hover=True,
-        tabular_nums=True,
     )
 
 
@@ -519,201 +474,17 @@ def templates_card() -> rx.Component:
     )
 
 
-def _search_controls() -> rx.Component:
-    """The box and the button. Enter does what the button does."""
-    return mn.group(
-        mn.text_input(
-            placeholder="rechnung swiftscan",
-            default_value="",
-            on_change=ArchiveSearchState.set_query,
-            on_key_down=ArchiveSearchState.search_on_enter,
-            left_section=rx.icon("search", size=14),
-            left_section_pointer_events="none",
-            aria_label="Search the archive",
-            size="sm",
-            flex="1",
-        ),
-        mn.button(
-            "Search",
-            on_click=ArchiveSearchState.run,
-            loading=ArchiveSearchState.searching,
-            disabled=~ArchiveSearchState.can_search,
-            left_section=rx.icon("search", size=14),
-            variant="filled",
-            size="sm",
-        ),
-        gap="sm",
-        align="center",
-        wrap="nowrap",
-        w="100%",
-    )
-
-
-def _search_path() -> rx.Component:
-    """Which of the two searches runs, and which model the other one uses."""
-    return mn.group(
-        rx.cond(
-            ArchiveSearchState.embedding_model != "",
-            mn.badge(
-                ArchiveSearchState.embedding_model,
-                color="grape",
-                variant="light",
-                size="sm",
-                tt="none",
-            ),
-            mn.text(""),
-        ),
-        mn.segmented_control(
-            data=SEARCH_PATHS,
-            value=ArchiveSearchState.kind,
-            on_change=ArchiveSearchState.choose_path,
-            size="xs",
-        ),
-        gap="xs",
-        align="center",
-        wrap="nowrap",
-    )
-
-
-def _hit_row(row: HitView) -> rx.Component:
-    return mn.table.tr(
-        mn.table.td(
-            mn.group(
-                mn.progress(value=row.score, color="blue", size="sm", w=64),
-                mn.text(row.score_label, size="sm", fw=600),
-                gap="xs",
-                wrap="nowrap",
-                align="center",
-            ),
-        ),
-        mn.table.td(
-            mn.stack(
-                mn.text(row.subject, size="sm", line_clamp=2),
-                mn.text(row.message_id, size="xs", c="dimmed", line_clamp=1),
-                gap=0,
-            ),
-        ),
-        mn.table.td(mn.text(row.sender, size="sm"), style=ADDRESS_COLUMN),
-        mn.table.td(row.when),
-    )
-
-
-def hits_table() -> rx.Component:
-    """What the search found, in the order the index ranked it."""
-    return mn.table(
-        mn.table.thead(
-            mn.table.tr(
-                mn.table.th("Match"),
-                mn.table.th("Subject"),
-                mn.table.th("From"),
-                mn.table.th("Sent"),
-            ),
-        ),
-        mn.table.tbody(rx.foreach(ArchiveSearchState.hits, _hit_row)),
-        striped=True,
-        highlight_on_hover=True,
-        tabular_nums=True,
-    )
-
-
-def search_card() -> rx.Component:
-    """Find a message: the words it holds, or what it is about.
-
-    The panel a fresh installation meets first, and the one place on this page
-    where "nothing configured" must not look like "nothing found". With no
-    embedder the semantic half says so in the sentence that names the setting
-    to change, its button is dead, and the full-text half goes on working —
-    which is §7.4's whole point: an archive with no model configured is a
-    complete archive missing one way of asking.
-
-    Its own ``on_mount`` rather than a place in the page's ``on_load`` chain:
-    what it primes is a different service from the readout's, and neither
-    should be able to leave the other unasked.
-    """
-    return panel_card(
-        mn.stack(
-            mn.group(
-                card_heading("search", "Find a message"),
-                _search_path(),
-                justify="space-between",
-                align="center",
-                w="100%",
-            ),
-            mn.text(
-                "Full text finds the words you type, in the subject or the "
-                "body. Semantic finds messages about the same thing, "
-                "including ones that never use the word — it needs an "
-                "embedder and a finished embed job. The two scores are not "
-                "comparable, so a search runs one path at a time.",
-                size="xs",
-                c="dimmed",
-            ),
-            _search_controls(),
-            rx.cond(
-                ArchiveSearchState.semantic_blocked,
-                mn.alert(
-                    ArchiveSearchState.semantic_note,
-                    color="yellow",
-                    variant="light",
-                    py="xs",
-                    icon=rx.icon("triangle-alert", size=16),
-                ),
-                mn.text(""),
-            ),
-            rx.cond(
-                ArchiveSearchState.error != "",
-                mn.alert(
-                    ArchiveSearchState.error,
-                    color=ArchiveSearchState.error_color,
-                    variant="light",
-                    py="xs",
-                    icon=rx.icon("triangle-alert", size=16),
-                ),
-                rx.cond(
-                    ArchiveSearchState.searching,
-                    mn.group(mn.loader(size="sm"), justify="center", py="lg"),
-                    mn.stack(
-                        rx.cond(
-                            ArchiveSearchState.summary != "",
-                            mn.text(ArchiveSearchState.summary, size="xs", c="dimmed"),
-                            mn.text(""),
-                        ),
-                        rx.cond(ArchiveSearchState.hits, hits_table(), mn.text("")),
-                        rx.cond(
-                            ArchiveSearchState.notice != "",
-                            mn.alert(
-                                ArchiveSearchState.notice,
-                                color="yellow",
-                                variant="light",
-                                py="xs",
-                                icon=rx.icon("info", size=16),
-                            ),
-                            mn.text(""),
-                        ),
-                        gap="xs",
-                        w="100%",
-                    ),
-                ),
-            ),
-            gap="sm",
-        ),
-        on_mount=ArchiveSearchState.prepare,
-    )
-
-
-def _panel_error(message: rx.Var | str) -> rx.Component:
+def _panel_error(text: rx.Var | str) -> rx.Component:
     """What a panel shows instead of its table when the graph did not answer.
 
     Instead of, and never above: half a table under a red alert reads as data,
     and the numbers in it would be from whenever the last read succeeded.
+
+    ``text`` rather than ``message``, which is what this parameter was called
+    until :func:`~mailarc_ui.kit.message` arrived — a parameter that shadows
+    the function it is about to call is a rename waiting to bite.
     """
-    return mn.alert(
-        message,
-        color="red",
-        variant="light",
-        py="xs",
-        icon=rx.icon("triangle-alert", size=16),
-    )
+    return message(text, "failure")
 
 
 def _panel(
@@ -745,7 +516,7 @@ def _panel(
                 _panel_error(error),
                 rx.cond(
                     loading,
-                    mn.group(mn.loader(size="sm"), justify="center", py="lg"),
+                    spinner(),
                     rx.cond(anything, body, mn.text(nothing, size="sm", c="dimmed")),
                 ),
             ),
@@ -763,37 +534,57 @@ def guidance_panel() -> rx.Component:
     the answer to the sentence above it is one click away.
     """
     return panel_card(
-        mn.empty_state(
+        empty_panel(
+            "sparkles",
+            "Nothing to analyse yet",
+            AnalyticsInsightsState.guidance,
             rx.cond(
                 AnalyticsInsightsState.needs_rebuild,
-                mn.empty_state.actions(
-                    mn.button(
-                        "Rebuild now",
-                        on_click=AnalyticsInsightsState.start_rebuild,
-                        loading=AnalyticsInsightsState.starting,
-                        disabled=~AnalyticsInsightsState.can_rebuild,
-                        left_section=rx.icon("play", size=14),
-                        variant="filled",
-                        size="sm",
-                    ),
+                primary_button(
+                    "Rebuild now",
+                    on_click=AnalyticsInsightsState.start_rebuild,
+                    loading=AnalyticsInsightsState.starting,
+                    disabled=~AnalyticsInsightsState.can_rebuild,
+                    left_section=rx.icon("play", size=14),
+                    size="sm",
                 ),
                 mn.text(""),
             ),
-            icon=rx.icon("sparkles", size=28),
-            title="Nothing to analyse yet",
-            description=AnalyticsInsightsState.guidance,
-            align="center",
         ),
     )
 
 
 def analyses() -> rx.Component:
-    """The four listings, sceptical panel first."""
+    """The cross-check across the page, then the three listings in two columns.
+
+    The page fills the window, and four cards stacked down a 1300px column is
+    four tables with more white to their right than table. What decides which
+    card goes where is how wide its widest row is: the cross-check carries two
+    address columns beside three more and gets the whole width; templates
+    carries a sample of the text itself and gets the larger of the two columns
+    under it; groups and topics are a key and a handful of numbers and share
+    the smaller one.
+
+    Columns rather than a grid of rows, for the reason the dashboard states:
+    a row is as tall as its tallest cell, and these listings are twelve rows
+    or three. Two columns have nothing to align, so each closes up and the
+    slack lands at the foot of the shorter one.
+
+    Sceptical panel first either way — it is the only one that can say
+    something is *wrong* rather than report what was found, and it stays above
+    the findings that depend on its answer.
+    """
     return mn.stack(
         agreement_card(),
-        groups_card(),
-        topics_card(),
-        templates_card(),
+        mn.grid(
+            mn.grid_col(templates_card(), span={"base": 12, "lg": 7}),
+            mn.grid_col(
+                mn.stack(groups_card(), topics_card(), gap="md", w="100%"),
+                span={"base": 12, "lg": 5},
+            ),
+            gutter="md",
+            w="100%",
+        ),
         gap="md",
         w="100%",
     )
@@ -802,25 +593,20 @@ def analyses() -> rx.Component:
 def insights_panel() -> rx.Component:
     """The whole page's body, for a page to drop in.
 
-    Grows with its content rather than scrolling inside itself: these are
-    tables of at most a screenful each, and a panel that owned its own height
-    would collapse to nothing the moment a parent did not have a definite one.
+    Grows with its content rather than scrolling inside itself, and a panel
+    that owned its own height would collapse to nothing the moment a parent
+    did not have a definite one. The scrolling that does happen belongs to the
+    listings: each caps itself at twelve rows, so the page stays the height of
+    its cards however much the analyses found.
 
     Owns the ``on_unmount`` because it owns the rebuild card that starts the
     poll. Without it a user who navigates away mid-rebuild leaves a background
     task asking the database every two seconds for the rest of the session —
     one per abandoned page. ``stop_polling`` was written for this and had no
     caller anywhere in the repository.
-
-    The search card sits above the totals and outside the branch that hides
-    everything when they fail, because it depends on none of it: a different
-    service answers it, full text needs no rebuild, and a graph that could not
-    be counted is a state the panel reports for itself rather than one that
-    should take the search box off the page.
     """
     return mn.stack(
         rebuild_card(),
-        search_card(),
         rx.cond(
             AnalyticsInsightsState.totals_error != "",
             _panel_error(AnalyticsInsightsState.totals_error),

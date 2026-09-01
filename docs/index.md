@@ -45,7 +45,7 @@ features:
 | --- | --- |
 | [Getting started](./user/getting-started.md) | Install the tools, create the database, get the app running |
 | [Connecting a mailbox](./user/connecting-a-mailbox.md) | Add an account, get through Google's consent screen |
-| [Importing mail](./user/importing-mail.md) | Start an import, read the progress, cancel, resume, review what arrived |
+| [Importing mail](./user/importing-mail.md) | Start an import, read the progress, cancel, resume, see what arrived |
 | [Semantic search](./user/semantic-search.md) | Turning an embedder on, what it costs, and what an assistant may read |
 | [Configuration](./user/configuration.md) | Profiles, environment variables, every setting there is |
 | [The desktop app](./user/desktop-app.md) | Building the macOS `.app`, what it bundles, what it does not |
@@ -86,8 +86,7 @@ Built and tested:
 - The graph server's lifecycle, status and vendored runtime.
 - The Gmail adapter end to end — consent, credential refresh, the HTTP client
   and the mapping from Google's JSON into the domain, registered as a provider
-  an account can pick, with pages that mount the account, import and review
-  states.
+  an account can pick, with pages that mount the account and import states.
 - Two more mail providers behind the same port: **IMAP** — any host, over TLS,
   with a `UIDVALIDITY`/`UIDNEXT` cursor and no consent step at all — and
   **Microsoft 365** over Graph, delegated or app-only, whose cursor is a whole
@@ -104,8 +103,8 @@ Built and tested:
 
 - Semantic search and the MCP server. An embedder is optional and off by
   default — see [Semantic search](./user/semantic-search.md) — and with one
-  configured, the `embed` job fills in `Message.embedding`, the insights page
-  gains a search box, A2 gains its sixth signal, and `mail-archive-mcp`
+  configured, the `embed` job fills in `Message.embedding`, the search page
+  gains its semantic path, A2 gains its sixth signal, and `mail-archive-mcp`
   answers six read-only tools over the same query catalogue.
 
 Not there yet:

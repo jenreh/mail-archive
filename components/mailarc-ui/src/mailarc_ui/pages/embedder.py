@@ -18,7 +18,7 @@ import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.embedder import EmbedderSettingsState, embedder_panel
-from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
+from mailarc_ui.kit import PAGE_GAP, PAGE_INSET
 from mailarc_ui.shell import routes
 from mailarc_ui.shell.templates import mailarc_app, public_page
 
@@ -35,20 +35,8 @@ ROUTE = routes.EMBEDDER
 )
 def embedder_page() -> rx.Component:
     return mn.stack(
-        page_header(
-            "Embedder",
-            "Semantic search and the sixth topic signal need a model that "
-            "turns a message into a vector. Nothing else does: with no "
-            "embedder configured the import, the analyses and full-text "
-            "search all work, and the two features that need vectors say "
-            "so rather than answering with nothing. What is set here is "
-            "laid over the configuration file, so an installation that "
-            "never opens this page keeps behaving exactly as it did.",
-        ),
         embedder_panel(),
         gap=PAGE_GAP,
         w="100%",
-        maw=900,
-        mx="auto",
-        p=PAGE_PADDING,
+        p=PAGE_INSET,
     )

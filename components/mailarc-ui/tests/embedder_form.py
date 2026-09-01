@@ -3,7 +3,7 @@
 A shared module rather than a ``conftest``, for the reason
 :mod:`insights_archive` is one: what is below belongs to the two embedder test
 files and to no others, and a ``conftest`` in this directory would put a
-``sessions`` and a ``state`` in scope for the accounts, import, review and
+``sessions`` and a ``state`` in scope for the accounts, import, search and
 insights tests that have their own idea of what those words mean.
 
 The interesting piece is :class:`Composition`. It is ``app/composition.py`` in

@@ -175,17 +175,17 @@ def test_no_headless_component_imports_the_application() -> None:
     ``app`` is importable from this working directory, so the probe is
     meaningful: it fails by finding the module, not by failing to.
 
-    :data:`HEADLESS` and not :data:`EVERY_COMPONENT`, and the exclusion is a
-    limit of the probe rather than an exemption for ``mailarc_ui``. Importing
-    anything that touches Reflex calls ``reflex_base.config.get_config``, which
-    imports this repository's ``rxconfig.py``, which says ``from app import
-    settings`` — so ``app`` lands in ``sys.modules`` two frames below
-    ``appkit_mantine`` without ``mailarc_ui`` having named it. The rule still
-    binds the UI; this file simply cannot tell the two apart, and an assertion
-    that fires on somebody else's import would be deleted the first time it
-    went off.
+    :data:`EVERY_COMPONENT`, ``mailarc_ui`` included. It was ``HEADLESS`` for as
+    long as ``rxconfig.py`` said ``from app import settings``: importing
+    anything that touches Reflex can call ``reflex_base.config``, which imports
+    ``rxconfig``, so ``app`` landed in ``sys.modules`` two frames below
+    ``appkit_mantine`` without ``mailarc_ui`` having named it — and an assertion
+    that fires on somebody else's import would be deleted the first time it went
+    off. ``rxconfig.py`` now reads its configuration through ``appkit_commons``
+    alone and names nothing of ours, so the probe can tell the two apart and the
+    rule that always bound the UI is finally checked on it.
     """
-    imported = _modules_after_importing(_present(HEADLESS))
+    imported = _modules_after_importing(_present(EVERY_COMPONENT))
 
     assert "app" not in imported, (
         "a component imported app — the composition root is above every "

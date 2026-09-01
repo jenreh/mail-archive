@@ -28,8 +28,8 @@ from mailarc_imap.source import ImapConfig
 from mailarc_m365.source import M365Config
 from mailarc_sync.engine import SyncConfig
 from mailarc_ui.insights import analytics_reader as analytics_the_ui_sees
-from mailarc_ui.insights.search import archive_search as search_the_ui_sees
-from mailarc_ui.review import archive_reader as reader_the_ui_sees
+from mailarc_ui.message_detail import archive_reader as reader_the_ui_sees
+from mailarc_ui.search.reads import semantic_search as search_the_ui_sees
 from mailarc_ui.status import graph_health as health_the_ui_sees
 
 GETTERS: dict[type, str] = {
@@ -268,7 +268,7 @@ class TestLifespan:
 
 
 def test_the_reader_is_built_on_the_configured_stores(monkeypatch, tmp_path) -> None:
-    """The review page must list what the worker wrote: same graph, same blob
+    """The search page must list what the worker wrote: same graph, same blob
     store. Read off the reader's own parts, because that is what would differ
     if a wire pointed elsewhere."""
     graph = _use_config(monkeypatch, GraphServerMode.REMOTE)

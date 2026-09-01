@@ -99,12 +99,12 @@ async def _load(state: AnalyticsInsightsState) -> None:
     two mutations, so Reflex refuses a direct call on it; going through the
     ``EventHandler``'s wrapped function is the same code the app runs.
     """
-    await AnalyticsInsightsState.load.fn(state)  # ty: ignore[unresolved-attribute]
+    await AnalyticsInsightsState.load.fn(state)
 
 
 async def _check_agreement(state: AnalyticsInsightsState) -> None:
     """The Cross-check button, same reason as :func:`_load`."""
-    await AnalyticsInsightsState.check_agreement.fn(state)  # ty: ignore[unresolved-attribute]
+    await AnalyticsInsightsState.check_agreement.fn(state)
 
 
 class TestFindingTheReader:
@@ -892,6 +892,34 @@ class TestTheComponents:
         assert 'row_rx_state_?.["note_color"]' in rendered
         assert 'row_rx_state_?.["truth"]' in rendered
         assert 'row_rx_state_?.["edge"]' in rendered
+
+    @pytest.mark.parametrize(
+        "build",
+        [disputes_table, pairs_table, groups_card, topics_card, templates_card],
+    )
+    def test_every_listing_is_a_window_of_rows(self, build) -> None:
+        """Twelve rows under a header that stays put, on all five.
+
+        Asserted per listing rather than once over the panel: the page is
+        five separate tables and a sixth added next to them would be the one
+        that scrolls the card off the screen again.
+        """
+        rendered = str(build().render())
+
+        assert "ma-table-scroll" in rendered, "the box that scrolls is missing"
+        assert "stickyHeader" in rendered, "the column names would scroll away"
+
+    def test_the_page_no_longer_carries_a_search_box(self) -> None:
+        """Finding a message is ``/``'s job, and only ``/``'s.
+
+        Two boxes over one archive is how the two came to word the same
+        answer differently; the one here searched without filters, without an
+        account picker and with nowhere to read the result.
+        """
+        rendered = str(insights_panel().render())
+
+        assert "Find a message" not in rendered
+        assert "Search the archive" not in rendered
 
     def test_the_verdict_takes_its_colour_from_the_state(self) -> None:
         """Red or yellow is the whole message of the panel; a hard-coded

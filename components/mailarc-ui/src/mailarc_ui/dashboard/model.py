@@ -23,6 +23,7 @@ card look finished.
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Any
 
@@ -67,11 +68,33 @@ broken chart rather than as a quiet week.
 """
 
 NOTIFICATION_LIMIT = 8
-"""How many pending faults the panel lists.
+"""How many pending faults the panel reads.
 
 The panel reads faults, it does not manage them (§13), so the list is a sample
 worth acting on rather than a ledger. Everything below the cut is still in the
 accounts page, the job queue and the failure table it was read from.
+
+Deliberately larger than :data:`NOTIFICATION_SHOWN`: what is read is a pool and
+what is drawn is the top of it, so dismissing an entry uncovers the next one
+rather than leaving a hole. Below the pool the panel goes quiet, which is the
+honest end of a sample.
+"""
+
+NOTIFICATION_SHOWN = 5
+"""How many of that pool the panel draws at once.
+
+Five, because the card sits beside the two statistics cards in one column and a
+list that outgrows them turns the page into a scroll of somebody else's
+failures. The five are the newest five nobody has dismissed.
+"""
+
+DISMISSED_MEMORY = 200
+"""How many dismissals the browser is asked to remember, newest last.
+
+A bound rather than a policy: dismissals accumulate for as long as an archive
+runs, and an unbounded string in ``localStorage`` is a leak with a slow fuse.
+Two hundred keys is about three kilobytes and far more than the pool above can
+ever put on the page at once.
 """
 
 _BYTE_UNITS = ("B", "KB", "MB", "GB", "TB", "PB")
@@ -211,15 +234,13 @@ class MeterView(BaseModel):
     """The percentage as the row prints it, on the right."""
 
     caption: str = ""
-    """The dimmed size beside the label — ``3.0 GB / 7.5 GB``. Empty where the
-    ratio is the whole story, which is every row of the health card."""
+    """The dimmed size under the label — ``3.0 GB``. Empty where the ratio is
+    the whole story, which is every row of the health card.
 
-    detail: str = ""
-    """The absolute path this row measured. **Administrators only.**
-
-    Empty for everybody else, and empty is what it means: a filesystem layout
-    says where an installation keeps somebody's mail, which is the first thing
-    an attacker asks a public page for.
+    The size is all a row says about the path it measured. **The path itself
+    never leaves the server**: a filesystem layout says where an installation
+    keeps somebody's mail, which is the first thing an attacker asks a page
+    for, and this page is public.
     """
 
 
@@ -237,6 +258,15 @@ class NotificationView(BaseModel):
 
     message: str
     when: str
+
+    key: str
+    """A stable handle for this fault, so a dismissal can outlive the page.
+
+    :func:`notice_key` is what makes one, and the reason it is a digest rather
+    than the text itself is the same reason this class is administrators-only:
+    the key is written into the browser's ``localStorage``, where the message
+    would sit on somebody's disk in clear long after the fault was cleared.
+    """
 
 
 class ServiceView(BaseModel):
@@ -409,15 +439,25 @@ def health_meters(totals: ArchiveTotals, coverage: VectorCoverage) -> list[Meter
 
 
 def storage_meters(usage: StorageUsage) -> list[MeterView]:
-    """One bar per measured path, of how much of its volume it takes."""
+    """One bar per measured path, of how much of its volume it takes.
+
+    The label and what the path holds, and not the path it was measured at —
+    see :attr:`MeterView.caption`.
+
+    The volume's own size is deliberately not repeated on every row. All three
+    paths live on one disk here, so the caption read ``738.4 MB / 460.4 GB``,
+    ``1.8 MB / 460.4 GB``, ``424.0 KB / 460.4 GB`` — the same eight characters
+    three times, taking the width that clipped the one figure the row is for.
+    The bar and the percentage beside it already say how much of the volume is
+    gone; the caption says how much of it is this.
+    """
     return [
         MeterView(
             icon=icon,
             label=one.label,
             percent=one.used_percent,
             value=percent_label(one.used_percent),
-            caption=f"{human_bytes(one.used_bytes)} / {human_bytes(one.total_bytes)}",
-            detail=str(one.path),
+            caption=human_bytes(one.used_bytes),
         )
         for icon, one in zip(_DISK_ICONS, usage.paths, strict=False)
     ]
@@ -512,9 +552,68 @@ def notifications_of(
     ]
     pending.sort(key=lambda one: as_aware(one[0]) if one[0] else _NEVER, reverse=True)
     return [
-        NotificationView(message=message, when=moment_label(when))
+        NotificationView(
+            message=message,
+            when=moment_label(when),
+            key=notice_key(moment_label(when), message),
+        )
         for when, message in pending[:limit]
     ]
+
+
+def notice_key(when: str, message: str) -> str:
+    """A stable handle for one fault, from the two strings the panel prints.
+
+    ``hashlib`` and not the built-in ``hash``: Python salts string hashing per
+    process, so a built-in hash would forget every dismissal the moment the
+    server restarted — and outliving a restart is the one thing this key exists
+    for.
+
+    Derived from what the fault *is* rather than from a row id, which is what
+    makes it behave the way a reader expects at both ends. A mailbox that fails
+    again at a later minute is a different key and comes back; the same
+    unchanged fault, read again on the next page load, is the same key and
+    stays dismissed.
+    """
+    return sha256(f"{when}\x1f{message}".encode()).hexdigest()[:_KEY_LENGTH]
+
+
+def dismissed_keys(remembered: str) -> frozenset[str]:
+    """The keys a browser is carrying, out of the one string it stores.
+
+    Whitespace-separated because every key is sixteen hex characters and
+    nothing else, so there is no separator to escape and no parse that can
+    fail. A value somebody edited by hand degrades into keys that match no
+    fault, which shows up as notifications reappearing rather than as an
+    exception on a page load.
+    """
+    return frozenset(remembered.split())
+
+
+def remembering(remembered: str, key: str) -> str:
+    """The ledger with one more dismissal on it, newest last and bounded.
+
+    Rewritten rather than appended to, so a key dismissed twice is stored once
+    and the cap in :data:`DISMISSED_MEMORY` counts distinct faults.
+    """
+    kept = [one for one in remembered.split() if one != key]
+    return " ".join([*kept, key][-DISMISSED_MEMORY:])
+
+
+def undismissed(
+    rows: Sequence[NotificationView],
+    remembered: str,
+    *,
+    limit: int = NOTIFICATION_SHOWN,
+) -> list[NotificationView]:
+    """What the panel actually draws: the newest few nobody has closed.
+
+    The filter runs over the whole pool and the cut comes after it, which is
+    what makes a dismissal uncover the next fault instead of leaving a gap in
+    a list of five.
+    """
+    hidden = dismissed_keys(remembered)
+    return [one for one in rows if one.key not in hidden][:limit]
 
 
 def _meter(icon: str, label: str, percent: float) -> MeterView:
@@ -542,3 +641,12 @@ and a comparison against an enum would quietly match nothing.
 
 _NEVER = datetime.min.replace(tzinfo=UTC)
 """Where a fault with no timestamp sorts: last, and still on the list."""
+
+_KEY_LENGTH = 16
+"""How much of the digest a notification key keeps.
+
+Sixteen hex characters is sixty-four bits. The pool it has to stay distinct
+inside is :data:`DISMISSED_MEMORY` entries, so a collision — one dismissal
+silently hiding an unrelated fault — is not a thing that happens to this
+archive, and the ledger stays short enough to read.
+"""

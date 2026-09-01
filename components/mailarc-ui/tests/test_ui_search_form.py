@@ -323,6 +323,6 @@ class TestThePanel:
         assert "Pick a message" in drawn  # the reading pane
 
     def test_the_reading_pane_is_bound_to_this_page_s_state(self) -> None:
-        """The shared pane takes the concrete state class, which is what lets
-        the search and the review each keep their own open message."""
+        """The shared pane takes the concrete state class, which is what keeps
+        this page's open message this page's."""
         assert "mail_search_state.tab" in _drawn(search_panel())

@@ -39,10 +39,12 @@ from mailarc_ui.dashboard.model import (
     health_meters,
     last_archived_label,
     messages_points,
+    remembering,
     services_of,
     storage_meters,
     storage_points,
     thousands,
+    undismissed,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,6 +139,20 @@ class DashboardState(rx.State):
     notifications: list[NotificationView] = []
     services: list[ServiceView] = []
 
+    dismissed: str = rx.LocalStorage("", name="ma-dismissed-notices")
+    """Which faults this browser has been told to stop showing.
+
+    In ``localStorage`` and not in the archive, because a dismissal is a
+    reading habit rather than a fact about the mail: closing a notification
+    says "I have seen this", which is true of the person who closed it and of
+    nobody else. Keeping it here also means no migration, no table and no row
+    that outlives the fault it refers to.
+
+    One string, because :class:`rx.LocalStorage` is a ``str`` — the keys are
+    whitespace-separated and :func:`~mailarc_ui.dashboard.model.dismissed_keys`
+    is the only thing that reads it apart.
+    """
+
     messages_series: list[dict[str, Any]] = []
     storage_series: list[dict[str, Any]] = []
     """The two chart series, in the record shape ``mn.area_chart`` declares.
@@ -183,9 +199,26 @@ class DashboardState(rx.State):
         return max(len(self.services) - _SERVICES_TRAILING, 0)
 
     @rx.var
+    def visible_notifications(self) -> list[NotificationView]:
+        """The few faults the panel draws: newest first, minus the closed ones.
+
+        A computed var rather than a filter inside :meth:`load`, and that is
+        the point: ``dismissed`` arrives from the browser during hydration and
+        changes again on every close, neither of which is a moment a read
+        happens. Deriving the list means the panel cannot end up showing an
+        entry somebody has already closed because the two events landed in an
+        awkward order.
+        """
+        return undismissed(self.notifications, self.dismissed)
+
+    @rx.var
     def has_notifications(self) -> bool:
-        """Whether the panel has anything to list."""
-        return len(self.notifications) > 0
+        """Whether the panel has anything left to list.
+
+        Over the visible list and not the pool, so closing the last one leaves
+        the card saying nothing needs attention rather than leaving it blank.
+        """
+        return len(self.visible_notifications) > 0
 
     @rx.event(background=True)
     async def load(self) -> None:
@@ -210,6 +243,18 @@ class DashboardState(rx.State):
             # that answered nothing, which is at least a state a reader can see.
             async with self:
                 self._apply(readout)
+
+    @rx.event
+    def dismiss(self, key: str) -> None:
+        """Stop showing one fault, on this browser, for good.
+
+        Nothing is read and nothing is re-read: the pool stays as it was and
+        the panel redraws one entry shorter, which uncovers the next fault
+        behind it. An empty key is ignored rather than stored — it would match
+        no notification and would take a slot in a bounded ledger.
+        """
+        if key:
+            self.dismissed = remembering(self.dismissed, key)
 
     @rx.event(background=True)
     async def choose_range(self, value: str) -> None:

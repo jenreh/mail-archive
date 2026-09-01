@@ -11,7 +11,7 @@ be shown.
 import appkit_mantine as mn
 import reflex as rx
 
-from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
+from mailarc_ui.kit import PAGE_GAP, PAGE_INSET
 from mailarc_ui.shell import routes
 from mailarc_ui.shell.templates import mailarc_app, public_page
 from mailarc_ui.status import GraphStatusState, status_panel
@@ -29,15 +29,8 @@ ROUTE = routes.GRAPH_STATUS
 )
 def graph_status_page() -> rx.Component:
     return mn.stack(
-        page_header(
-            "Graph status",
-            "The desktop app runs this page and its FalkorDB from binaries "
-            "bundled inside the app — nothing is installed on the machine.",
-        ),
         status_panel(),
         gap=PAGE_GAP,
         w="100%",
-        maw=900,
-        mx="auto",
-        p=PAGE_PADDING,
+        p=PAGE_INSET,
     )

@@ -18,7 +18,7 @@ searched.
 ## Off is a supported state, not a broken one
 
 `app.semantic.provider` defaults to `none`, and the archive is complete without
-it. Import, review, co-recipients, topics, templates, threads and full-text
+it. Import, co-recipients, topics, templates, threads and full-text
 search all work; the two things you do not get are the search page's
 **Semantic** mode — the segment is disabled, with a sentence naming what to
 configure — and the sixth topic signal.

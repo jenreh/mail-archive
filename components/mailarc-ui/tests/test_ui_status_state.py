@@ -34,7 +34,7 @@ async def _run_poll(state: GraphStatusState) -> None:
     Reflex refuses a direct `state.poll()` call on a background handler, so go
     through the EventHandler's wrapped function.
     """
-    await GraphStatusState.poll.fn(state)  # ty: ignore[unresolved-attribute]
+    await GraphStatusState.poll.fn(state)
 
 
 def _reachable() -> GraphServerStatus:

@@ -15,7 +15,7 @@ import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.dashboard import DashboardState, dashboard_panel
-from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
+from mailarc_ui.kit import PAGE_GAP, PAGE_INSET
 from mailarc_ui.shell import routes
 from mailarc_ui.shell.templates import public_page
 
@@ -25,10 +25,11 @@ ROUTE = routes.DASHBOARD
 MAX_CONTENT_WIDTH = 1440
 """How wide the dashboard is allowed to get.
 
-Wider than the other pages, which cap around 900–1200: this one is a grid of
-six cards and two charts, and at three columns it needs the room. Capped all
-the same, because a chart stretched across a 4K display is a line with its
-ticks metres apart.
+The only page that caps at all — the others fill the window — and the reason
+is the two charts: a series stretched across a 4K display is a line with its
+ticks metres apart, which is a chart that has stopped being readable rather
+than one that got bigger. A card does not have that failure mode, which is
+why nothing else here states a width.
 """
 
 
@@ -40,15 +41,10 @@ ticks metres apart.
 )
 def dashboard_page() -> rx.Component:
     return mn.stack(
-        page_header(
-            "Dashboard",
-            "What this archive holds, how it grew, and whether everything "
-            "behind it is running.",
-        ),
         dashboard_panel(),
         gap=PAGE_GAP,
         w="100%",
         maw=MAX_CONTENT_WIDTH,
         mx="auto",
-        p=PAGE_PADDING,
+        p=PAGE_INSET,
     )

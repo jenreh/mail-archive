@@ -1,7 +1,7 @@
 """One open message: the half of a mail page that is the same on both of them.
 
 ``model``
-    The views a row, a header or an attachment is projected onto — no graph
+    The views a header, a chip or an attachment is projected onto — no graph
     node ever reaches the browser — plus the formatting that gets a datetime,
     a label name or a byte count printable, and the document a mail's HTML is
     framed in before a sandbox loads it. Knows no I/O.
@@ -12,12 +12,11 @@
     them rather than sharing one open message.
 ``components``
     The pane itself, each function taking the concrete state class as its
-    argument — ``message_tabs(MailSearchState)`` on the search page,
-    ``message_tabs(MessageReviewState)`` on the review page.
+    argument — ``message_tabs(MailSearchState)`` on the search page.
 
-It is a package rather than a module because two pages read a mail: the search
-at ``/`` and the review under ``/admin``. Before there were two, this lived in
-``mailarc_ui.review``, which still re-exports every name that moved.
+It is a package rather than a module because reading a mail is not the search's
+own business: the pane takes whichever state lists the mixin, so a second page
+that wants a reading pane brings its own list and nothing else.
 """
 
 from mailarc_ui.message_detail.components import (
@@ -41,14 +40,11 @@ from mailarc_ui.message_detail.model import (
     RAW_LIMIT,
     TAB_MESSAGE,
     TAB_SOURCE,
-    YESTERDAY,
     AttachmentRow,
     LabelChip,
-    MessageRow,
     MessageView,
     address_label,
     archive_reader,
-    date_label,
     decode_raw,
     frame_document,
     label_text,
@@ -70,15 +66,12 @@ __all__ = [
     "TABS_STYLES",
     "TAB_MESSAGE",
     "TAB_SOURCE",
-    "YESTERDAY",
     "AttachmentRow",
     "LabelChip",
     "MessageDetailState",
-    "MessageRow",
     "MessageView",
     "address_label",
     "archive_reader",
-    "date_label",
     "decode_raw",
     "frame_document",
     "label_text",

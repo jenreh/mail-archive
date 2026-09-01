@@ -118,13 +118,19 @@ class TestWithNoEmbedder:
                 SearchRequest(text="invoice", kind=SearchKind.SEMANTIC)
             )
 
-    def test_the_message_names_the_setting_and_the_alternative(self) -> None:
-        """Written for the person who has to act on it. "Configure an
-        embedder" is a restatement of the problem; a variable name is a fix."""
-        assert "app_semantic_provider" in NO_EMBEDDER
-        assert "ollama" in NO_EMBEDDER
-        assert "openai" in NO_EMBEDDER
-        assert "Full-text search" in NO_EMBEDDER
+    def test_the_message_names_the_capability_and_the_cause(self) -> None:
+        """Short by choice: which search is off, and what is missing.
+
+        It used to carry the fix as well — the settings page, the two
+        providers and their trade-off, the configuration keys. That sentence
+        was written for a reader met by a wall of text at the one moment they
+        wanted an answer, and the remedy now lives where it can be acted on
+        rather than in every surface that reports the state. What a message
+        still owes its reader is which capability stopped and why, and that is
+        what this pins.
+        """
+        assert "Semantic search" in NO_EMBEDDER
+        assert "no embedder" in NO_EMBEDDER
 
     def test_it_is_not_a_mail_error(self) -> None:
         """The mail taxonomy answers retry / re-consent / skip, and none of

@@ -34,7 +34,7 @@ import pytest
 import reflex as rx
 from reflex.page import DECORATED_PAGES
 
-from mailarc_ui.kit import card_heading, page_header, panel_card, stat_tile
+from mailarc_ui.kit import card_heading, column_card, panel_card, stat_tile
 from mailarc_ui.shell import routes
 from mailarc_ui.shell.model import NavItem
 from mailarc_ui.shell.navigation import NAVBAR_WIDTH, RAIL_SECTIONS, app_sidebar
@@ -157,7 +157,7 @@ def test_the_menu_is_the_three_pages_a_person_works_in() -> None:
     assert MENU.label == "Menu"
 
 
-def test_the_administration_is_the_four_pages_an_operator_maintains() -> None:
+def test_the_administration_is_the_three_pages_an_operator_maintains() -> None:
     """And they are all of `/admin/`, so nothing is reachable only by typing."""
     assert {item.href for item in ADMINISTRATION.items} == {
         route for route in routes.ALL_ROUTES if route.startswith("/admin/")
@@ -225,7 +225,7 @@ def _menu_rows(node: Any) -> dict[str, str]:
 def test_the_administration_menu_offers_every_admin_page(
     rendered_rail: dict[str, Any],
 ) -> None:
-    """One icon, four labelled rows behind it, each redirecting to its page.
+    """One icon, three labelled rows behind it, each redirecting to its page.
 
     Both halves matter and they fail differently: a missing row is a page that
     can only be reached by typing its path, and a row whose `on_click` was
@@ -241,14 +241,14 @@ def test_the_administration_trigger_lights_up_on_every_page_it_holds(
 ) -> None:
     """The trigger is not a link, so nothing else would ever show it as active.
 
-    The condition is an explicit OR over the four routes rather than a prefix
-    test on the path, which is what this reads: each of the four has to appear
+    The condition is an explicit OR over the three routes rather than a prefix
+    test on the path, which is what this reads: each of the three has to appear
     in the same ``data-active`` expression.
     """
     active = [
         prop
         for prop in _props(rendered_rail)
-        if prop.startswith('"data-active"') and routes.REVIEW in prop
+        if prop.startswith('"data-active"') and routes.ACCOUNTS in prop
     ]
 
     assert active, "no rail item is keyed on the administration's routes"
@@ -337,7 +337,7 @@ def test_the_kit_primitives_build() -> None:
     assert isinstance(card_heading("database", "The archive"), rx.Component)
     assert isinstance(card_heading("hard-drive", "Disk"), rx.Component)
     assert isinstance(stat_tile("Messages", 12), rx.Component)
-    assert isinstance(page_header("Dashboard", "What is in the archive"), rx.Component)
+    assert isinstance(column_card(rx.fragment()), rx.Component)
 
 
 def test_panel_card_lets_a_caller_override_the_recipe() -> None:

@@ -11,7 +11,10 @@ vocabulary:
 ```text
 accounts/   connecting a mailbox and running its consent flow.
 imports/    starting an import and following the job row it queued.
-review/     reading the archive — a two-pane list and message reader.
+search/     the front door — the form, the result list, the message.
+message_detail/
+            one open message, as a state mixin and a pane that takes the
+            page's own state class.
 insights/   finding a message, what a rebuild derived, and whether the
             co-addressed edge still agrees with the archive it came from.
 embedder/   configuring the embedder and running a rebuild of the vectors.

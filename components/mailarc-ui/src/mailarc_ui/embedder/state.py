@@ -110,6 +110,7 @@ from mailarc_ui.embedder.reads import (
     stored_baseline,
     write_settings,
 )
+from mailarc_ui.kit import FieldErrors
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,29 @@ def _said_about(error: Exception, otherwise: str = LOAD_FAILED) -> str:
     return otherwise
 
 
-class EmbedderSettingsState(rx.State):
+DIMENSION_FIELD = "dimension"
+BASE_URL_FIELD = "base_url"
+"""The two settings this form has a rule for, named where the rules are."""
+
+DIMENSION_TOO_SMALL = "At least one float per vector."
+"""A stored zero is not a smaller index — it is an embedder that can never
+write a vector the graph accepts, and the composition root drops the whole row
+over it."""
+
+NOT_AN_HTTP_URL = "An absolute http:// or https:// URL, or empty."
+"""What the box says instead of swallowing the keystroke.
+
+This field decides which host receives the archive's stored bearer token on
+every embedding call, so it used to refuse to hold anything that was not
+already a complete URL — which meant it could not be typed into at all: ``h``
+is not an absolute URL, so the first keystroke was discarded along with every
+one after it. The check now runs where it matters, at the write, and the box
+says what it wants while somebody is still typing it. See
+:meth:`EmbedderSettingsState.save`.
+"""
+
+
+class EmbedderSettingsState(FieldErrors, rx.State):
     """The embedder form: what is in force, what to change it to, and the cost.
 
     The four settable values are ordinary vars and the key is not one of them.
@@ -328,8 +351,12 @@ class EmbedderSettingsState(rx.State):
         zero is not a smaller index, it is an embedder that can never write a
         vector the graph accepts, and the composition root would drop the whole
         row over it.
+
+        ``has_errors`` rather than a second copy of each rule — the fields have
+        already worked out whether they are happy, and a button that decided
+        for itself would be the place the two answers drift apart.
         """
-        return not self.loading and not self.saving and self.dimension > 0
+        return not self.loading and not self.saving and not self.has_errors
 
     @rx.var
     def embedder_configured(self) -> bool:
@@ -355,6 +382,18 @@ class EmbedderSettingsState(rx.State):
             or self.dimension != self.in_force.dimension
             or self.base_url.strip() != self.in_force.base_url
         )
+
+    @rx.var
+    def has_message(self) -> bool:
+        """Whether the last action left anything to say.
+
+        Read by :func:`~mailarc_ui.embedder.components.message_alerts` to decide
+        whether to render *at all*. A block of two empty alerts is not empty in
+        the layout: its own gap survives its children, and the panel's gap
+        survives the block, so a page with nothing to report opened thirty
+        pixels lower than every other page in the application.
+        """
+        return bool(self.error or self.notice)
 
     @rx.var
     def has_embed_job(self) -> bool:
@@ -463,24 +502,25 @@ class EmbedderSettingsState(rx.State):
         """
         if value == "":
             self.dimension = 0
+            self._validate_dimension()
             return
         with contextlib.suppress(ValueError):
             self.dimension = int(float(value))
+        self._validate_dimension()
 
     @rx.event
     async def set_base_url(self, value: str) -> None:
         """Where the embedding API lives; empty means the provider's own.
 
-        Checked rather than taken, for the reason :meth:`set_provider` checks
-        its argument — and this is the one that decides which host receives the
-        stored bearer token on every call. Anything that is not an absolute
-        ``http(s)`` URL changes nothing: ``httpx`` would read
-        ``gpu.internal:11434`` as a *scheme* and fail naming neither.
+        Held as typed and checked as a field, rather than discarded on the
+        keystroke. This is the value that decides which host receives the
+        stored bearer token on every call, so it *is* checked — but at the
+        write, in :meth:`save`, which is the boundary the guarantee is about.
+        Refusing it here as well only meant the box could never be typed into:
+        ``h`` is not an absolute URL either. See :data:`NOT_AN_HTTP_URL`.
         """
-        if value.strip() and not is_absolute_http(value.strip()):
-            logger.warning("Ignoring an embedding base URL that is not an http(s) URL")
-            return
         self.base_url = value
+        self._validate_base_url()
 
     @rx.event
     async def set_api_key(self, value: str) -> None:
@@ -491,6 +531,24 @@ class EmbedderSettingsState(rx.State):
         written.
         """
         self._typed_key = value
+
+    # ── What makes this form valid ───────────────────────────────────────
+
+    def _validate_dimension(self) -> bool:
+        """A length the graph could actually index."""
+        return self._check(
+            DIMENSION_FIELD, "" if self.dimension > 0 else DIMENSION_TOO_SMALL
+        )
+
+    def _validate_base_url(self) -> bool:
+        """Empty, or somewhere ``httpx`` can actually send a request."""
+        typed = self.base_url.strip()
+        wrong = bool(typed) and not is_absolute_http(typed)
+        return self._check(BASE_URL_FIELD, NOT_AN_HTTP_URL if wrong else "")
+
+    def _validate_settings(self) -> bool:
+        """Both rules, for a press that is about to write."""
+        return all([self._validate_dimension(), self._validate_base_url()])
 
     @rx.event(background=True)
     async def save(self) -> None:
@@ -509,6 +567,13 @@ class EmbedderSettingsState(rx.State):
         """
         async with self:
             if self.saving:
+                return
+            # Where the base-URL guarantee actually lives. The setter marks the
+            # field so somebody can see what is wrong while they type; *this*
+            # is what keeps a value that is not an absolute http(s) URL from
+            # reaching `write_settings`, and it runs whatever the button was
+            # doing — `can_save` is a UI gate and this is the boundary.
+            if not self._validate_settings():
                 return
             self.saving = True
             self.error, self.notice = "", ""

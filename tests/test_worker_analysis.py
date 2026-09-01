@@ -241,7 +241,7 @@ class TestTheEmbedJob:
 
         assert embedding.ran
 
-    async def test_with_no_embedder_the_row_carries_the_setting_to_change(
+    async def test_with_no_embedder_the_row_carries_the_reason(
         self,
     ) -> None:
         """The state a default installation is in. ``embed_pending`` raises
@@ -253,7 +253,7 @@ class TestTheEmbedJob:
         ) -> EmbedRun:
             raise SemanticUnavailable(NO_EMBEDDER)
 
-        with pytest.raises(SemanticUnavailable, match="app_semantic_provider"):
+        with pytest.raises(SemanticUnavailable, match="no embedder is configured"):
             await self._handler(unconfigured)(an_embed_job(), RecordingQueue())
 
     async def test_a_failed_run_is_left_for_the_loop_to_classify(self) -> None:

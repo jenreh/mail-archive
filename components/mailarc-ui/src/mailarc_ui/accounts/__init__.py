@@ -7,15 +7,19 @@ imports nothing from the application.
 """
 
 from mailarc_ui.accounts.components import (
-    accounts_panel,
-    accounts_table,
+    account_actions,
+    account_detail,
+    account_settings,
+    accounts_list,
     add_account_form,
+    clear_confirmation,
     error_alert,
 )
 from mailarc_ui.accounts.state import (
     AccountRow,
     CredentialInput,
     MailAccountState,
+    account_eraser,
     provider_registry,
 )
 
@@ -23,9 +27,13 @@ __all__ = [
     "AccountRow",
     "CredentialInput",
     "MailAccountState",
-    "accounts_panel",
-    "accounts_table",
+    "account_actions",
+    "account_detail",
+    "account_eraser",
+    "account_settings",
+    "accounts_list",
     "add_account_form",
+    "clear_confirmation",
     "error_alert",
     "provider_registry",
 ]

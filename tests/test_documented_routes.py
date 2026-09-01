@@ -15,8 +15,10 @@ The mail-client redesign moved four more. Insights left ``/admin/`` for
 ``/insights``, the dashboard gave ``/`` to the search and took ``/dashboard``,
 and the sign-in went away entirely — with it ``/login``, ``/profile`` and
 ``/admin/users``, three paths that a reader following them now reaches nothing
-at all at. All of them are in the pattern below, so prose that still names one
-fails here rather than in a browser.
+at all at. ``/admin/review`` joined them when the review page was removed — the
+search at ``/`` reads a message the same way and had made it a second door onto
+the same reading pane. All of them are in the pattern below, so prose that
+still names one fails here rather than in a browser.
 """
 
 import re
@@ -37,7 +39,7 @@ module-level registry in order to ask what their paths are.
 
 MOVED = re.compile(
     r"/mail/(?:accounts|review|insights)\b"
-    r"|/admin/(?:insights|users)\b"
+    r"|/admin/(?:insights|review|users)\b"
     r"|(?<![\w/.-])/profile\b"
     r"|(?<![\w/.-])/login\b"
 )
@@ -111,6 +113,5 @@ def test_the_pages_agree_on_where_they_are() -> None:
         "/insights",
         "/admin/accounts",
         "/admin/embedder",
-        "/admin/review",
         "/admin/status",
     }

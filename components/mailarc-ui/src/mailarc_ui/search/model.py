@@ -59,8 +59,8 @@ SEARCH_FAILED = (
 )
 """What a fault looks like on screen, and never the exception's own text.
 
-The same refusal :data:`~mailarc_ui.insights.search.SEARCH_FAILED` makes, for
-the same reason: a driver's message carries a path out of this installation
+The same refusal the MCP server makes, for the same reason: a driver's
+message carries a path out of this installation
 — an unreachable graph is ``Error 61 connecting to 127.0.0.1:6379``, a
 missing blob names ``…/mailstore/ab/cd.eml`` — and this page renders whatever
 it is given into a browser. Nothing is lost; the state logs the exception

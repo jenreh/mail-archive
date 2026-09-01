@@ -71,7 +71,7 @@ The left edge is a slim icon rail; every icon names itself when you hover it.
 | Search | `/` | The front door. Find a message by sender, recipient, date or words in it, and read it beside the results |
 | Dashboard | `/dashboard` | What the archive holds — how many messages and mailboxes, when it last grew, what is queued and what is importing right now |
 | Insights | `/insights` | What a rebuild derived from the archive, and the cross-check on it |
-| Admin | popover | Four maintenance pages: **Review** (`/admin/review`), **Mail accounts** (`/admin/accounts`), **Embedder** (`/admin/embedder`) and **Graph status** (`/admin/status`) |
+| Admin | popover | Three maintenance pages: **Mail accounts** (`/admin/accounts`), **Embedder** (`/admin/embedder`) and **Graph status** (`/admin/status`) |
 
 Search is the main page because finding a message is what somebody opens a mail
 archive to do; the dashboard is one click away rather than the other way round.

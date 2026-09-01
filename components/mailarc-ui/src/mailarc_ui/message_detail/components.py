@@ -2,8 +2,8 @@
 
 Layout and nothing else. Every value comes from the state class handed in, and
 that is the whole trick of this module — each function takes the *concrete*
-state as an argument rather than naming one, so the same pane serves the search
-page and the review page while each keeps its own selection. The argument is a
+state as an argument rather than naming one, so the same pane serves any page
+that lists the mixin while each keeps its own selection. The argument is a
 class, not an instance: a component is built once at compile time and what it
 holds are that class's Vars.
 
@@ -16,7 +16,15 @@ is the browser's, not a tag allow-list of ours.
 import appkit_mantine as mn
 import reflex as rx
 
-from mailarc_ui.kit import attachment_card, avatar_initials
+from mailarc_ui.kit import (
+    attachment_card,
+    avatar_initials,
+    empty_panel,
+    message,
+    quiet_button,
+    soft_button,
+    spinner,
+)
 from mailarc_ui.message_detail.model import (
     TAB_MESSAGE,
     TAB_SOURCE,
@@ -117,29 +125,25 @@ def message_header(state: type[MessageDetailState]) -> rx.Component:
 
 def remote_content_bar(state: type[MessageDetailState]) -> rx.Component:
     """The question a mail client asks before it fetches anything remote."""
-    return mn.alert(
+    return message(
         mn.group(
             mn.text(state.remote_notice, size="sm", flex="1"),
-            mn.button(
+            soft_button(
                 "Allow once",
                 on_click=state.allow_remote_once,
-                variant="light",
                 size="xs",
             ),
-            mn.button(
+            quiet_button(
                 "Allow for this sender",
                 on_click=state.allow_remote_for_sender,
-                variant="subtle",
                 size="xs",
             ),
             gap="sm",
             align="center",
             wrap="wrap",
         ),
-        color="yellow",
-        variant="light",
-        py="xs",
-        icon=rx.icon("shield", size=16),
+        "warning",
+        icon="shield",
     )
 
 
@@ -196,11 +200,9 @@ def raw_message_view(state: type[MessageDetailState]) -> rx.Component:
     return mn.stack(
         rx.cond(
             state.raw_truncated,
-            mn.alert(
+            message(
                 "Only the beginning is shown; the full original is on disk.",
-                color="yellow",
-                variant="light",
-                py="xs",
+                "warning",
             ),
             mn.text(""),
         ),
@@ -245,7 +247,7 @@ def message_tabs(state: type[MessageDetailState]) -> rx.Component:
         state.has_selection,
         rx.cond(
             state.loading_raw,
-            mn.group(mn.loader(size="sm"), justify="center", py="xl"),
+            spinner(),
             mn.tabs(
                 mn.tabs.list(
                     mn.tabs.tab(
@@ -269,10 +271,9 @@ def message_tabs(state: type[MessageDetailState]) -> rx.Component:
                 custom_attrs={"styles": TABS_STYLES},
             ),
         ),
-        mn.empty_state(
-            icon=rx.icon("mail-open", size=28),
-            title="Pick a message",
-            description="It shows up here, readable or as its raw source.",
-            align="center",
+        empty_panel(
+            "mail-open",
+            "Pick a message",
+            "It shows up here, readable or as its raw source.",
         ),
     )

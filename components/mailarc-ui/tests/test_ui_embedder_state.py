@@ -73,6 +73,12 @@ from mailarc_ui.embedder import (
     vector_advice,
 )
 from mailarc_ui.embedder import state as state_module
+from mailarc_ui.embedder.state import (
+    BASE_URL_FIELD,
+    DIMENSION_FIELD,
+    DIMENSION_TOO_SMALL,
+    NOT_AN_HTTP_URL,
+)
 
 __all__ = ["composition", "configured", "keyed", "searching", "sessions", "state"]
 """pytest collects a fixture off the importing module's namespace, so the six
@@ -614,6 +620,46 @@ class TestTheFormReadsTheLiveVectorIndex:
         assert "1536" in state.index_advice.text
 
 
+class TestWhatMakesTheSettingsValid:
+    """The two rules, and the button that reads their verdict.
+
+    Both replace a silence. The dimension was refused by ``can_save`` alone,
+    so a zero left the button dead with nothing on the page saying why; the
+    base URL was discarded on the keystroke, so the box could not be typed
+    into at all.
+    """
+
+    async def test_a_dimension_of_zero_says_why_the_button_is_dead(
+        self, state, sessions, searching
+    ) -> None:
+        await load_form(state)
+
+        await state.set_dimension("")
+
+        assert state.errors[DIMENSION_FIELD] == DIMENSION_TOO_SMALL
+        assert state.can_save is False
+
+    async def test_a_real_length_clears_it(self, state, sessions, searching) -> None:
+        await load_form(state)
+        await state.set_dimension("")
+
+        await state.set_dimension(768)
+
+        assert state.errors == {}
+        assert state.can_save is True
+
+    async def test_a_dimension_of_zero_is_never_written(
+        self, state, sessions, searching, composition
+    ) -> None:
+        """``can_save`` is a UI gate; this is the boundary."""
+        await load_form(state)
+        await state.set_dimension("")
+
+        await save_form(state)
+
+        assert await stored_row(sessions) is None
+
+
 class TestChangingTheHost:
     async def test_a_new_base_url_is_warned_about(
         self, state, sessions, searching
@@ -625,16 +671,41 @@ class TestChangingTheHost:
 
         assert state.host_advice.text != ""
 
-    async def test_something_that_is_not_a_url_is_refused(
+    async def test_something_that_is_not_a_url_says_so_on_the_field(
         self, state, sessions, searching
     ) -> None:
-        """It arrives over a socket, where an event's arguments are whatever
-        the caller sent — and this one re-points a stored credential."""
+        """Held and marked, rather than swallowed.
+
+        The box used to discard anything that was not already an absolute URL,
+        which meant it could not be typed into: ``h`` is not one either. What
+        the value must never do is reach a write, and that is the test below —
+        this one is only that a person can see why.
+        """
         await load_form(state)
 
         await state.set_base_url("gpu.internal:11434")
 
-        assert state.base_url == ""
+        assert state.base_url == "gpu.internal:11434"
+        assert state.errors[BASE_URL_FIELD] == NOT_AN_HTTP_URL
+        assert state.can_save is False
+
+    async def test_something_that_is_not_a_url_is_never_written(
+        self, state, sessions, searching, composition
+    ) -> None:
+        """The guarantee itself, at the boundary it is about.
+
+        It arrives over a socket, where an event's arguments are whatever the
+        caller sent, and this one decides which host receives the archive's
+        stored bearer token on every embedding call. So the assertion is not
+        that a control refused it — a caller need not use the control — but
+        that pressing Save with it in the form stores nothing at all.
+        """
+        await load_form(state)
+        await state.set_base_url("gpu.internal:11434")
+
+        await save_form(state)
+
+        assert await stored_row(sessions) is None
 
     async def test_emptying_it_still_means_the_providers_own(
         self, state, sessions, searching
@@ -645,6 +716,7 @@ class TestChangingTheHost:
         await state.set_base_url("")
 
         assert state.base_url == ""
+        assert state.errors == {}
 
 
 class TestWhatTheFormSaysWhenItCannotRead:
@@ -868,7 +940,7 @@ class TestTheDimensionFollowsTheProvider:
         state = await self._opened()
         state.dimension = 768
 
-        await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_provider.fn(state, "openai")
 
         assert state.dimension == 1536
 
@@ -876,26 +948,26 @@ class TestTheDimensionFollowsTheProvider:
         state = await self._opened()
         state.dimension = 1536
 
-        await EmbedderSettingsState.set_provider.fn(state, "ollama")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_provider.fn(state, "ollama")
 
         assert state.dimension == 768
 
     async def test_naming_the_large_model_offers_3072(self) -> None:
         """The length is the model's, not the vendor's — one account ships both."""
         state = await self._opened()
-        await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_provider.fn(state, "openai")
 
-        await EmbedderSettingsState.set_model.fn(state, "text-embedding-3-large")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_model.fn(state, "text-embedding-3-large")
 
         assert state.dimension == 3072
 
     async def test_an_unknown_model_leaves_the_length_alone(self) -> None:
         """Nobody here knows its length, so inventing one would be a guess."""
         state = await self._opened()
-        await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_provider.fn(state, "openai")
         state.dimension = 1024
 
-        await EmbedderSettingsState.set_model.fn(state, "some-local-finetune")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_model.fn(state, "some-local-finetune")
 
         assert state.dimension == 1024
 
@@ -904,10 +976,10 @@ class TestTheDimensionFollowsTheProvider:
     ) -> None:
         """768 against a 1536-native OpenAI model is a real choice, not a slip."""
         state = await self._opened()
-        await EmbedderSettingsState.set_provider.fn(state, "openai")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_provider.fn(state, "openai")
 
-        await EmbedderSettingsState.set_dimension.fn(state, 768)  # ty: ignore[unresolved-attribute]
-        await EmbedderSettingsState.set_model.fn(state, "text-embedding-3-small")  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.set_dimension.fn(state, 768)
+        await EmbedderSettingsState.set_model.fn(state, "text-embedding-3-small")
 
         assert state.dimension == 768, (
             "naming the model that is already chosen re-offered its native "
@@ -934,7 +1006,7 @@ class TestRebuildingTheIndex:
         )
         monkeypatch.setattr(EmbedderSettingsState, "_adopt", _record_notice)
 
-        await EmbedderSettingsState.rebuild_index.fn(state)  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.rebuild_index.fn(state)
 
         assert called == [1]
         assert "7" in state.notice
@@ -956,10 +1028,39 @@ class TestRebuildingTheIndex:
         monkeypatch.setattr(state_module, "semantic_control", exploding)
         monkeypatch.setattr(EmbedderSettingsState, "_failed", _record_error)
 
-        await EmbedderSettingsState.rebuild_index.fn(state)  # ty: ignore[unresolved-attribute]
+        await EmbedderSettingsState.rebuild_index.fn(state)
 
         assert state.reindexing is False, "the form is stuck showing a rebuild"
         assert state.error
+
+
+class TestThePageOpensWhereEveryOtherPageOpens:
+    """An empty alert block is not weightless, so it must not be rendered.
+
+    Measured on the running application before this was fixed: the first card
+    on ``/admin/embedder`` sat 54px below the top of the main area while the
+    one on ``/insights`` and ``/admin/status`` sat at 24px. The thirty pixels
+    were an empty ``mn.stack`` holding two empty alerts — its own ``gap="xs"``
+    between two zero-height children, and the panel's ``gap="lg"`` underneath
+    the block — and a page opens with nothing to report every time.
+    """
+
+    async def test_a_page_with_nothing_to_report_has_no_message_block(
+        self, state, sessions, searching
+    ) -> None:
+        await load_form(state)
+
+        assert state.has_message is False
+
+    async def test_an_error_brings_the_block_back(self, state) -> None:
+        state.error = "That did not work"
+
+        assert state.has_message is True
+
+    async def test_a_notice_brings_the_block_back(self, state) -> None:
+        state.notice = "Saved."
+
+        assert state.has_message is True
 
 
 def _control(seen: list[int], cleared: int = 0) -> object:

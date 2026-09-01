@@ -18,7 +18,10 @@ import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.kit import (
+    FIELD_GAP,
+    LABEL_GAP,
     date_field,
+    field_note,
     input_field,
     primary_button,
     quiet_button,
@@ -36,14 +39,13 @@ from mailarc_ui.search.state import MailSearchState
 FORM_WIDTH = 300
 """The left column, in pixels. Wide enough for a two-up date row."""
 
-FIELD_GAP = 18
-"""What the design puts between one field and the next."""
-
 PAIR_GAP = 12
-"""And between the two halves of a two-up row."""
+"""What the design puts between the two halves of a two-up row.
 
-LABEL_GAP = 8
-"""A note sits as close under its control as a control does under its label."""
+The gap *between* fields, and the one under a label, are the kit's
+:data:`~mailarc_ui.kit.FIELD_GAP` and :data:`~mailarc_ui.kit.LABEL_GAP` —
+every form in the archive is spaced alike, so both live there, not here.
+"""
 
 ATTACHMENT_SEGMENTS = [
     {"label": "Any", "value": ATTACH_ANY},
@@ -160,7 +162,7 @@ def _account() -> rx.Component:
 
 def _note(when: rx.Var | bool, text: rx.Var | str) -> rx.Component:
     """One quiet line under a control, or nothing at all."""
-    return rx.cond(when, mn.text(text, size="xs", c="dimmed"), rx.fragment())
+    return rx.cond(when, field_note(text), rx.fragment())
 
 
 def _messages() -> rx.Component:

@@ -139,7 +139,6 @@ class TestTheStartOfJobGuard:
             await verify(sessions_from(session), StubEmbedder())
 
         assert str(caught.value) == NO_VECTOR_INDEX
-        assert "task graph:upgrade" in str(caught.value)
 
     async def test_a_dimension_mismatch_stops_the_job(self) -> None:
         """The failure that hides. Checked against the *live* index rather

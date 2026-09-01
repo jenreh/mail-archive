@@ -62,6 +62,7 @@ from mailarc_sync.engine import (
     ProviderRegistry,
     SyncConfig,
 )
+from mailarc_sync.erase import AccountEraser
 from mailarc_sync.jobs import SessionFactory
 
 logger = logging.getLogger(__name__)
@@ -535,7 +536,7 @@ def archive_reader() -> ArchiveReader:
     """The read side of the archive, wired to this installation's stores.
 
     The same pair the worker writes with — the configured graph and the blob
-    store under ``archive.store_dir`` — so what the review page lists is what
+    store under ``archive.store_dir`` — so what the search page lists is what
     the import wrote. Cached like the other handles: it holds no connection,
     but it is one decision and two objects would be two answers to "where is
     the archive".
@@ -547,7 +548,7 @@ def archive_reader() -> ArchiveReader:
 
 
 def publish_archive_reader() -> ArchiveReader:
-    """Leave the reader where the review page can find it.
+    """Leave the reader where the search page can find it.
 
     Same route and same reason as :func:`publish_provider_registry`:
     ``mailarc-ui`` may not import ``app``, and this is the one module allowed
@@ -615,7 +616,7 @@ def semantic_search() -> SemanticSearch:
     """Both search paths, on the graph the import wrote to.
 
     The same graph as :func:`archive_reader` and :func:`analytics_reader`, for
-    the same reason: a search result is a list of messages the review page is
+    the same reason: a search result is a list of messages the reading pane is
     expected to be able to open, and a second graph would make that a broken
     link rather than a visible mistake.
 
@@ -687,6 +688,39 @@ def publish_semantic_control() -> SemanticControl:
     )
     services.register_as(SemanticControl, control)
     return control
+
+
+@lru_cache(maxsize=1)
+def account_eraser() -> AccountEraser:
+    """The clear-out side of an import, wired to this installation's stores.
+
+    The same pair the worker writes with — the configured graph and the
+    application's database — because clearing a mailbox has to reach exactly
+    what importing it wrote, and a second answer to "which graph" would empty
+    the wrong one.
+
+    Cached like the other handles: it holds no connection, only the two
+    factories that open one.
+    """
+    return AccountEraser(
+        graph_session=partial(graph_session, graph_config()),
+        database_session=get_asyncdb_session,
+    )
+
+
+def publish_account_eraser() -> AccountEraser:
+    """Leave the eraser where the accounts page can find it.
+
+    Same route and same reason as :func:`publish_archive_reader`, down to the
+    second call being a no-op: ``mailarc-ui`` may not import ``app``, and this
+    is the one module allowed to build a component from configuration.
+    """
+    services = service_registry()
+    eraser = account_eraser()
+    if services.has(AccountEraser) and services.get(AccountEraser) is eraser:
+        return eraser
+    services.register_as(AccountEraser, eraser)
+    return eraser
 
 
 def publish_provider_registry() -> ProviderRegistry:

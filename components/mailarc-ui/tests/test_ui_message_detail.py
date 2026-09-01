@@ -1,19 +1,21 @@
 """Tests for :mod:`mailarc_ui.message_detail`.
 
-The point of this package is that a second page can read a mail without
-inheriting the first page's list, so every test here drives a state the
-application does not have: :class:`OtherDetailState`, which lists the mixin and
-brings nothing else. What it proves is that the vars, the computed vars and the
-handlers materialise on *it* — not only on ``MessageReviewState``, which would
-also be true of a plain base class — and that two such states hold two separate
-open messages.
+The point of this package is that a page can read a mail without the reading
+pane knowing anything about the list beside it, so every test here drives a
+state the application does not have: :class:`OtherDetailState`, which lists the
+mixin and brings nothing else. What it proves is that the vars, the computed
+vars and the handlers materialise on *it* — not only on the one state that
+happens to list the mixin today, which would also be true of a plain base
+class — and that two such states hold two separate open messages.
 
 The reading itself runs against the real :class:`ArchiveReader` and a real blob
 store, with only the graph session faked, the way ``mailarc-core``'s own reader
 tests drive it. The formatting functions need neither and are checked directly.
 """
 
+import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
@@ -25,19 +27,24 @@ from mailarc_core.archive.blobs import BlobStore
 from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.archive.model import Address, BlobKind
 from mailarc_core.archive.reader import GraphSessionFactory
+from mailarc_core.mail.model import EmailAddress, LabelKind
 from mailarc_ui.message_detail import (
     FRAME_CSP,
     TAB_MESSAGE,
     TAB_SOURCE,
     MessageDetailState,
+    address_label,
     decode_raw,
     frame_document,
+    label_text,
+    long_date_label,
     message_body,
     message_header,
     message_tabs,
     message_view,
     raw_message_view,
     remote_content_bar,
+    size_label,
 )
 
 RAW = (
@@ -63,7 +70,7 @@ HTML_RAW = (
 
 
 class OtherDetailState(MessageDetailState, rx.State):
-    """A page that is not the review page — the whole argument for the mixin.
+    """A page the application does not have — the whole argument for the mixin.
 
     Empty on purpose: whatever it can do, it got from the mixin.
     """
@@ -143,11 +150,11 @@ class TestWhatTheMixinBrings:
             MessageDetailState()
 
     async def test_two_pages_hold_two_open_messages(self, state, digest) -> None:
-        """The reason for a mixin rather than one shared substate: the search
-        page and the review page each keep their own selection."""
-        from mailarc_ui.review import MessageReviewState
+        """The reason for a mixin rather than one shared substate: every state
+        that lists it keeps a selection of its own."""
+        from mailarc_ui.search import MailSearchState
 
-        other = MessageReviewState()
+        other = MailSearchState()
         await state._open_message("m1@example.com", digest)
 
         assert state.selected_id == "m1@example.com"
@@ -292,8 +299,83 @@ class TestDecodingTheRaw:
         assert truncated is True
 
 
+class TestTheLabelText:
+    @pytest.mark.parametrize(
+        ("name", "text"),
+        [
+            ("INBOX", "Inbox"),
+            ("CATEGORY_PROMOTIONS", "Promotions"),
+            ("CATEGORY_SOCIAL", "Social"),
+            ("UNREAD", "Unread"),
+            ("SENT", "Sent"),
+        ],
+    )
+    def test_a_system_name_reads_like_a_mail_client_prints_it(
+        self, name: str, text: str
+    ) -> None:
+        assert label_text(name, LabelKind.SYSTEM) == text
+
+    def test_a_users_name_is_left_exactly_as_they_wrote_it(self) -> None:
+        assert label_text("Kunden/Bauer GmbH", LabelKind.USER) == "Kunden/Bauer GmbH"
+        assert label_text("INBOX", LabelKind.FOLDER) == "INBOX"
+
+
+class TestTheHeaderLabels:
+    def test_an_address_with_a_name_shows_both(self) -> None:
+        address = EmailAddress(address="anna@example.com", display_name="Anna")
+
+        assert address_label(address) == "Anna <anna@example.com>"
+
+    def test_an_address_without_a_name_is_just_the_address(self) -> None:
+        assert (
+            address_label(EmailAddress(address="anna@example.com"))
+            == "anna@example.com"
+        )
+        assert address_label(None) == ""
+
+    def test_the_long_date_is_local_and_has_a_weekday(self) -> None:
+        sent = datetime(2026, 8, 19, 14, 28, tzinfo=UTC)
+
+        assert long_date_label(sent) == sent.astimezone().strftime("%a, %d.%m.%Y %H:%M")
+        assert long_date_label(None) == ""
+
+    def test_a_date_this_zone_cannot_print_costs_one_cell(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same forgeable header that took the insights page down.
+
+        ``Date: Fri, 31 Dec 9999 23:59:59 +0000`` parses, ``_sent_at``
+        range-checks nothing, and ``astimezone()`` then raises ``OverflowError``
+        in every zone east of UTC — which is the developer's own, and a routine
+        spam trick besides. In a header that has to be one empty cell, not a
+        message that will not render.
+        """
+        monkeypatch.setenv("TZ", "Europe/Berlin")
+        time.tzset()
+        far_future = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+        assert long_date_label(far_future) == ""
+
+    def test_the_other_end_of_the_range_costs_one_cell_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Year 0001 overflows west of UTC, so the guard is two-sided."""
+        monkeypatch.setenv("TZ", "America/New_York")
+        time.tzset()
+        long_ago = datetime(1, 1, 1, tzinfo=UTC)
+
+        assert long_date_label(long_ago) == ""
+
+    @pytest.mark.parametrize(
+        ("size", "label"),
+        [(0, "0 B"), (512, "512 B"), (12 * 1024, "12 KB"), (1400 * 1024, "1.4 MB")],
+    )
+    def test_sizes_read_like_a_file_list(self, size: int, label: str) -> None:
+        assert size_label(size) == label
+
+
 class TestTheComponents:
-    """Built against a state the review page never heard of — which is the
+    """Built against a state no page of this application has — which is the
     claim: a prop appkit_mantine does not have only shows up when it is built,
     and a var the mixin did not copy only shows up when it is resolved."""
 

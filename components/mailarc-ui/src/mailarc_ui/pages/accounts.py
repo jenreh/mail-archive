@@ -1,68 +1,83 @@
 """Add a mailbox, connect it, import it, watch the import run.
 
-Layout and nothing else. Both halves are components ``mailarc-ui`` exports —
-:func:`accounts_panel` owns the mailboxes, :func:`import_panel` owns the job —
-and this module only decides in which order they appear and which mailbox the
-import acts on.
-"""
+Two columns, the same pair every other screen in this archive opens with: the
+mailboxes on the left at :data:`~mailarc_ui.kit.LIST_WIDTH`, and on the right
+whichever one of them is selected — its form, its two actions, and the import
+running against it.
 
-from typing import Literal
+On ``mailarc_full_app`` for the reason the search page is: each column scrolls
+on its own, which needs a parent with a definite height rather than one that
+grows to fit them.
+
+Layout and nothing else, and this page has one more layout decision than most:
+the right column shows a mailbox *or* the form for a new one, never both, so
+selecting nothing is what asks for the form. It is also where two states that
+know nothing of each other are introduced —
+:meth:`~mailarc_ui.imports.state.ImportJobState.select_account` rides along
+with the click that opens a mailbox, so the import panel acts on the mailbox
+that is on screen and neither state has to learn the other's name.
+"""
 
 import appkit_mantine as mn
 import reflex as rx
 
-from mailarc_ui.accounts import AccountRow, MailAccountState, accounts_panel
+from mailarc_ui.accounts import (
+    MailAccountState,
+    account_detail,
+    accounts_list,
+    add_account_form,
+    error_alert,
+)
 from mailarc_ui.imports import ImportJobState, import_panel
-from mailarc_ui.kit import PAGE_GAP, PAGE_PADDING, page_header
+from mailarc_ui.kit import COLUMN_GAP, PAGE_INSET, column_card
 from mailarc_ui.shell import routes
-from mailarc_ui.shell.templates import mailarc_app, public_page
+from mailarc_ui.shell.templates import mailarc_full_app, public_page
 
 ROUTE = routes.ACCOUNTS
 """Where this page lives; the rail reads the same constant."""
 
+DETAIL_WIDTH = 720
+"""How wide the detail column's content grows before it stops.
 
-def _pick_button(row: AccountRow, variant: Literal["filled", "light"]) -> rx.Component:
-    """The button that hands one mailbox's id to the import panel."""
-    return mn.button(
-        row.email_address,
-        variant=variant,
-        size="xs",
-        # ty cannot model reflex event-handler calls; suppress the false positive.
-        on_click=lambda: ImportJobState.select_account(row.id),  # ty: ignore[invalid-argument-type]
-    )
+A labelled field spanning the whole of a wide window is a field nobody can
+follow from its label to its box. The column itself takes the rest of the
+page — what is capped is the reading measure inside it, the way a settings
+page is laid out rather than a reading pane.
+"""
 
 
-def _mailbox_button(row: AccountRow) -> rx.Component:
-    """One mailbox to import from, filled in while it is the chosen one.
+def _detail_column() -> rx.Component:
+    """The right column: the open mailbox, or how to add one.
 
-    Two buttons rather than a conditional prop: ``rx.cond`` in a prop hands the
-    component a `Var` the type checker cannot match against a string, and the
-    accounts form solves the same problem the same way.
+    Scrolls inside its own edge, and pads inside the scroll area rather than
+    on the card, so the scrollbar sits against the border instead of floating
+    in a margin.
     """
-    return rx.cond(
-        ImportJobState.account_id == row.id,
-        _pick_button(row, "filled"),
-        _pick_button(row, "light"),
-    )
-
-
-def _mailbox_picker() -> rx.Component:
-    """Which mailbox the import panel acts on.
-
-    The two states know nothing of each other — one lists mailboxes, the other
-    wants an id — and a page is where two components are introduced. Nothing
-    shows until there is an account, because there is nothing to pick.
-    """
-    return rx.cond(
-        MailAccountState.has_accounts,
-        mn.group(
-            mn.text("Import from", size="sm", fw=600),
-            rx.foreach(MailAccountState.accounts, _mailbox_button),
-            gap="xs",
-            align="center",
-            w="100%",
+    return column_card(
+        mn.scroll_area(
+            mn.stack(
+                error_alert(),
+                rx.cond(
+                    MailAccountState.has_selection,
+                    mn.stack(
+                        account_detail(),
+                        mn.divider(),
+                        import_panel(),
+                        gap="lg",
+                        w="100%",
+                    ),
+                    add_account_form(),
+                ),
+                gap="lg",
+                p="lg",
+                w="100%",
+                maw=DETAIL_WIDTH,
+            ),
+            type="hover",
+            offset_scrollbars=False,
+            style={"height": "100%"},
         ),
-        mn.text(""),
+        style={"minWidth": 0},
     )
 
 
@@ -70,23 +85,16 @@ def _mailbox_picker() -> rx.Component:
     route=ROUTE,
     title="Mail accounts",
     description="Add a mailbox, connect it, and import it into the archive",
-    template=mailarc_app,
+    template=mailarc_full_app,
     on_load=[MailAccountState.load, ImportJobState.refresh],
 )
 def accounts_page() -> rx.Component:
-    return mn.stack(
-        page_header(
-            "Mail accounts",
-            "A mailbox is added here, connected once, and then imported. "
-            "The archive keeps what an import wrote, so a second run only "
-            "picks up what is new.",
-        ),
-        accounts_panel(),
-        _mailbox_picker(),
-        import_panel(),
-        gap=PAGE_GAP,
+    return mn.flex(
+        accounts_list(on_select=ImportJobState.select_account),
+        _detail_column(),
+        gap=COLUMN_GAP,
+        h="100%",
         w="100%",
-        maw=900,
-        mx="auto",
-        p=PAGE_PADDING,
+        align="stretch",
+        p=PAGE_INSET,
     )

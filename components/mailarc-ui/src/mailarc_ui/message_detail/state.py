@@ -1,11 +1,11 @@
 """The half of a mail page that is one open message, as a state mixin.
 
-Two pages show a mail the same way — the search at ``/`` and the review under
-``/admin`` — and they differ only in how the list beside it was filled. A mixin
-is what lets that half be written once: Reflex copies a mixin's vars, computed
-vars and event handlers into every concrete state that lists it, so each page
-ends up with its **own** selection, its own tab and its own trust decision,
-rather than sharing one substate and with it one open message.
+A page that shows a mail differs from the next one only in how the list beside
+it was filled. A mixin is what lets that half be written once: Reflex copies a
+mixin's vars, computed vars and event handlers into every concrete state that
+lists it, so each page ends up with its **own** selection, its own tab and its
+own trust decision, rather than sharing one substate and with it one open
+message.
 
 What a concrete state has to bring is the list. It finds the row a click names
 and hands the two things reading needs — the id and the digest of the stored

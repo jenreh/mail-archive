@@ -1,8 +1,8 @@
 """What a reading pane shows, projected onto strings, and the reader it reads.
 
-A :class:`~mailarc_core.archive.model.MessageSummary` carries a datetime and
-two halves of a sender; a list row wants one name and one short date label, and
-§9.1 keeps anything richer out of a Reflex state. So every value object here is
+A :class:`~mailarc_core.mail.model.RenderedMessage` carries datetimes, address
+objects and byte counts; a header wants one line of text per field, and §9.1
+keeps anything richer out of a Reflex state. So every value object here is
 frozen and already printable, and every function is the small piece of
 formatting that gets it there — no I/O, so all of it is checkable without a
 graph.
@@ -16,13 +16,13 @@ decision, which is why it lives beside the value objects rather than in a state.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from appkit_commons.registry import service_registry
 from pydantic import BaseModel, ConfigDict
 
 from mailarc_core import ArchiveReader
-from mailarc_core.archive.model import MessageLabel, MessageSummary
+from mailarc_core.archive.model import MessageLabel
 from mailarc_core.mail.model import (
     EmailAddress,
     LabelKind,
@@ -35,13 +35,11 @@ logger = logging.getLogger(__name__)
 RAW_LIMIT = 256 * 1024
 """How much of an original the viewer shows, in characters.
 
-A review wants the headers and the first part of the body; the megabytes of
+A reader wants the headers and the first part of the body; the megabytes of
 base64 behind them are on disk either way and nothing a human reads.
 """
 
 NO_SUBJECT = "(no subject)"
-
-YESTERDAY = "Yesterday"
 
 TAB_MESSAGE = "message"
 TAB_SOURCE = "source"
@@ -117,38 +115,6 @@ class LabelChip(BaseModel):
         )
 
 
-class MessageRow(BaseModel):
-    """One list row — everything already a string the browser can print.
-
-    Frozen, because a row is a reading: selecting one hands its id back to
-    the state, and the original is read by the digest it carries.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    sender: str
-    subject: str
-    preview: str
-    date_label: str
-    has_attachments: bool = False
-    eml_sha256: str = ""
-    labels: list[LabelChip] = []
-
-    @classmethod
-    def from_summary(cls, summary: MessageSummary, now: datetime) -> MessageRow:
-        return cls(
-            id=summary.id,
-            sender=summary.sender_name or summary.sender_address,
-            subject=summary.subject or NO_SUBJECT,
-            preview=summary.preview,
-            date_label=date_label(summary.sent_at, now),
-            has_attachments=summary.has_attachments,
-            eml_sha256=summary.eml_sha256 or "",
-            labels=[LabelChip.from_label(one) for one in summary.labels],
-        )
-
-
 class AttachmentRow(BaseModel):
     """One file on the message, as the header strip lists it."""
 
@@ -219,25 +185,6 @@ def archive_reader() -> ArchiveReader:
         ) from error
 
 
-def date_label(sent_at: datetime | None, now: datetime) -> str:
-    """The short date a list row shows, the way a mail client does it.
-
-    Today is a time, yesterday is a word, anything older is a date. Both
-    instants are moved to the local zone first, because "today" is a local
-    notion and the archive stores UTC — and that move is what
-    :func:`_local` has to survive.
-    """
-    local = _local(sent_at)
-    if local is None:
-        return ""
-    today = now.astimezone().date()
-    if local.date() == today:
-        return local.strftime("%H:%M")
-    if local.date() == today - timedelta(days=1):
-        return YESTERDAY
-    return local.strftime("%d.%m.%y")
-
-
 def label_text(name: str, kind: LabelKind) -> str:
     """What a chip prints for a label.
 
@@ -259,8 +206,8 @@ def long_date_label(sent_at: datetime | None) -> str:
 def _local(sent_at: datetime | None) -> datetime | None:
     """One stored instant in the reader's own zone, or ``None``.
 
-    ``None`` covers two cases a row renders the same way: no date at all, and a
-    date the local zone cannot express. The second is not hypothetical — a
+    ``None`` covers two cases a header renders the same way: no date at all,
+    and a date the local zone cannot express. The second is not hypothetical — a
     ``Date:`` header is whatever a sender wrote and nothing range-checks it, so
     ``Date: Fri, 31 Dec 9999 23:59:59 +0000`` (a routine way of pinning a mail
     to the top of a date sort) reaches the archive intact and then overflows

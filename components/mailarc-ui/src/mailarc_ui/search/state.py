@@ -4,9 +4,8 @@ The archive answers through :class:`~mailarc_core.ArchiveReader` and — for the
 semantic path — :class:`~mailarc_analytics.semantic.SemanticSearch`, both read
 out of the service registry inside the method that needs one (§6). Reading the
 message a row names is not here at all: it is
-:class:`~mailarc_ui.message_detail.MessageDetailState`, the mixin the review
-page also lists, so both pages read a mail the same way and only fill their
-list differently.
+:class:`~mailarc_ui.message_detail.MessageDetailState`, a mixin this state
+lists, so filling the list and reading one of its rows stay separable.
 
 Three things are worth knowing before editing this file.
 

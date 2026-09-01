@@ -49,6 +49,7 @@ from mailarc_analytics.queries.model import (
 from mailarc_analytics.queries.reports import REPORT_LIMIT
 from mailarc_analytics.semantic import (
     MAX_HITS,
+    NO_EMBEDDER,
     SearchHit,
     SearchKind,
     SearchRequest,
@@ -423,9 +424,9 @@ async def test_semantic_search_without_an_embedder_is_an_error_not_a_blank() -> 
     assert answer.is_error is True
     assert answer.data is None
     message = failure_text(answer)
-    assert "no embedder is configured" in message
-    assert "app_semantic_provider" in message
-    assert "Full-text search" in message
+    assert message.strip().endswith(NO_EMBEDDER), (
+        "a model should read the component's own sentence, not a paraphrase"
+    )
 
 
 async def test_a_search_limit_is_clamped_rather_than_refused() -> None:

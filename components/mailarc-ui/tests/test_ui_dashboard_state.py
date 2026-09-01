@@ -48,6 +48,8 @@ from mailarc_core.graph.model import GraphServerMode, GraphServerStatus
 from mailarc_core.storage import PathUsage, StorageReader, StorageUsage
 from mailarc_ui.dashboard import DashboardState
 from mailarc_ui.dashboard.model import (
+    DISMISSED_MEMORY,
+    NOTIFICATION_SHOWN,
     UNKNOWN,
     DashboardCounts,
     NotificationView,
@@ -55,14 +57,18 @@ from mailarc_ui.dashboard.model import (
     ServiceView,
     day_label,
     days_in,
+    dismissed_keys,
     human_bytes,
     last_archived_label,
     moment_label,
+    notice_key,
     notifications_of,
     percent_label,
     ratio_percent,
+    remembering,
     services_of,
     thousands,
+    undismissed,
 )
 
 READS = "mailarc_ui.dashboard.reads"
@@ -319,12 +325,17 @@ def state() -> DashboardState:
 
 async def _load(state: DashboardState) -> None:
     """Invoke the page's ``on_load`` the way Reflex invokes a background task."""
-    await DashboardState.load.fn(state)  # ty: ignore[unresolved-attribute]
+    await DashboardState.load.fn(state)
 
 
 async def _choose(state: DashboardState, value: str) -> None:
     """The range switch, same reason as :func:`_load`."""
-    await DashboardState.choose_range.fn(state, value)  # ty: ignore[unresolved-attribute]
+    await DashboardState.choose_range.fn(state, value)
+
+
+def _notice(message: str, when: str = "now") -> NotificationView:
+    """One notification as the panel would have built it, key and all."""
+    return NotificationView(message=message, when=when, key=notice_key(when, message))
 
 
 def _service(rows: list[ServiceView], name: str) -> bool:
@@ -344,8 +355,8 @@ def _text_of(state: DashboardState) -> str:
             state.queued,
             state.running,
             state.last_archived,
-            *(f"{one.label} {one.caption} {one.detail}" for one in state.health),
-            *(f"{one.label} {one.caption} {one.detail}" for one in state.storage),
+            *(f"{one.label} {one.caption}" for one in state.health),
+            *(f"{one.label} {one.caption}" for one in state.storage),
             *(f"{one.message} {one.when}" for one in state.notifications),
             *(one.name for one in state.services),
             state.archive_error,
@@ -514,18 +525,21 @@ class TestTheRangeSwitch:
 
 @pytest.mark.usefixtures("published", "database")
 class TestNothingIsWithheld:
-    """One person owns this archive, so every panel answers in full."""
+    """One person owns this archive, so every panel answers in full.
 
-    async def test_the_notifications_and_the_paths_are_read(
+    The single exception is the disk paths, and it is not about who is asking:
+    the page never needed them to say how full a volume is.
+    """
+
+    async def test_the_notifications_are_read_in_full(
         self, state: DashboardState
     ) -> None:
         await _load(state)
 
         assert "jens@example.com" in _text_of(state)
         assert "the password was refused" in _text_of(state)
-        assert "/srv/mail-archive/.state/mailstore" in _text_of(state)
 
-    async def test_the_disk_panel_carries_its_labels_ratios_and_paths(
+    async def test_the_disk_panel_carries_its_labels_ratios_and_sizes(
         self, state: DashboardState
     ) -> None:
         await _load(state)
@@ -536,7 +550,24 @@ class TestNothingIsWithheld:
             "Database",
         ]
         assert all(one.percent > 0 for one in state.storage)
-        assert all(one.detail for one in state.storage)
+        assert all(one.caption for one in state.storage)
+        assert not any(" / " in one.caption for one in state.storage), (
+            "the volume's own size is the same on all three rows; the bar and "
+            "the percentage say how full it is"
+        )
+
+    async def test_the_disk_panel_withholds_the_paths_it_measured(
+        self, state: DashboardState
+    ) -> None:
+        """The one thing this page does keep back, and the reason is §7.
+
+        A row says how much of a volume it takes, never where that volume is:
+        an absolute path is where an installation keeps somebody's mail, and
+        this page needs no sign-in to read.
+        """
+        await _load(state)
+
+        assert "/srv/mail-archive" not in _text_of(state)
 
 
 @pytest.mark.usefixtures("published", "database")
@@ -803,9 +834,189 @@ class TestWhatEachPanelSaysWhenItKnowsNothing:
 
         assert state.has_notifications is False
 
-        state.notifications = [NotificationView(message="something", when="now")]
+        state.notifications = [_notice("something")]
 
         assert state.has_notifications is True
+
+
+class TestClosingANotification:
+    """Five on the page, a cross on each, and a memory that survives a reload.
+
+    The panel reads a pool of :data:`NOTIFICATION_LIMIT` faults and draws the
+    top :data:`NOTIFICATION_SHOWN` of them. Everything below turns on one
+    question — what is drawn is *derived* from the pool and the ledger rather
+    than stored — because that is what makes a close land immediately, a reload
+    keep it, and a fault that happened again come back.
+    """
+
+    def test_only_the_newest_few_are_drawn(self) -> None:
+        """The read is a pool; the panel is the top of it."""
+        state = DashboardState()
+        state.notifications = [_notice(f"fault {one}") for one in range(8)]
+
+        assert len(state.visible_notifications) == NOTIFICATION_SHOWN
+        assert state.visible_notifications[0].message == "fault 0"
+
+    def test_a_closed_one_goes_and_the_next_takes_its_place(self) -> None:
+        """The filter runs over the whole pool and the cut comes after it.
+
+        A cut-then-filter would leave four rows and a hole where the fifth was,
+        and a reader who cleared five would be left with an empty card over an
+        archive with three faults still in it.
+        """
+        state = DashboardState()
+        state.notifications = [_notice(f"fault {one}") for one in range(8)]
+        first = state.visible_notifications[0]
+
+        DashboardState.dismiss.fn(state, first.key)
+
+        drawn = [one.message for one in state.visible_notifications]
+        assert first.message not in drawn
+        assert len(drawn) == NOTIFICATION_SHOWN
+        assert drawn[-1] == "fault 5", "nothing moved up to fill the gap"
+
+    def test_closing_the_last_one_leaves_the_healthy_card(self) -> None:
+        """``has_notifications`` reads the drawn list, not the pool.
+
+        Over the pool it would stay true with everything closed, and the card
+        would render an empty list instead of the sentence that says nothing
+        needs attention.
+        """
+        state = DashboardState()
+        state.notifications = [_notice("the only fault")]
+
+        DashboardState.dismiss.fn(state, state.notifications[0].key)
+
+        assert state.visible_notifications == []
+        assert state.has_notifications is False
+
+    def test_a_dismissal_is_remembered_where_a_reload_will_find_it(self) -> None:
+        """The ledger is a state var backed by ``localStorage``, so what the
+        handler writes is what the next page load starts from."""
+        state = DashboardState()
+        state.notifications = [_notice("a fault")]
+
+        DashboardState.dismiss.fn(state, state.notifications[0].key)
+
+        assert state.notifications[0].key in dismissed_keys(state.dismissed)
+
+    def test_a_reloaded_page_hides_what_was_closed_before_it(self) -> None:
+        """The pool is read fresh on every load and carries the same faults;
+        only the ledger tells them apart."""
+        closed = _notice("a fault somebody closed")
+        state = DashboardState()
+        state.dismissed = closed.key
+
+        state.notifications = [closed, _notice("a fault nobody has")]
+
+        assert [one.message for one in state.visible_notifications] == [
+            "a fault nobody has"
+        ]
+
+    def test_an_empty_key_is_not_stored(self) -> None:
+        """It would match no fault and would take a slot in a bounded ledger."""
+        state = DashboardState()
+
+        DashboardState.dismiss.fn(state, "")
+
+        assert state.dismissed == ""
+
+
+class TestTheKeyADismissalIsRememberedBy:
+    """What makes a closed fault stay closed — and what makes a new one open.
+
+    The key is derived from the two strings the panel prints, so it is the
+    fault's identity rather than a row id: the same unchanged fault read again
+    is the same key, and a mailbox that fails again at a later minute is not.
+    """
+
+    def test_the_same_fault_keys_the_same_across_processes(self) -> None:
+        """``hashlib`` and not the built-in ``hash``, which Python salts per
+        process — a salted key would forget every dismissal on restart."""
+        assert notice_key("Aug 31, 2026. 17:31", "auth failed") == notice_key(
+            "Aug 31, 2026. 17:31", "auth failed"
+        )
+        assert notice_key("Aug 31, 2026. 17:31", "auth failed") == "745613f95a59a4ec", (
+            "the key changed shape; every dismissal in every browser is forgotten"
+        )
+
+    def test_a_fault_that_happened_again_is_a_different_key(self) -> None:
+        """A mailbox that failed once and was dismissed must reappear when it
+        fails again — that is a new fault, not the one somebody read."""
+        assert notice_key("Aug 31, 2026. 17:31", "auth failed") != notice_key(
+            "Sep 1, 2026. 09:02", "auth failed"
+        )
+
+    def test_two_different_faults_at_one_moment_key_apart(self) -> None:
+        """Two mailboxes failing in the same minute is ordinary, and closing
+        one of them must not close the other."""
+        assert notice_key("now", "jens@example.com failed") != notice_key(
+            "now", "work@example.com failed"
+        )
+
+    def test_the_ledger_never_stores_what_the_panel_printed(self) -> None:
+        """A digest, because the ledger is written to somebody's disk.
+
+        A notification carries a mailbox address and an error out of private
+        mail; storing the text would leave it in a browser profile long after
+        the fault was cleared.
+        """
+        key = notice_key("now", "jens@example.com — password rejected")
+
+        assert "jens@example.com" not in key
+        assert "password" not in key
+
+    def test_every_notification_a_read_produces_carries_one(self) -> None:
+        """Built where the view is, so no component can draw a row it cannot
+        close."""
+        account = MailAccountEntity(
+            provider="imap",
+            display_name="Work",
+            email_address="jens@example.com",
+            status=AccountStatus.ERROR,
+        )
+
+        listed = notifications_of([], [account], [])
+
+        assert all(one.key for one in listed)
+
+
+class TestTheDismissalLedger:
+    """One string in ``localStorage``, and the three things it has to do."""
+
+    def test_it_keeps_what_was_already_there(self) -> None:
+        assert dismissed_keys(remembering("aaa", "bbb")) == frozenset({"aaa", "bbb"})
+
+    def test_the_same_key_twice_is_stored_once(self) -> None:
+        """Closing a fault, reloading and closing it again is ordinary; each
+        one must not cost a slot in a bounded ledger."""
+        assert remembering(remembering("", "aaa"), "aaa").split() == ["aaa"]
+
+    def test_it_forgets_the_oldest_rather_than_growing_for_ever(self) -> None:
+        """An unbounded string in ``localStorage`` is a leak with a slow fuse.
+
+        What is lost is the oldest dismissal, which is the one whose fault is
+        least likely to still be in a pool of eight.
+        """
+        ledger = ""
+        for one in range(DISMISSED_MEMORY + 10):
+            ledger = remembering(ledger, f"{one:016x}")
+
+        kept = ledger.split()
+        assert len(kept) == DISMISSED_MEMORY
+        assert kept[-1] == f"{DISMISSED_MEMORY + 9:016x}"
+        assert f"{0:016x}" not in kept
+
+    def test_a_ledger_somebody_edited_is_not_a_broken_page(self) -> None:
+        """It arrives from a browser, so it is a suggestion and not a promise.
+
+        Nonsense degrades into keys that match no fault, which shows up as
+        notifications reappearing rather than as an exception on page load.
+        """
+        rows = [_notice("a fault")]
+
+        assert undismissed(rows, "not a key at all") == rows
+        assert undismissed(rows, "") == rows
 
 
 class TestWithoutAComposition:

@@ -14,7 +14,16 @@ and only then, what is in it.
 import appkit_mantine as mn
 import reflex as rx
 
-from mailarc_ui.kit import card_heading, panel_card
+from mailarc_ui.kit import (
+    card_heading,
+    dot_badge,
+    empty_panel,
+    message,
+    panel_card,
+    scroll_table,
+    soft_button,
+    status_badge,
+)
 from mailarc_ui.status.state import GraphRow, GraphStatusState
 
 
@@ -28,16 +37,15 @@ def _fact(label: str, value: rx.Var | str) -> rx.Component:
 def _status_header() -> rx.Component:
     return mn.group(
         mn.group(
-            mn.badge(
+            status_badge(
                 GraphStatusState.status_label,
-                color=GraphStatusState.status_color,
-                variant="light",
+                GraphStatusState.status_color,
                 size="lg",
             ),
             rx.cond(
                 GraphStatusState.knn_supported,
-                mn.badge("KNN ready", color="teal", variant="dot", size="lg"),
-                mn.badge("KNN unavailable", color="gray", variant="dot", size="lg"),
+                dot_badge("KNN ready", "teal"),
+                dot_badge("KNN unavailable", "gray"),
             ),
             gap="xs",
         ),
@@ -49,11 +57,10 @@ def _status_header() -> rx.Component:
                 ),
                 mn.text(""),
             ),
-            mn.button(
+            soft_button(
                 "Refresh",
                 on_click=GraphStatusState.refresh,
                 loading=GraphStatusState.loading,
-                variant="light",
                 size="xs",
                 left_section=rx.icon("refresh-cw", size=14),
             ),
@@ -72,12 +79,10 @@ def connection_card() -> rx.Component:
             _status_header(),
             rx.cond(
                 GraphStatusState.error != "",
-                mn.alert(
+                message(
                     GraphStatusState.error,
+                    "failure",
                     title="FalkorDB is not answering",
-                    color="red",
-                    variant="light",
-                    icon=rx.icon("triangle-alert", size=16),
                 ),
                 mn.text(""),
             ),
@@ -131,7 +136,7 @@ def graphs_card() -> rx.Component:
             card_heading("workflow", "Graphs"),
             rx.cond(
                 GraphStatusState.has_graphs,
-                mn.table(
+                scroll_table(
                     mn.table.thead(
                         mn.table.tr(
                             mn.table.th("Name"),
@@ -142,15 +147,11 @@ def graphs_card() -> rx.Component:
                     mn.table.tbody(
                         rx.foreach(GraphStatusState.graphs, _graph_row),
                     ),
-                    striped=True,
-                    highlight_on_hover=True,
-                    tabular_nums=True,
                 ),
-                mn.empty_state(
-                    icon=rx.icon("workflow", size=28),
-                    title="No graphs yet",
-                    description="Graphs appear here as soon as something writes one.",
-                    align="center",
+                empty_panel(
+                    "workflow",
+                    "No graphs yet",
+                    "Graphs appear here as soon as something writes one.",
                 ),
             ),
             gap="sm",
@@ -159,11 +160,27 @@ def graphs_card() -> rx.Component:
 
 
 def status_panel() -> rx.Component:
-    """The whole page body: the three cards, stacked."""
+    """The whole page body: the connection across the top, the other two beside
+    each other under it.
+
+    Still connection, server, inventory — the order the questions are asked in
+    — but the page fills the window now, and three cards stacked down it is a
+    four-fact list and a three-column table each drawn across 1300px. The one
+    that earns the full width is the connection: it carries the status badge,
+    the refresh control and five facts, and it is what a reader looks at first.
+
+    Under it the split follows the content: the server is four labelled
+    numbers and takes the narrow side, the inventory is a table and takes the
+    wide one.
+    """
     return mn.stack(
         connection_card(),
-        metrics_card(),
-        graphs_card(),
+        mn.grid(
+            mn.grid_col(metrics_card(), span={"base": 12, "lg": 4}),
+            mn.grid_col(graphs_card(), span={"base": 12, "lg": 8}),
+            gutter="lg",
+            w="100%",
+        ),
         gap="lg",
         w="100%",
     )

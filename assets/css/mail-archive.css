@@ -94,6 +94,17 @@
   --ma-meter-cool: #7a7871;   /* "Disk statistics" bars (graphite) */
   --ma-meter-track: var(--ma-surface);
   --ma-ok: #29b863;           /* the green status dot */
+
+  /* the red a field wears when it is wrong.
+   *
+   * Its own token rather than the accent, because the accent means "this is
+   * the thing to press" and a wrong field is the opposite of that — and the
+   * two are close enough on a warm canvas that reusing one for both would
+   * make an invalid box look merely focused.
+   */
+  --ma-danger: #e03131;
+  --ma-danger-fill: rgba(224, 49, 49, 0.04);
+  --ma-danger-ring: rgba(224, 49, 49, 0.16);
   --ma-info-bg: var(--ma-accent-soft); /* notification dot background */
   --ma-info-fg: var(--ma-accent);      /* notification dot glyph */
 
@@ -109,6 +120,21 @@
   --ma-radius-card: 14px;
   --ma-radius-panel: 12px;
   --ma-radius-chip: 8px;
+
+  /* A listing's own height, in the unit a reader sees: one row and one head.
+   * Measured off the rendered tables rather than derived from Mantine's
+   * spacing — 14px text at `xs` vertical spacing plus a hairline comes out at
+   * 40.5px a row and 40px for the column names — so `.ma-table-scroll` can
+   * state a height of twelve rows without any component counting pixels.
+   *
+   * A row carrying two clamped lines (a topic label, a template sample) is
+   * half as tall again, and that listing therefore shows eight of them rather
+   * than twelve. That is the intended trade: the number a card *is* the same
+   * height on every panel, which is what stops the page from jumping about as
+   * one analysis finds more than another.
+   */
+  --ma-table-row: 40.5px;
+  --ma-table-head: 40px;
   --ma-shadow-card: 0 1px 2px rgba(26, 26, 24, 0.04);
   --ma-shadow-pill: 0 1px 3px rgba(26, 26, 24, 0.07);
 }
@@ -160,6 +186,9 @@
   --ma-meter-warm: #ef8258;
   --ma-meter-cool: #9c998f;
   --ma-ok: #35cb74;
+  --ma-danger: #ff6b6b;
+  --ma-danger-fill: rgba(255, 107, 107, 0.08);
+  --ma-danger-ring: rgba(255, 107, 107, 0.20);
 
   --ma-chip-cool-bg: #35322d;
   --ma-chip-cool-fg: #b7b3ab;
@@ -197,7 +226,7 @@ html body,
   min-height: 100dvh;
 }
 
-/* The full-viewport templates — the search page and `/admin/review` — are
+/* The full-viewport templates — the search page and `/admin/accounts` — are
  * readers that scroll inside themselves rather than growing the page.
  *
  * `padding: 0` on its own is a trap: Mantine indents `main` past the fixed
@@ -212,29 +241,6 @@ html body,
   padding: 0;
   padding-inline-start: var(--app-shell-navbar-offset, 0px);
   overflow: hidden;
-}
-
-/* ── Page furniture ──────────────────────────────────────────────────────── */
-
-/* The title block carries no bottom margin.
- *
- * It used to, and the 24px it set stacked with the page stack's own gap: the
- * design asks for 24px below the title and the browser drew 44. A margin on a
- * flex child and a gap on its parent are both real, and neither is visible from
- * the other's file. `kit.PAGE_GAP` is the one that spaces a page now.
- */
-
-.ma-page-title.ma-page-title {
-  font-size: 24px;
-  font-weight: 600;
-  color: var(--ma-text);
-  line-height: 1.2;
-}
-
-.ma-page-subtitle.ma-page-subtitle {
-  font-size: 14px;
-  font-weight: 400;
-  color: var(--ma-text-dim);
 }
 
 /* The card, and the single most important thing about this design: the page
@@ -255,6 +261,19 @@ html body,
   border-radius: var(--ma-radius-card);
   box-shadow: var(--ma-shadow-card);
   padding: 10px;
+}
+
+/* A reader's column is flush to its border.
+ *
+ * The padding above is stated with a doubled class so that it beats Mantine's
+ * generated one, which means `padding=0` on the component cannot win it back —
+ * so a column says so in a class of its own. It has to be a *third* class name
+ * to outrank `.ma-card.ma-card`. What pads a column is the row inside it: an
+ * inset list leaves its dividers and its selected band floating in a margin,
+ * short of the edge they are supposed to run to.
+ */
+.ma-card.ma-card.ma-column {
+  padding: 0;
 }
 
 .ma-card-title.ma-card-title {
@@ -447,12 +466,12 @@ html body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 0 1 auto;
-  min-width: 4em;
 }
 
-/* The dimmed size beside a disk label: `3.0 GB / 7.5 GB`. Shrinks before the
- * label does, and ellipses rather than overflowing.
+/* The dimmed size under a disk label: `3.0 GB / 7.5 GB`. Its own line and not
+ * a second item beside the label, so the two stop competing for the one line
+ * they used to share with the bar and the figure; it ellipses rather than
+ * overflowing, which at these widths it no longer has to do.
  */
 .ma-row-caption.ma-row-caption {
   font-size: 13px;
@@ -461,8 +480,6 @@ html body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
 /* The percentage on the right. `min-width` and not `width`: the column has to
@@ -476,22 +493,8 @@ html body,
   text-align: right;
 }
 
-/* An absolute path under a disk label — administrators only, and never
- * rendered at all for anybody else: the state hands over an empty string and
- * the row omits the line rather than styling it away.
- */
-.ma-row-detail.ma-row-detail {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--ma-text-mute);
-  font-family: "Roboto Mono", ui-monospace, monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* The text block of a meter row: label, caption and — for an administrator —
- * the path. `min-width: 0` is what lets it be narrower than its content, which
+/* The text block of a meter row: the label, and under it the size that row
+ * measured. `min-width: 0` is what lets it be narrower than its content, which
  * a flex item is not allowed to be by default; without it the ellipsis never
  * appears and the row pushes the bar off the card instead.
  */
@@ -504,21 +507,40 @@ html body,
 /* The bar's track. Mantine paints the filled section from the `color` prop and
  * the root is the track, so this is the half that can come off a stylesheet.
  *
- * 115px, and it is allowed to shrink to 64.
+ * A share of the row, not a number of pixels: 22% of it, between 40 and 160.
+ * The row is a flex line whose other parts are all intrinsic — a 30px chip, a
+ * text column that is as wide as the longest thing in it, a figure column
+ * holding 46 for `100%` — so a bar stated in pixels was the one part that did
+ * not answer to the width of the card. It looked drawn-to-fit at the width the
+ * design was made at and wrong at every other: stranded in white space on a
+ * one-column window, and squeezing the size out of the text column on a narrow
+ * two-column one.
  *
- * The reference row is one line — chip, label, bar, figure — and keeping it one
- * line is the design decision here, because a row that wraps stops looking like
- * a meter and starts looking like two rows. Three cards across a 1440px laptop
- * leave a meter row about 250px, which is narrower than the reference was ever
- * drawn at (450px), so something has to give at that width; letting the bar
- * give is right and letting the row break is not. The label ellipses, which is
- * a truncation this design already uses on the notification text, and the bar
- * is back at its full length the moment there is room.
+ * The bounds are what keep it a meter at the extremes. Below 40px a bar cannot
+ * show a small percentage at all — 4% of 30px is a rounding error — and above
+ * 160px it stops reading as a row's meter and starts reading as the row.
+ *
+ * It neither grows nor shrinks, and both halves of that are deliberate. The
+ * text column beside it is `flex: 1 1 auto`, so slack goes there and shortfall
+ * comes from there, and the bar is 22% of the row on every row of a card. That
+ * matters more than it looks: the fill is the magnitude, so three tracks of
+ * three different lengths in one card would invite a reader to compare their
+ * *widths* and conclude something the numbers do not say. A shrinkable bar did
+ * exactly that here — the row whose label was longest ended up with the
+ * shortest track, at 67px against a neighbour's 92px.
+ *
+ * Nothing is lost by refusing to shrink, because the percentage already does
+ * it: a narrower row *is* a narrower bar, in proportion, without flex having
+ * to arbitrate. What the fixed pixel width used to get wrong is the same thing
+ * in reverse — 115px of bar on a 324px row left the size text 132px it needed
+ * and 130px it had, so `738.4 MB / 460.4 GB` clipped exactly where the card
+ * was tightest.
  */
 .ma-meter.ma-meter {
   background: var(--ma-meter-track);
-  flex: 0 1 115px;
-  min-width: 64px;
+  flex: 0 0 22%;
+  min-width: 40px;
+  max-width: 160px;
 }
 
 /* One pending fault, on a well of its own — the same recessed tint as
@@ -561,6 +583,27 @@ html body,
   font-size: 13px;
   font-weight: 400;
   color: var(--ma-text-dim);
+}
+
+/* The cross that stops a notice being shown again.
+ *
+ * Muted rather than absent: the notifications card is the one place on this
+ * page that offers an action, and a control nobody can find is the same as no
+ * control. It darkens to the text colour on hover, which is the whole of its
+ * emphasis — this is a way to clear a line somebody has read, not a button
+ * competing with the fault beside it.
+ *
+ * `flex-shrink: 0` because the row is `wrap="nowrap"` around a message that
+ * can be a paragraph: without it the cross is what the row squeezes.
+ */
+.ma-notice-close.ma-notice-close {
+  flex-shrink: 0;
+  color: var(--ma-text-mute);
+}
+
+.ma-notice-close.ma-notice-close:hover {
+  color: var(--ma-text);
+  background: var(--ma-surface-hover);
 }
 
 /* A service that is up. The grey variant below is the same circle with the
@@ -630,30 +673,17 @@ html body,
   fill: var(--ma-text-mute);
 }
 
-/* ── Degrading a meter row that has run out of room ──────────────────────── */
-
-/* The size beside a disk label is the first thing to go.
+/* No degradation rule for a narrow meter row, and that is the point of
+ * stacking the label over its size.
  *
- * The reference draws these rows in a 450px card, where a chip, a label, a
- * size, a 115px bar and a figure all fit. Three cards across a 1400px laptop
- * gives 265px, and every one of those five things had to give a little: the
- * result was `Graph 1.` — a label cut in half beside a size cut to two
- * characters, which says less than either would alone.
- *
- * A container query rather than a media query, because what has run out is the
- * *card's* width and not the window's: the same card is wide enough at three
- * across on a large monitor and too narrow at three across on a laptop, and a
- * viewport breakpoint cannot tell those apart.
+ * There used to be one: a container query hid the size below 300px, because a
+ * chip, a label, a size, a 115px bar and a figure on one line all had to give a
+ * little in a card that narrow, and the result was `Graph 1.` — a label cut in
+ * half beside a size cut to two characters, which says less than either would
+ * alone. On two lines nothing is competing: the label has the width to itself
+ * and so does the size, and hiding the size would now blank a line rather than
+ * free one.
  */
-.ma-panel.ma-panel {
-  container-type: inline-size;
-}
-
-@container (max-width: 300px) {
-  .ma-row-caption.ma-row-caption {
-    display: none;
-  }
-}
 
 /* ── The icon rail ───────────────────────────────────────────────────────── */
 
@@ -668,8 +698,8 @@ html body,
   flex-direction: column;
   align-items: center;
   background: var(--ma-canvas);
-  border-right: 1px solid var(--ma-border);
-  padding: 14px 0 16px;
+  /*border-right: 1px solid var(--ma-border);*/
+  padding: 24px 0 16px;
 }
 
 /* The orange rounded square at the top. */
@@ -694,6 +724,7 @@ html body,
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ma-text-mute);
+  padding-top: 1.5rem;
 }
 
 /* One icon button. The active look lives on `data-active` rather than in a
@@ -803,6 +834,39 @@ html body,
   border-color: transparent;
 }
 
+/* A field saying what is wrong with it.
+ *
+ * Mantine puts `data-error` on the input and prints the message under it; all
+ * this has to do is say what wrong looks like here. The border is the archive's
+ * red rather than Mantine's, the fill goes faintly red so the state survives a
+ * glance that never reaches the sentence, and the focus ring switches with it —
+ * a box that turned coral again the moment it was clicked would be telling
+ * somebody it was fixed while they were still typing the same wrong value.
+ */
+.ma-field.ma-field .mantine-Input-input[data-error] {
+  --input-bg: var(--ma-danger-fill);
+  border-color: var(--ma-danger);
+}
+
+.ma-field.ma-field .mantine-Input-input[data-error]:focus,
+.ma-field.ma-field .mantine-Input-input[data-error]:focus-within {
+  border-color: var(--ma-danger);
+  box-shadow: 0 0 0 3px var(--ma-danger-ring);
+}
+
+/* The message itself: the note under a control is `xs` and dimmed, so its red
+ * sibling is the same size — a complaint that shouted would be the only thing
+ * on a form drawn at a size nothing else uses.
+ */
+.ma-field.ma-field .mantine-InputWrapper-error {
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+[data-mantine-color-scheme="dark"] .ma-field.ma-field .mantine-Input-input[data-error] {
+  border-color: var(--ma-danger);
+}
+
 /* ── The three buttons ───────────────────────────────────────────────────── */
 
 /* Primary: the accent, exactly once per action area. */
@@ -821,6 +885,17 @@ html body,
 
 .ma-btn-quiet.ma-btn-quiet:hover {
   background-color: var(--ma-surface-hover);
+}
+
+/* Soft: the tint, not the fill — a real action standing beside the primary
+ * one. Mantine's `light` variant already reads its background off the colour
+ * it was given, which is what carries the meaning (a red Cancel, an untinted
+ * second build), so the class only has to settle the border question: none,
+ * or the quiet one and the soft one would look like the same button under a
+ * pointer.
+ */
+.ma-btn-soft.ma-btn-soft {
+  border: 1px solid transparent;
 }
 
 /* A reading-pane header action: a small bordered white pill. */
@@ -847,9 +922,14 @@ html body,
   align-items: flex-start;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: var(--ma-radius-card);
+  border-bottom: 1px solid var(--ma-border);
   background: transparent;
   cursor: pointer;
+}
+
+/* The last row does not draw a line onto the card's own bottom edge. */
+.ma-list-row.ma-list-row:last-child {
+  border-bottom: none;
 }
 
 .ma-list-row.ma-list-row:hover {
@@ -982,7 +1062,7 @@ html body,
 
 /* Body type for text the pane renders itself — the plain-text and source
  * views. The HTML view is a sandboxed iframe with its own cascade, which no
- * rule here can reach; `review/state.py` documents why.
+ * rule here can reach; `message_detail/state.py` documents why.
  */
 .ma-reading-body.ma-reading-body {
   font-size: 14.5px;
@@ -995,4 +1075,27 @@ html body,
 /* Initials read better a step heavier than Mantine draws them. */
 .ma-avatar.ma-avatar .mantine-Avatar-placeholder {
   font-weight: 600;
+}
+
+/* ── A listing that scrolls under its own header ─────────────────────────── */
+
+/* `kit.scroll_table` wraps a table in this box and states a `max-height` of
+ * so many rows. Everything else about the behaviour is here: the box is what
+ * scrolls, which is what makes Mantine's `sticky_header` stick — the `thead`
+ * positions against the nearest scrolling ancestor, and without one it pins
+ * to the page and slides away with the card.
+ *
+ * The head needs its own ground. A sticky row is painted over the rows
+ * travelling under it, and `--ma-surface` is the card it sits on, so a
+ * striped row does not show through the column names.
+ */
+.ma-table-scroll {
+  overflow-y: auto;
+  overflow-x: auto;
+  width: 100%;
+}
+
+.ma-table-scroll thead tr th {
+  background: var(--ma-surface);
+  border-bottom: 1px solid var(--ma-border);
 }

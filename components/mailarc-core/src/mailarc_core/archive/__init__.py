@@ -21,6 +21,8 @@ One module per concern, layered so nothing points back up:
     ``MessageArchiver`` — the idempotent upsert into the graph.
 ``repository``
     ``MessageRepository`` — the graph listing, through runic's query builder.
+``purge``
+    ``purge_account`` — the writer's undo, for one mailbox and no other.
 ``reader``
     ``ArchiveReader`` — the listing back out, and the bytes of one message.
 """
@@ -44,6 +46,7 @@ from mailarc_core.archive.model import (
     to_signed_64,
     to_unsigned_64,
 )
+from mailarc_core.archive.purge import PurgeCounts, purge_account
 from mailarc_core.archive.reader import ArchiveReader, preview_of
 from mailarc_core.archive.repository import AddressRepository, MessageRepository
 from mailarc_core.archive.writer import MessageArchiver
@@ -67,8 +70,10 @@ __all__ = [
     "MessageLabel",
     "MessageRepository",
     "MessageSummary",
+    "PurgeCounts",
     "Thread",
     "preview_of",
+    "purge_account",
     "to_signed_64",
     "to_unsigned_64",
 ]

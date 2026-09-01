@@ -31,7 +31,6 @@ from mailarc_ui.pages import (  # noqa: F401  # imported for their route registr
     dashboard,
     embedder,
     insights,
-    review,
     search,
     status,
 )
@@ -61,7 +60,6 @@ LOADERS: dict[str, tuple[str, ...]] = {
     routes.SEARCH: (),
     routes.DASHBOARD: ("DashboardState.load",),
     routes.INSIGHTS: ("AnalyticsInsightsState.load",),
-    routes.REVIEW: ("MessageReviewState.load",),
     routes.ACCOUNTS: ("MailAccountState.load", "ImportJobState.refresh"),
     routes.EMBEDDER: ("EmbedderSettingsState.load",),
     routes.GRAPH_STATUS: ("GraphStatusState.start_polling",),

@@ -3,7 +3,7 @@
 A shared module rather than a ``conftest``: what is below belongs to the three
 insights test files and to no others, and a ``conftest`` in this directory
 would put a ``graph`` and a ``published`` in scope for the accounts, import and
-review tests that have their own idea of what an archive is.
+search tests that have their own idea of what an archive is.
 ``mailarc-analytics`` does the same with its ``planted_graph``.
 
 ``FakeGraph`` is the part the search tests borrow: a fake session that answers
@@ -60,8 +60,8 @@ class FakeGraph:
 
     Keyed by the catalogue constant itself, so a test that plants rows for
     ``TOP_CO_ADDRESSED`` also proves the reader ran that statement and not
-    another. Doubles as its own session factory, the way the review tests'
-    fake does.
+    another. Doubles as its own session factory, the way the reading pane's
+    own fake does.
     """
 
     def __init__(self) -> None:

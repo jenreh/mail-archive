@@ -141,7 +141,8 @@ mail-archive/
 ├── components/
 │   ├── mailarc-core/          domain, mail source port, graph ground truth,
 │   │                          SQLite, blob store — no browser, no provider
-│   ├── mailarc-sync/          engine, job queue, worker loop, provider registry
+│   ├── mailarc-sync/          engine, job queue, worker loop, provider registry,
+│   │                          account clear-out (the engine's inverse)
 │   ├── mailarc-analytics/     derived nodes, analysis queries, embeddings
 │   ├── mailarc-google/        Gmail, behind the mail source port
 │   ├── mailarc-imap/          any IMAP mailbox — the provider with NO consent

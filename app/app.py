@@ -16,6 +16,7 @@ from starlette.types import ASGIApp
 
 from app.composition import (
     graph_server_lifespan,
+    publish_account_eraser,
     publish_analytics_reader,
     publish_archive_reader,
     publish_graph_health,
@@ -31,7 +32,6 @@ from mailarc_ui.pages import (  # noqa: F401  # imported for their route registr
     dashboard,
     embedder,
     insights,
-    review,
     search,
     status,
 )
@@ -73,18 +73,20 @@ def add_https_middleware(asgi_app: ASGIApp) -> ASGIApp:
     return ForceHTTPSMiddleware(asgi_app)
 
 
-# The accounts page reads which providers exist, the review page reads the
-# archive, the insights page reads both what was derived from it and the search
-# over it, the status page reads the graph server and the dashboard's disk panel
-# reads the paths the archive occupies — all of them out of the service
-# registry: `mailarc-ui` is a component and may not import `app`, so the
-# composition root leaves its decisions there for it. The search is published
-# even with no embedder configured: its full-text half needs none, and that is
-# the half a default installation depends on. The embedder page gets the two
-# verbs that go the other way — read what is in force, and adopt what was just
-# saved — because a form that writes a setting nothing re-reads would be a form
-# that silently does nothing until the next restart.
+# The accounts page reads which providers exist and how a mailbox is cleared
+# out again, the search page reads the archive, the insights page reads both
+# what was derived from it and the search over it, the status page reads the
+# graph server and the dashboard's disk panel reads the paths the archive
+# occupies — all of them out of the service registry: `mailarc-ui` is a
+# component and may not import `app`, so the composition root leaves its
+# decisions there for it. The search is published even with no embedder
+# configured: its full-text half needs none, and that is the half a default
+# installation depends on. The embedder page gets the two verbs that go the
+# other way — read what is in force, and adopt what was just saved — because a
+# form that writes a setting nothing re-reads would be a form that silently
+# does nothing until the next restart.
 publish_provider_registry()
+publish_account_eraser()
 publish_archive_reader()
 publish_analytics_reader()
 publish_semantic_search()

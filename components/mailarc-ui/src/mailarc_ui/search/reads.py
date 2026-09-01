@@ -11,7 +11,7 @@ root built arrives that way; a lookup at module level would run while
 ``app/app.py`` is still being imported, before anything had been published.
 
 :func:`archive_reader` is the pane's own lookup, re-exported rather than
-copied — the search page and the review page read the same archive through
+copied — the search page and the MCP tools read the same archive through
 the same object, and two spellings of one registry key is how they would
 eventually stop being the same object.
 """

@@ -188,6 +188,12 @@ def create_mailarc_theme() -> ThemeDict:
             "Textarea": {
                 "defaultProps": {"radius": "md", "size": "sm"},
             },
+            "PasswordInput": {
+                "defaultProps": {"radius": "md", "size": "sm"},
+            },
+            "NumberInput": {
+                "defaultProps": {"radius": "md", "size": "sm"},
+            },
             "Select": {
                 "defaultProps": {"radius": "md", "size": "sm"},
             },

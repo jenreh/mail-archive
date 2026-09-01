@@ -1,6 +1,6 @@
 """Every page of the archive: it builds, it answers, it primes itself, it is framed.
 
-One module for seven pages, replacing the four ``tests/test_mail_*_page.py``
+One module for six pages, replacing the four ``tests/test_mail_*_page.py``
 files that each asked the same questions of one page and copied the four
 helpers between them. The questions are the ones a page can get wrong in
 silence: a route nobody links to, an ``on_load`` nobody fires, and a layout
@@ -23,14 +23,14 @@ import reflex as rx
 from pydantic import BaseModel, ConfigDict
 from reflex.page import DECORATED_PAGES
 
-from mailarc_analytics.semantic import NO_EMBEDDER, SETTINGS_PAGE
+from mailarc_analytics.semantic import SETTINGS_PAGE, dimension_mismatch
 from mailarc_ui.embedder import embedder_panel
+from mailarc_ui.kit import PAGE_INSET
 from mailarc_ui.pages import (
     accounts,
     dashboard,
     embedder,
     insights,
-    review,
     search,
     status,
 )
@@ -56,6 +56,16 @@ class PageSpec(BaseModel):
     primes: tuple[str, ...] = ()
     """Handlers the page's ``on_load`` has to fire, by qualified name."""
 
+    capped: bool = False
+    """Whether this page holds a maximum width and centres itself in the window.
+
+    One page does — the dashboard, whose two charts stop being readable rather
+    than merely get wider — and it says so here so that every other page can
+    be asserted against the opposite. A page that quietly grows an ``mx="auto"``
+    is a page that reads as narrower than the one before it in the rail, and
+    nothing else in this file would notice.
+    """
+
 
 PAGES: tuple[PageSpec, ...] = (
     PageSpec(
@@ -71,13 +81,7 @@ PAGES: tuple[PageSpec, ...] = (
         route=routes.DASHBOARD,
         title="Dashboard",
         primes=("DashboardState.load",),
-    ),
-    PageSpec(
-        name="review",
-        page=review.review_page,
-        route=routes.REVIEW,
-        title="Review",
-        primes=("MessageReviewState.load",),
+        capped=True,
     ),
     PageSpec(
         name="insights",
@@ -111,7 +115,7 @@ PAGES: tuple[PageSpec, ...] = (
 """Every page this application registers, and what it claims to be.
 
 In the rail's own order: the search a person arrives at, then the two other
-pages the menu offers, then the four the administration popover holds. Every
+pages the menu offers, then the three the administration popover holds. Every
 one of them primes itself, the search included — it opens on the newest
 messages, so a page that stopped firing ``load`` would show an empty archive
 and say nothing about why.
@@ -140,6 +144,25 @@ def _link_targets(node: Any, found: list[str] | None = None) -> list[str]:
     for branch in ("true_value", "false_value"):
         if (subtree := node.get(branch)) is not None:
             _link_targets(subtree, found)
+    return found
+
+
+def _rendered_props(node: Any, found: list[str] | None = None) -> list[str]:
+    """Every prop a rendered tree carries, as the strings the browser is handed.
+
+    Walked the way :func:`_link_targets` walks it, and for the same reason: a
+    page's body is mostly ``rx.cond``, which renders as a node with branches
+    rather than with children.
+    """
+    found = [] if found is None else found
+    if not isinstance(node, dict):
+        return found
+    found.extend(prop for prop in node.get("props", []) if isinstance(prop, str))
+    for child in node.get("children", []):
+        _rendered_props(child, found)
+    for branch in ("true_value", "false_value"):
+        if (subtree := node.get(branch)) is not None:
+            _rendered_props(subtree, found)
     return found
 
 
@@ -223,6 +246,31 @@ class TestEveryPage:
         """
         assert routes.SEARCH in _link_targets(spec.page().render())
 
+    def test_it_fills_the_window(self, spec: PageSpec) -> None:
+        """Only the dashboard centres itself; every other page takes the width.
+
+        Three pages used to cap at 900, 1200 and 1280 and centre what was
+        left, which put a second margin beside the rail's — one that changed
+        from page to page — and left a four-column table drawn down the middle
+        of a 1300px window. ``mx:"auto"`` is the whole of that behaviour, so
+        its absence is the whole of the assertion.
+        """
+        centred = 'mx:"auto"' in _rendered_props(spec.page().render())
+
+        assert centred == spec.capped
+
+    def test_it_keeps_the_rail_gap(self, spec: PageSpec) -> None:
+        """A page pads its rail side by twelve pixels, not by twenty-four.
+
+        Padding all four sides equally puts forty pixels between an icon and
+        the content beside it — the rail's own sixteen and a full page margin —
+        and the column reads as having drifted away from the navigation it
+        belongs to. Read off the render, because a page that imported the
+        constant and passed ``PAGE_PADDING`` anyway would still pass a test
+        that only looked at the import.
+        """
+        assert f'p:"{PAGE_INSET}"' in _rendered_props(spec.page().render())
+
 
 def test_every_declared_route_has_a_page() -> None:
     """``routes.py`` is the source of truth, so a constant no page answers at is
@@ -259,10 +307,19 @@ def test_every_remedy_that_names_the_embedder_page_names_its_route() -> None:
 
     The analytics component may not import the interface, so the route is a
     literal in ``mailarc_analytics.semantic.errors`` and the two can drift —
-    after which every embedder-off message in the archive, the MCP tool's
-    included, sends its reader to a 404. That is a worse outcome than the
-    sentence not naming a page at all, so the drift is pinned here, in a test
-    module that legitimately sees both sides.
+    after which a message that sends its reader to a page sends them to a 404.
+    That is a worse outcome than the sentence not naming a page at all, so the
+    drift is pinned here, in a test module that legitimately sees both sides.
+
+    Asserted through ``dimension_mismatch`` because that is now the remedy
+    that names the page. The short states — no embedder, no index — say what
+    is off and leave the fix to the page itself, so there is nothing in them
+    left to drift.
     """
     assert SETTINGS_PAGE == routes.EMBEDDER
-    assert routes.EMBEDDER in NO_EMBEDDER
+
+    advice = dimension_mismatch(
+        index=768, model="text-embedding-3-small", produced=1536
+    )
+
+    assert routes.EMBEDDER in advice

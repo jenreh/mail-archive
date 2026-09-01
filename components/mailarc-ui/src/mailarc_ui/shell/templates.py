@@ -69,7 +69,6 @@ def mailarc_app(body: rx.Component) -> rx.Component:
         app_sidebar(),
         mn.app_shell.main(body),
         navbar={"width": NAVBAR_WIDTH, "breakpoint": 0},
-        padding="md",
         class_name="ma-shell",
     )
 
@@ -77,8 +76,8 @@ def mailarc_app(body: rx.Component) -> rx.Component:
 def mailarc_full_app(body: rx.Component) -> rx.Component:
     """The same shell with ``main`` sized to the viewport.
 
-    For the two-column readers — search and ``/admin/review`` — where the list
-    scrolls on the left and the message scrolls on the right, and both need a
+    For the two-column pages — search and ``/admin/accounts`` — where the list
+    scrolls on the left and the detail scrolls on the right, and both need a
     parent with a height rather than one that grows to fit them. Without it a
     reader silently turns into one very long page.
     """

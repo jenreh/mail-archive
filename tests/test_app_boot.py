@@ -48,7 +48,6 @@ EXPECTED_ROUTES: frozenset[str] = frozenset(
         routes.SEARCH,
         routes.DASHBOARD,
         routes.INSIGHTS,
-        routes.REVIEW,
         routes.ACCOUNTS,
         routes.EMBEDDER,
         routes.GRAPH_STATUS,

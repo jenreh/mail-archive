@@ -3,7 +3,7 @@
 The three analyses answer through
 :class:`~mailarc_analytics.AnalyticsReader`, which the composition root builds
 and leaves in the service registry — ``mailarc-ui`` may not import ``app``
-(§4.1), so this reads the reader out the way the review page reads its archive,
+(§4.1), so this reads the reader out the way the search page reads its archive,
 inside a method and never at import time.
 
 Two things make this a test rather than a report. A1 is read **twice**:

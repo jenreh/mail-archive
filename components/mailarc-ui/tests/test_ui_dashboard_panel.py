@@ -30,6 +30,14 @@ from mailarc_ui.dashboard.components import (
     system_card,
 )
 
+_DISMISSES_THE_ROW = re.compile(r'dismiss.{0,80}row_rx_state_\?\.\[\\"key')
+"""The close button's handler, taking the key off the row it was drawn for.
+
+The whole point of the key is that it identifies one fault, so a cross wired to
+anything else — a constant, the first row, the loop index — is a control that
+closes the wrong line and remembers having done it.
+"""
+
 _LITERAL_COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(")
 """A colour written out rather than named.
 
@@ -98,6 +106,56 @@ class TestTheBandSaysWhyATileIsDashed:
             "notifications_error",
         ):
             assert name in drawn, f"{name} is set but never drawn"
+
+
+class TestTheCardsSitInTwoColumns:
+    """The gap under the statistics cards was a grid row, not a card.
+
+    Three across, the two short statistics cards shared a row with the
+    notifications list — the tallest card on the page — so the row was the
+    list's height and both charts started below a band of empty white. Two
+    columns have no rows to align, so the left one closes up and the slack
+    lands at the foot of the shorter column.
+    """
+
+    def test_the_cards_are_laid_out_as_two_columns(self) -> None:
+        drawn = _components(dashboard_panel().render())
+
+        assert drawn.count("Grid") == 1, "more than one grid is more than one rule"
+        assert drawn.count("Grid.Col") == 2, (
+            "a third column is a row again, and the gap comes back with it"
+        )
+
+    def test_every_card_is_still_on_the_page(self) -> None:
+        """Rearranging is not dropping: six cards went in and six come out."""
+        assert _components(dashboard_panel().render()).count("Card") == 6
+
+
+class TestANotificationCanBeClosed:
+    """The one control on this page, and what it is bound to."""
+
+    def test_each_notice_carries_a_close_button(self) -> None:
+        assert "CloseButton" in _components(notifications_card().render())
+
+    def test_it_is_bound_to_the_row_it_sits_on(self) -> None:
+        """The handler takes *this* row's key, so a close hides the fault the
+        cross sits beside and not the one that happens to be first."""
+        drawn = _rendered(notifications_card())
+
+        assert "dashboard_state.dismiss" in drawn
+        assert _DISMISSES_THE_ROW.search(drawn), (
+            "the close button is bound to something other than the row's key"
+        )
+
+    def test_the_panel_lists_what_is_visible_and_not_the_pool(self) -> None:
+        """The read is eight faults deep and the card draws five of them; the
+        cut and the filter are one computed var, so a close redraws at once."""
+        drawn = _rendered(notifications_card())
+
+        assert "dashboard_state.visible_notifications" in drawn
+        assert "dashboard_state.notifications_rx_state_" not in drawn, (
+            "the card is drawing the unfiltered pool"
+        )
 
 
 class TestTheServicesChecklist:

@@ -2,13 +2,13 @@
 
 Layout and nothing else. Every value comes from :class:`MailSearchState`, and
 every piece of a row is a ``kit`` component — the initials circle, the pills,
-the selectable row shell — so the mail list on this page and the one on the
-review page are the same list, drawn from the same vocabulary.
+the selectable row shell — so this mail list is drawn from the same vocabulary
+as every other list in the archive.
 
 The right column is :func:`~mailarc_ui.message_detail.message_tabs` handed
 *this* page's state class. That is the whole reason the reading pane is
-parameterised: the two pages fill their list differently and read a message
-identically, and each keeps its own open message rather than sharing one.
+parameterised: filling a list and reading one of its rows are two jobs, and the
+open message belongs to whichever page brought the list.
 
 Three columns and not two, because a search is a question and a question needs
 somewhere to be written. Each of them scrolls on its own, which is why the
@@ -19,26 +19,31 @@ import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.kit import (
+    COLUMN_GAP,
+    LIST_WIDTH,
     avatar_initials,
+    column_card,
     count_chip,
+    empty_panel,
     label_chip,
     list_row,
     quiet_button,
     relevance_chip,
+    spinner,
 )
 from mailarc_ui.message_detail import COLUMN, ROW_BORDER, LabelChip, message_tabs
 from mailarc_ui.search.form import FORM_WIDTH, search_form
 from mailarc_ui.search.model import ResultRow
 from mailarc_ui.search.state import MailSearchState
 
-LIST_WIDTH = 360
-"""The middle column, in pixels. Wide enough for a sender and a relative time."""
-
 PAPERCLIP = "paperclip"
 """What a row wears when it carries files."""
 
-ROW_GAP = 4
-"""Between one row card and the next — they are cards, not table rows."""
+LIST_MIN_WIDTH = 280
+"""Narrow enough to give the message room, wide enough for a subject line."""
+
+LIST_MAX_WIDTH = 620
+"""Past this the list is a page of its own and the message is a column."""
 
 CHIP_GAP = 6
 
@@ -115,8 +120,6 @@ def _result_row(row: ResultRow) -> rx.Component:
             mn.text(row.preview, size="sm", c="dimmed", truncate="end", w="100%"),
             _chips(row),
             gap=2,
-            # A flex child may not be narrower than its content unless it is
-            # told it may, and without that the truncation never happens.
             style={"minWidth": 0, "flex": "1 1 auto"},
         ),
         selected=MailSearchState.selected_id == row.id,
@@ -168,17 +171,15 @@ def _nothing() -> rx.Component:
     """
     return rx.cond(
         MailSearchState.nothing_matched,
-        mn.empty_state(
-            icon=rx.icon("search-x", size=28),
-            title="Nothing matched",
-            description="Try fewer words, a wider date range, or another mailbox.",
-            align="center",
+        empty_panel(
+            "search-x",
+            "Nothing matched",
+            "Try fewer words, a wider date range, or another mailbox.",
         ),
-        mn.empty_state(
-            icon=rx.icon("inbox", size=28),
-            title="Nothing archived yet",
-            description="Import a mailbox and its messages show up here.",
-            align="center",
+        empty_panel(
+            "inbox",
+            "Nothing archived yet",
+            "Import a mailbox and its messages show up here.",
         ),
     )
 
@@ -193,18 +194,16 @@ def result_list() -> rx.Component:
                 mn.scroll_area(
                     mn.stack(
                         rx.foreach(MailSearchState.rows, _result_row),
-                        gap=ROW_GAP,
-                        p="xs",
+                        gap=0,
                     ),
                     _load_more(),
                     type="hover",
-                    # ScrollArea takes no Mantine style props; unknown kwargs
-                    # become CSS keys, so the height is spelled out as CSS.
+                    offset_scrollbars=False,
                     style={"height": "100%"},
                 ),
                 rx.cond(
                     MailSearchState.searching,
-                    mn.group(mn.loader(size="sm"), justify="center", py="xl"),
+                    spinner(),
                     _nothing(),
                 ),
             ),
@@ -217,34 +216,54 @@ def result_list() -> rx.Component:
 
 
 def search_panel() -> rx.Component:
-    """All three columns in one bordered frame, for a page to drop in."""
-    return mn.paper(
-        mn.flex(
-            mn.box(
-                search_form(),
-                w=FORM_WIDTH,
-                h="100%",
-                style={"borderRight": ROW_BORDER, "flexShrink": 0},
+    """The three columns, each with an edge of its own.
+
+    Three surfaces with canvas between them rather than one frame split by
+    hairlines. What the design gets out of it is a middle column that reads as
+    a thing: divided by rules, the list has square corners on the side the
+    message is, and looks like the gutter between the form and the mail rather
+    than the list of what was found.
+    """
+    return mn.flex(
+        column_card(search_form(), w=FORM_WIDTH, style={"flexShrink": 0}),
+        mn.splitter(
+            mn.splitter.pane(
+                column_card(result_list()),
+                default_size=f"{LIST_WIDTH}px",
+                min=f"{LIST_MIN_WIDTH}px",
+                max=f"{LIST_MAX_WIDTH}px",
+                style={"overflow": "hidden"},
             ),
-            mn.box(
-                result_list(),
-                w=LIST_WIDTH,
-                h="100%",
-                style={"borderRight": ROW_BORDER, "flexShrink": 0},
+            mn.splitter.pane(
+                column_card(
+                    message_tabs(MailSearchState),
+                    padding="md",
+                    style={**COLUMN, "minWidth": 0},
+                ),
+                # A *number* rather than a length, and the difference is the
+                # whole sizing contract: Mantine reads a px string as a fixed
+                # pane (`flex: 0 1 <size>`) and a number as a share of what is
+                # left (`flex: <n> 1 0`). A pane given neither compiles to
+                # `flex-basis: 0` with no grow and collapses to nothing — which
+                # is exactly what the message pane did. So the list is fixed at
+                # its default width and the message absorbs the window.
+                default_size=1,
+                style={"overflow": "hidden", "minWidth": 0},
             ),
-            mn.box(
-                message_tabs(MailSearchState),
-                h="100%",
-                p="md",
-                style={**COLUMN, "minWidth": 0},
-            ),
+            # The resizer *is* the gap: at `COLUMN_GAP` wide with a
+            # transparent face it draws nothing of its own, so the canvas
+            # between the two cards is what the pointer grabs. Mantine's
+            # handle — the small pill — is the only mark that it can be
+            # dragged, and it earns its place: a seam that resizes and does
+            # not say so is a seam nobody finds.
+            line_size=COLUMN_GAP,
+            handle_color="transparent",
+            with_handle=True,
             h="100%",
-            w="100%",
-            align="stretch",
+            style={"flex": "1 1 0%", "minWidth": 0},
         ),
-        radius="md",
-        with_border=True,
-        w="100%",
+        gap=COLUMN_GAP,
         h="100%",
-        style={"overflow": "hidden"},
+        w="100%",
+        align="stretch",
     )

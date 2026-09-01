@@ -109,7 +109,7 @@ PROFILES=local task run      # http://localhost:8080 (frontend) + :3030 (backend
 
 It opens on the search page at `/`; the icon rail down the left edge holds the
 dashboard (`/dashboard`), insights (`/insights`) and an **Admin** popover with
-review, mail accounts, embedder and graph status under `/admin/`. There is no
+mail accounts, embedder and graph status under `/admin/`. There is no
 sign-in — the archive is a desktop application, and the boundary is the machine
 it runs on.
 

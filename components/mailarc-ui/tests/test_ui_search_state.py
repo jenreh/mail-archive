@@ -18,7 +18,7 @@ on a row reaches it with the right digest.
 """
 
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -27,6 +27,7 @@ import pytest
 from appkit_commons.database.entities import Base
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from mailarc_analytics import AnalyticsReader, GroupMembershipRow, TopicMembershipRow
 from mailarc_analytics.semantic import (
     NO_EMBEDDER,
     SearchHit,
@@ -37,7 +38,6 @@ from mailarc_analytics.semantic import (
     SemanticUnavailable,
     VectorCoverage,
 )
-from mailarc_analytics import AnalyticsReader, GroupMembershipRow, TopicMembershipRow
 from mailarc_core import ArchiveReader, TagStore
 from mailarc_core.archive.model import (
     Conversation,
@@ -65,12 +65,12 @@ from mailarc_ui.search.model import (
     ResultRow,
     SearchAnswer,
     filters_of,
-    topic_label,
     initials_of,
     lines_of,
     parse_date,
     percent_label,
     relative_label,
+    topic_label,
 )
 from mailarc_ui.search.state import PAGE_SIZE, SEMANTIC_HITS, MailSearchState
 
@@ -238,8 +238,8 @@ class FakeAnalytics(AnalyticsReader):
     """The derived layer, answering which topic and which group a row is in."""
 
     def __init__(self) -> None:
-        self.topics: dict[str, TopicMembershipRow] = {}
-        self.groups: dict[str, GroupMembershipRow] = {}
+        self.topic_rows: dict[str, TopicMembershipRow] = {}
+        self.group_rows: dict[str, GroupMembershipRow] = {}
         self.asked_topics: list[list[str]] = []
         self.asked_groups: list[list[str]] = []
         self.error: Exception | None = None
@@ -248,13 +248,13 @@ class FakeAnalytics(AnalyticsReader):
         self.asked_topics.append(list(ids))
         if self.error is not None:
             raise self.error
-        return {one: self.topics[one] for one in ids if one in self.topics}
+        return {one: self.topic_rows[one] for one in ids if one in self.topic_rows}
 
     def groups_of(self, ids: Sequence[str]) -> dict[str, GroupMembershipRow]:
         self.asked_groups.append(list(ids))
         if self.error is not None:
             raise self.error
-        return {one: self.groups[one] for one in ids if one in self.groups}
+        return {one: self.group_rows[one] for one in ids if one in self.group_rows}
 
 
 @pytest.fixture
@@ -1344,13 +1344,15 @@ class TestNamingAGroup:
 
     def test_a_recurring_group_is_named_by_its_size_and_key(self) -> None:
         membership = Membership.of_group(
-            GroupMembershipRow(group_id="group:abc", size=5, message_count=9)
+            GroupMembershipRow(group_id="group:abcdef0", size=5, message_count=9)
         )
 
-        assert membership.label == "5 people · abc"
+        assert membership.label == "5 people · abcdef0"
 
     def test_a_recipient_is_named_by_name_then_address(self) -> None:
-        named = Membership.of_recipient(Recipient(address="bob@example.com", name="Bob"))
+        named = Membership.of_recipient(
+            Recipient(address="bob@example.com", name="Bob")
+        )
         bare = Membership.of_recipient(Recipient(address="bob@example.com"))
 
         assert (named.group_id, named.label) == ("bob@example.com", "Bob")
@@ -1434,7 +1436,9 @@ class TestTheGroupingDropdown:
 
         assert len(reader.grouped) == before
 
-    async def test_a_grouping_nobody_offered_is_the_default(self, state, reader) -> None:
+    async def test_a_grouping_nobody_offered_is_the_default(
+        self, state, reader
+    ) -> None:
         """The value arrives over the socket, so it is checked, not trusted."""
         await _load(state)
         await _switch(state, Grouping.NONE)
@@ -1462,7 +1466,7 @@ class TestTheGroupingDropdown:
         await _switch(state, Grouping.TAG)
 
         assert state._memberships == {}
-        assert [one.key for one in state.lines][0] == f"g:{NO_GROUP}"
+        assert next(one.key for one in state.lines) == f"g:{NO_GROUP}"
         assert state.lines[0].label == "No tag"
 
     async def test_a_membership_read_that_fails_leaves_the_rows_in_one_bucket(
@@ -1481,7 +1485,7 @@ class TestTheGroupingDropdown:
     async def test_topics_are_read_for_the_rows_on_screen(
         self, state, reader, analytics
     ) -> None:
-        analytics.topics = {
+        analytics.topic_rows = {
             "m1@example.com": TopicMembershipRow(topic_id="topic:a", label="Angebot")
         }
         await _load(state)
@@ -1517,15 +1521,15 @@ class TestTheGroupingDropdown:
     async def test_recurring_groups_come_from_the_derived_layer(
         self, state, analytics
     ) -> None:
-        analytics.groups = {
-            "m1@example.com": GroupMembershipRow(group_id="group:abc", size=5)
+        analytics.group_rows = {
+            "m1@example.com": GroupMembershipRow(group_id="group:abcdef0", size=5)
         }
         await _load(state)
 
         await _switch(state, Grouping.RECURRING)
 
         assert len(analytics.asked_groups) == 1
-        assert state.lines[0].label == "5 people · abc"
+        assert state.lines[0].label == "5 people · abcdef0"
         assert state.lines[2].label == "No group"
 
     async def test_receivers_come_from_the_archive(self, state, reader) -> None:
@@ -1561,9 +1565,7 @@ class TestTheGroupingDropdown:
         assert reader.grouped == []
         assert tags.asked == [[one.id for one in reader.summaries]]
 
-    async def test_a_page_read_under_another_grouping_is_not_filed(
-        self, state
-    ) -> None:
+    async def test_a_page_read_under_another_grouping_is_not_filed(self, state) -> None:
         """A switch made while a page was in flight must not file that page's
         rows under the previous grouping's groups."""
         state.grouping = Grouping.SENDER.value

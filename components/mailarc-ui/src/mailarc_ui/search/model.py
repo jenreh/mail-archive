@@ -59,6 +59,7 @@ our own: the string reaches
 third path cannot appear in one place and not the other.
 """
 
+
 class Grouping(StrEnum):
     """The positions of the **Group by** dropdown over the list.
 
@@ -141,6 +142,7 @@ def grouping_of(value: str) -> Grouping:
         return Grouping(value)
     except ValueError:
         return Grouping.CONVERSATION
+
 
 ATTACH_ANY = "any"
 ATTACH_WITH = "with"
@@ -531,9 +533,7 @@ def filed_by(
         }
     if grouping == Grouping.SUBJECT:
         return {
-            row.id: Membership(
-                group_id=row.subject_norm or NO_GROUP, label=row.subject
-            )
+            row.id: Membership(group_id=row.subject_norm or NO_GROUP, label=row.subject)
             for row in rows
         }
     unfiled = Membership(group_id=NO_GROUP, label=UNFILED.get(grouping, ""))

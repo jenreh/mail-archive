@@ -67,6 +67,7 @@ class FakeSession:
     def __init__(
         self,
         rows: list[tuple[Message, Address | Label | None]],
+        *,
         labels: list[tuple[Message, Address | Label | None]] | None = None,
         threads: list[tuple[Message, Thread]] | None = None,
         totals: dict[str, int] | None = None,
@@ -460,12 +461,17 @@ class TestGroupingByRecipient:
 
     def test_a_message_reaches_its_recipient_with_a_name(self, blobs) -> None:
         session = FakeSession(
-            [], recipients=[(message(), sender(id="bob@example.com", display_names=["Bob"]))]
+            [],
+            recipients=[
+                (message(), sender(id="bob@example.com", display_names=["Bob"]))
+            ],
         )
 
         found = reader(session, blobs).recipients_of(["m1@example.com"])
 
-        assert found == {"m1@example.com": Recipient(address="bob@example.com", name="Bob")}
+        assert found == {
+            "m1@example.com": Recipient(address="bob@example.com", name="Bob")
+        }
 
     def test_an_address_without_a_display_name_is_filed_by_its_address(
         self, blobs
@@ -495,7 +501,8 @@ class TestGroupingByRecipient:
 
     def test_a_message_sent_to_nobody_is_absent(self, blobs) -> None:
         session = FakeSession(
-            [], recipients=[(message(id="m2@example.com"), sender(id="bob@example.com"))]
+            [],
+            recipients=[(message(id="m2@example.com"), sender(id="bob@example.com"))],
         )
 
         found = reader(session, blobs).recipients_of(

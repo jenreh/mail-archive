@@ -31,7 +31,6 @@ invites a reader to believe the numbers moved when only the label did.
 
 import asyncio
 import logging
-from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import reflex as rx
@@ -675,9 +674,7 @@ async def _answer(
         return SearchAnswer(error=SEARCH_FAILED)
 
 
-def _filtered(
-    filters: SearchFilters, offset: int, grouping: Grouping
-) -> SearchAnswer:
+def _filtered(filters: SearchFilters, offset: int, grouping: Grouping) -> SearchAnswer:
     """One page of whatever the form asked for. Blocking — hence the thread.
 
     The membership read rides in the same thread as the page, so one frozen
@@ -694,8 +691,7 @@ def _filtered(
     now = datetime.now(UTC)
     return SearchAnswer(
         rows=tuple(
-            ResultRow.from_summary(one.summary, now, one.relevance)
-            for one in page.hits
+            ResultRow.from_summary(one.summary, now, one.relevance) for one in page.hits
         ),
         total=page.total or 0,
         memberships=memberships,

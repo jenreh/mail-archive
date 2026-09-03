@@ -349,7 +349,7 @@ class TestAConversationHeading:
         drawn = _drawn(_group_row(heading()))
 
         assert "select" in drawn
-        assert "toggle_conversation" in drawn
+        assert "toggle_group" in drawn
         assert "stopPropagation" in drawn
 
     def test_it_says_how_big_the_conversation_is(self) -> None:

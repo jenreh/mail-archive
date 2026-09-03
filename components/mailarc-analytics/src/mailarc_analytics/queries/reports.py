@@ -27,22 +27,21 @@ moments.
 """
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 
 from runic.ogm import Session
-
-from collections.abc import Sequence
 
 from mailarc_analytics.derived.model import TemplateDirection
 from mailarc_analytics.queries import catalog
 from mailarc_analytics.queries.catalog import Statement
 from mailarc_analytics.queries.model import (
-    ArchiveTotals,
     ArchivedDay,
+    ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
-    CoRecipientRow,
     CommunityRow,
+    CoRecipientRow,
     GroupMembershipRow,
     GroupRow,
     ImportantMessageRow,
@@ -433,7 +432,10 @@ class AnalyticsReader:
                 label=as_text(row["label"]),
                 keywords=_as_words(row["keywords"]),
             )
-            if message_id not in found or candidate.topic_id < found[message_id].topic_id:
+            if (
+                message_id not in found
+                or candidate.topic_id < found[message_id].topic_id
+            ):
                 found[message_id] = candidate
         return found
 
@@ -457,7 +459,10 @@ class AnalyticsReader:
                 size=as_int(row["size"]),
                 message_count=as_int(row["message_count"]),
             )
-            if message_id not in found or candidate.group_id < found[message_id].group_id:
+            if (
+                message_id not in found
+                or candidate.group_id < found[message_id].group_id
+            ):
                 found[message_id] = candidate
         return found
 

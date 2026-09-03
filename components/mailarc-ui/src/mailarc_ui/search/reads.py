@@ -13,7 +13,10 @@ root built arrives that way; a lookup at module level would run while
 :func:`archive_reader` is the pane's own lookup, re-exported rather than
 copied — the search page and the MCP tools read the same archive through
 the same object, and two spellings of one registry key is how they would
-eventually stop being the same object.
+eventually stop being the same object. :func:`tag_store` and
+:func:`analytics_reader` are the tag panel's, re-exported for the same reason:
+grouping the list by tag or by topic reads the same two objects the tag panel
+writes through and lists from.
 """
 
 from appkit_commons.database.session import get_asyncdb_session
@@ -22,6 +25,7 @@ from appkit_commons.registry import service_registry
 from mailarc_analytics.semantic import SemanticSearch
 from mailarc_core.database.repositories import MailAccountRepository
 from mailarc_ui.message_detail.model import archive_reader
+from mailarc_ui.tags.reads import analytics_reader, tag_store
 
 _ACCOUNTS = MailAccountRepository()
 """Stateless, so one is enough for the whole application."""
@@ -37,7 +41,14 @@ half-wired application apart from a broken one, and the two have completely
 different fixes.
 """
 
-__all__ = ["NO_SEARCH", "account_options", "archive_reader", "semantic_search"]
+__all__ = [
+    "NO_SEARCH",
+    "account_options",
+    "analytics_reader",
+    "archive_reader",
+    "semantic_search",
+    "tag_store",
+]
 
 
 def semantic_search() -> SemanticSearch:

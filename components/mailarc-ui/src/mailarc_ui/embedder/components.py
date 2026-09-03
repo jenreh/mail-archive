@@ -103,8 +103,8 @@ def api_key_field() -> rx.Component:
         password_field(
             label="API key",
             description=(
-                "Only OpenAI needs one. Stored encrypted, and never shown "
-                "again — not here and not anywhere else."
+                "Only OpenAI and Azure OpenAI need one. Stored encrypted, "
+                "and never shown again — not here and not anywhere else."
             ),
             placeholder="Leave empty to keep the stored key",
             default_value="",
@@ -137,8 +137,9 @@ def api_key_field() -> rx.Component:
         rx.cond(
             EmbedderSettingsState.key_missing,
             message(
-                "OpenAI is selected and no key is stored. Without one the "
-                "embedding calls answer 401 and nothing is embedded.",
+                "The selected provider needs a key and none is stored. "
+                "Without one the embedding calls answer 401 and nothing is "
+                "embedded.",
                 "warning",
             ),
             mn.text(""),

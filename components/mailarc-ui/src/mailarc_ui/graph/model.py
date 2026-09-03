@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -60,6 +61,31 @@ Both cases land here: ``size_by=uniform``, where the page is deliberately not
 making a claim, and a node missing the chosen number, where the archive has
 nothing to say. Deliberately the middle of the scale rather than either end.
 """
+
+LABEL_DENSITY_LIMIT = 40
+"""Nodes above which the canvas stops naming all of them.
+
+Measured on a real archive rather than chosen: seventy-five topics at the
+default fit-zoom wrote their labels over each other into a smear, which loses
+every name instead of the least interesting ones. Forty is where a label of
+:data:`LABEL_WIDTH` still has room beside its neighbour in the middle column.
+"""
+
+LABELLED_MAX = 24
+"""Names kept when a picture is over :data:`LABEL_DENSITY_LIMIT`.
+
+The heaviest, because the whole reason to read a crowded map is to find what is
+big in it. The rest keep their node, their size and their click — only the text
+goes, and the details column still names whatever is tapped.
+"""
+
+LABEL_WIDTH = 96
+"""Pixels a label may run to before it is ellipsised.
+
+Narrower than a node is wide at :data:`NODE_MAX_SIZE`, so two adjacent labels
+collide only when their nodes already overlap.
+"""
+
 
 FIT_PADDING = 24
 """How much room ``cy.fit()`` leaves around the picture, in px. Stated here
@@ -143,6 +169,39 @@ class NodeCard(BaseModel):
     lines: tuple[str, ...] = ()
 
 
+_VIEW_DEFAULTS: Mapping[str, tuple[SizeBy, LayoutName]] = MappingProxyType(
+    {GraphView.OVERVIEW.value: (SizeBy.COUNT, LayoutName.CONCENTRIC)}
+)
+"""How a view wants to be drawn before anybody touches the controls.
+
+Only the map differs, and it differs for two reasons that are both about what
+the overview *is* rather than about taste.
+
+It sizes by ``count`` because ``message_count`` is written by every rebuild
+there has ever been — unlike ``importance``, which is null until this feature's
+stages have run once. So ``uniform`` on the map is not the honest default it is
+on a message view; it is a picture that throws away the one number it is
+certain to have, and draws an archive of one 88-message topic and forty
+two-message ones as identical circles.
+
+It is laid out concentrically because the map has **no edge between two
+topics**: collections are joined only through circles and tags, so an archive
+with neither hands ``cose`` a set with no forces in it, and a force layout with
+nothing to pull against falls back to a lattice. Concentric ranks by weight
+instead, which is the question the map is asked.
+"""
+
+
+def defaults_for(view: GraphView | str) -> tuple[SizeBy, LayoutName]:
+    """What *view* is drawn with until somebody chooses otherwise.
+
+    Falls through to the rooted-view pair for anything unknown, so a ``?view=``
+    somebody bookmarked before a view was renamed still draws.
+    """
+    key = view.value if isinstance(view, GraphView) else str(view)
+    return _VIEW_DEFAULTS.get(key, (SizeBy.UNIFORM, LayoutName.COSE))
+
+
 def elements_of(
     subgraph: Subgraph,
     *,
@@ -163,7 +222,10 @@ def elements_of(
     hidden = frozenset(hidden_kinds)
     nodes = [one for one in subgraph.nodes if one.kind.value not in hidden]
     drawn = {one.id for one in nodes}
-    return [_node_element(one, size_by, colours) for one in nodes] + [
+    named = _named(nodes, size_by)
+    return [
+        _node_element(one, size_by, colours, labelled=one.id in named) for one in nodes
+    ] + [
         _edge_element(one)
         for one in subgraph.edges
         if one.source in drawn and one.target in drawn
@@ -193,7 +255,7 @@ def stylesheet_of(palette: Mapping[str, str]) -> list[dict[str, Any]]:
                 "text-valign": "bottom",
                 "text-margin-y": 4,
                 "text-wrap": "ellipsis",
-                "text-max-width": 140,
+                "text-max-width": LABEL_WIDTH,
                 # Below this the labels are unreadable anyway, and drawing a
                 # few hundred of them is what makes a zoomed-out canvas stutter.
                 "min-zoomed-font-size": 8,
@@ -276,16 +338,45 @@ def card_of(node: GraphNode) -> NodeCard:
     )
 
 
+def _named(nodes: Sequence[GraphNode], size_by: SizeBy) -> frozenset[str]:
+    """Which of *nodes* keep their label — all of them, until it is a smear.
+
+    Over :data:`LABEL_DENSITY_LIMIT` the canvas writes its names over each
+    other, and an unreadable name is worth less than none: the reader loses
+    every label rather than the ones they were never going to read. So the
+    heaviest :data:`LABELLED_MAX` keep theirs and the tail is drawn bare.
+
+    Ordered by weight and then by id, never by arrival: the picture must not
+    depend on the order a statement happened to return its rows in. Where the
+    weights are all equal — ``size_by=uniform`` on a crowded canvas — that
+    leaves the id as the whole of the order, which is arbitrary but stable, and
+    still better than a smear.
+    """
+    if len(nodes) <= LABEL_DENSITY_LIMIT:
+        return frozenset(one.id for one in nodes)
+    ranked = sorted(nodes, key=lambda one: (-_weight_of(one, size_by), one.id))
+    return frozenset(one.id for one in ranked[:LABELLED_MAX])
+
+
 def _node_element(
-    node: GraphNode, size_by: SizeBy, colours: Mapping[str, str]
+    node: GraphNode,
+    size_by: SizeBy,
+    colours: Mapping[str, str],
+    *,
+    labelled: bool = True,
 ) -> dict[str, Any]:
-    """One node, with its colour and its diameter already decided."""
+    """One node, with its colour, its diameter and its name already decided.
+
+    An unlabelled node keeps everything else it had. Only the text goes, and
+    :func:`card_of` reads the subgraph rather than this element, so the details
+    column still names whatever is tapped.
+    """
     return {
         "group": "nodes",
         "data": {
             "id": node.id,
             "kind": node.kind.value,
-            "label": node.label or node.id,
+            "label": (node.label or node.id) if labelled else "",
             "weight": _weight_of(node, size_by),
             "color": colours[node.kind.value],
         },

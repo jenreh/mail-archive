@@ -58,8 +58,12 @@ def endpoint(tmp_path_factory: pytest.TempPathFactory) -> Iterator[GraphConfig]:
         startup_timeout=30.0,
     )
     server = FalkorDBServer(config)
-    server.start()
     try:
+        # `start` inside the try, not before it: it spawns the process and only
+        # then waits for it to answer, so a failure in that wait — or a test
+        # runner's timeout landing in it — used to leave a redis-server holding
+        # the port with this fixture's `finally` never reached.
+        server.start()
         yield config
     finally:
         server.stop()

@@ -1,9 +1,10 @@
-"""The two embedders, and the only place in this package that reads a status code.
+"""The three embedders, and the only place in this package that reads a status code.
 
-Own code over two HTTP APIs. ``runic.rag`` ships an embedding stack and is
-banned repository-wide (§3.2): pulling it in for two ``POST``s would import a
-GraphRAG pipeline whose whole purpose — letting a model write nodes — is the
-thing this archive is built not to do.
+Own code over two HTTP APIs — three adapters, but Azure's is the second one
+speaking OpenAI's own shape, not a third protocol. ``runic.rag`` ships an
+embedding stack and is banned repository-wide (§3.2): pulling it in for two
+``POST`` shapes would import a GraphRAG pipeline whose whole purpose — letting
+a model write nodes — is the thing this archive is built not to do.
 
 Three jobs and no fourth, the way
 :class:`~mailarc_google.source.client.GmailClient` has three: send the request,
@@ -15,12 +16,15 @@ that catches :class:`~mailarc_core.mail.errors.MailTransientError` will not
 catch a ``ConnectError``, and a retry loop under the job's own backoff
 multiplies every wait by a number invisible from the outside.
 
-The one real difference between the two adapters is how a batch's answers are
+The one real difference between the two *shapes* is how a batch's answers are
 associated with its inputs, and it is worth stating twice because getting it
 wrong is silent: **Ollama answers positionally** — a bare list of vectors in
 input order, with no per-item key — while **OpenAI's entries carry an
 ``index``**, which exists precisely because the array's order is not
-contractual. So one must not sort and the other must.
+contractual. So Ollama must not sort and the other two must — :class:`
+AzureOpenAIEmbedder` inherits the sort along with the rest of :class:`
+OpenAIEmbedder`'s request and response handling, because Azure's own answer
+carries the identical field.
 """
 
 import logging
@@ -52,6 +56,7 @@ DEFAULT_BASE_URLS: Mapping[SemanticProvider, str] = MappingProxyType(
     {
         SemanticProvider.OLLAMA: "http://localhost:11434",
         SemanticProvider.OPENAI: "https://api.openai.com/v1",
+        SemanticProvider.AZURE_OPENAI: "",
     }
 )
 """Where each provider lives when the configuration does not say.
@@ -60,12 +65,23 @@ The OpenAI root carries ``/v1`` because that is where its own SDK puts the
 version — a proxy configured without it would send ``/embeddings`` to a server
 that only answers ``/v1/embeddings``, and the 404 that follows looks like a
 missing model rather than a missing path segment.
+
+Azure OpenAI's entry is empty on purpose rather than absent: every other
+provider's root is shared by every customer, and an Azure resource is not — it
+belongs to one, and guessing its name is not a smaller version of this
+problem, it is a different problem this table cannot answer. Present and empty
+means :func:`build_embedder` still hands back an :class:`AzureOpenAIEmbedder`
+rather than raising out of a ``KeyError`` at process start (§4.1's composition
+root calls this at import); absent would be the same ``KeyError``, only
+undocumented. The empty root is refused at the first request instead — see
+:meth:`AzureOpenAIEmbedder._require_configured`.
 """
 
 DEFAULT_MODELS: Mapping[SemanticProvider, str] = MappingProxyType(
     {
         SemanticProvider.OLLAMA: "nomic-embed-text",
         SemanticProvider.OPENAI: "text-embedding-3-small",
+        SemanticProvider.AZURE_OPENAI: "",
     }
 )
 """Each provider's default model — 768 native and 1536 native respectively.
@@ -74,6 +90,11 @@ Per provider and not one shared default, because a shared one is wrong for
 whichever provider did not supply it: ``nomic-embed-text`` sent to OpenAI is a
 404 for a model that does not exist there, and the user would be reading an
 error about their key.
+
+Azure OpenAI's entry is empty for the reason its base URL is: a deployment
+name is chosen per resource, by the customer, and nothing here can guess it —
+so an unconfigured archive is refused with a message rather than sent to a
+deployment that happens to exist on somebody else's resource.
 """
 
 NATIVE_DIMENSIONS: Mapping[str, int] = MappingProxyType(
@@ -328,8 +349,17 @@ class OpenAIEmbedder(_HttpEmbedder):
     permanent failure before anything is written.
     """
 
-    def __init__(self, config: SemanticConfig) -> None:
-        super().__init__(config, SemanticProvider.OPENAI)
+    def __init__(
+        self,
+        config: SemanticConfig,
+        provider: SemanticProvider = SemanticProvider.OPENAI,
+    ) -> None:
+        """*provider* defaults to OpenAI itself and exists for
+        :class:`AzureOpenAIEmbedder`, which speaks this exact request and
+        response shape against a different root and a different header — see
+        that class rather than adding a fourth adapter beside it.
+        """
+        super().__init__(config, provider)
 
     async def embed(
         self,
@@ -372,6 +402,94 @@ class OpenAIEmbedder(_HttpEmbedder):
         return {"Authorization": f"Bearer {key.get_secret_value()}"}
 
 
+class AzureOpenAIEmbedder(OpenAIEmbedder):
+    """The same request OpenAIEmbedder sends, against a customer's own resource.
+
+    Azure OpenAI's current API surface — ``{endpoint}/openai/v1/embeddings`` —
+    is deliberately OpenAI-compatible: the same body, the same ``dimensions``
+    parameter, the same ``index``-keyed ``data`` entries in the answer. So this
+    class inherits :meth:`OpenAIEmbedder.embed` rather than repeating it, and
+    changes exactly the two things that are not interchangeable.
+
+    The header is the first. Azure's key-based auth is ``api-key``, not
+    ``Authorization: Bearer`` — the two are not synonyms and a request sent
+    with the wrong one is answered as though no key had been sent at all.
+
+    The second is that neither :data:`DEFAULT_BASE_URLS` nor
+    :data:`DEFAULT_MODELS` can offer this provider anything: both name a
+    specific customer's resource and deployment, which nothing in this file
+    can guess. :meth:`_require_configured` is where that is said, and it runs
+    at the first :meth:`embed` rather than at construction — see its
+    docstring for why raising here instead would be the wrong place.
+    """
+
+    def __init__(self, config: SemanticConfig) -> None:
+        super().__init__(config, SemanticProvider.AZURE_OPENAI)
+
+    async def embed(
+        self,
+        texts: Sequence[str],
+        *,
+        purpose: EmbedPurpose = EmbedPurpose.DOCUMENT,
+    ) -> Sequence[Vector]:
+        """:meth:`OpenAIEmbedder.embed`, refused first if nothing can answer it."""
+        if not texts:
+            return []
+        self._require_configured()
+        return await super().embed(texts, purpose=purpose)
+
+    def _require_configured(self) -> None:
+        """Refuse before a request that could only 404 or connect nowhere.
+
+        Checked here and not in :meth:`__init__`, because :func:`build_embedder`
+        runs directly at process import — ``app/app.py`` calls it while being
+        imported, before any event loop or error boundary exists (§4.1) — and
+        every provider's constructor is relied on never to raise. A config
+        error surfacing there would be a misconfigured environment variable
+        taking the whole application down rather than the one feature it
+        belongs to; surfacing it here instead makes it exactly the kind of
+        permanent, well-named failure the embed job's start-of-job probe and
+        the search's :class:`~mailarc_analytics.semantic.errors.
+        SemanticUnavailable` already exist to carry.
+
+        Both settings are named together rather than one at a time: a resource
+        with a deployment name but no endpoint, or the reverse, is still fully
+        unusable, and reporting only the first found would send somebody back
+        here a second time for the other.
+        """
+        missing = [
+            name
+            for name, value in (
+                ("app_semantic_base_url", self._base_url),
+                ("app_semantic_model", self.model),
+            )
+            if not value
+        ]
+        if not missing:
+            return
+        verb = "is" if len(missing) == 1 else "are"
+        raise MailPermanentError(
+            "Azure OpenAI needs its resource endpoint and its deployment "
+            f"name, and {' and '.join(missing)} {verb} empty. Set them in "
+            f"the configuration file or the environment, or on the "
+            f"{SETTINGS_PAGE} page ({STORED_WINS}) — the deployment name goes "
+            "in the Model field; Azure calls it that rather than a model."
+        )
+
+    def _headers(self) -> dict[str, str]:
+        """The resource key under Azure's own header name, or nothing at all.
+
+        A missing key is left to the endpoint's 401 for the same reason
+        :meth:`OpenAIEmbedder._headers` leaves it: "no key" and "wrong key"
+        are the same problem from the user's side, and the auth-failure
+        message already names the setting to check.
+        """
+        key = self._config.api_key
+        if key is None:
+            return {}
+        return {"api-key": key.get_secret_value()}
+
+
 def build_embedder(config: SemanticConfig) -> EmbedderPort | None:
     """The configured embedder, or ``None`` when there is none.
 
@@ -390,6 +508,8 @@ def build_embedder(config: SemanticConfig) -> EmbedderPort | None:
         return None
     if config.provider is SemanticProvider.OLLAMA:
         return OllamaEmbedder(config)
+    if config.provider is SemanticProvider.AZURE_OPENAI:
+        return AzureOpenAIEmbedder(config)
     return OpenAIEmbedder(config)
 
 

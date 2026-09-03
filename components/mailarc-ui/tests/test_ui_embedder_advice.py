@@ -163,6 +163,32 @@ class TestMovingTheEmbedderToAnotherHost:
         assert "stored API key" in said.text
         assert "proxy.example" in said.text
 
+    def test_azure_openai_says_the_key_travels_as_well(self) -> None:
+        """The second provider that attaches the stored key to every call.
+
+        Its adapter sends it as ``api-key`` rather than as a bearer token,
+        which changes nothing about the cost: the host in this box is where
+        the secret goes, and the key is not re-typed to send it there. A gate
+        that asked only for ``openai`` was silent for the whole provider.
+        """
+        azure = AT_768.model_copy(
+            update={
+                "provider": "azure_openai",
+                "base_url": "https://mine.openai.azure.com/openai/v1",
+            }
+        )
+
+        said = host_advice(
+            azure,
+            provider="azure_openai",
+            base_url="https://elsewhere.example/openai/v1",
+            keyed=True,
+        )
+
+        assert said.color == "yellow"
+        assert "stored API key" in said.text
+        assert "elsewhere.example" in said.text
+
     def test_cleartext_to_a_host_that_is_not_this_machine_is_called_out(self) -> None:
         openai = AT_768.model_copy(
             update={"provider": "openai", "base_url": "https://api.openai.com/v1"}

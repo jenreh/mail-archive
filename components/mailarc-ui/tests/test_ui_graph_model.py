@@ -22,6 +22,8 @@ from pathlib import Path
 
 from mailarc_analytics import GraphEdge, GraphNode, NodeKind, Subgraph, Weight
 from mailarc_ui.graph.model import (
+    LABEL_DENSITY_LIMIT,
+    LABELLED_MAX,
     NODE_MAX_SIZE,
     NODE_MIN_SIZE,
     UNIFORM_WEIGHT,
@@ -30,6 +32,7 @@ from mailarc_ui.graph.model import (
     NodeCard,
     SizeBy,
     card_of,
+    defaults_for,
     elements_of,
     layout_of,
     stylesheet_of,
@@ -346,3 +349,107 @@ class TestThePaletteHasTwoHomes:
             _surface(_block(css, '[data-mantine-color-scheme="dark"] {'))
             == Palette.DARK["surface"].lower()
         )
+
+
+def _crowd(count: int) -> Subgraph:
+    """*count* topics of descending weight and no edges at all.
+
+    The overview's real shape on a live archive: the map draws collections and
+    joins them only through circles and tags, so an archive that has neither
+    hands the canvas a bag of unconnected dots. Measured on a real 846-message
+    archive: 75 topics, 0 communities, 0 tags, 0 edges.
+    """
+    return Subgraph(
+        nodes=tuple(
+            GraphNode(
+                id=f"topic:{index:03d}",
+                kind=NodeKind.TOPIC,
+                label=f"a topic called number {index}",
+                weights={Weight.COUNT.value: (count - index) / count},
+            )
+            for index in range(count)
+        ),
+        edges=(),
+    )
+
+
+class TestTheMapIsLegibleWhenItIsCrowded:
+    """The three defaults that decide whether the overview reads as anything.
+
+    Reported from a real archive: seventy-five equal dots in a grid, labels
+    written over each other. Each of the three tests below is one of the
+    reasons, and none of them is about the data being wrong — the archive was
+    fine, the picture was not.
+    """
+
+    def test_the_map_sizes_by_how_much_a_collection_holds(self) -> None:
+        """``uniform`` is honest on a message view, where nothing may be scored
+        yet, and useless on the map: ``message_count`` is written by every
+        rebuild there has ever been, so a map that ignores it draws seventy-five
+        identical circles over an archive that is nothing like uniform."""
+        size_by, _ = defaults_for(GraphView.OVERVIEW)
+
+        assert size_by is SizeBy.COUNT
+
+    def test_the_map_is_drawn_as_rings_and_not_as_a_force(self) -> None:
+        """``cose`` lays out *forces along edges*. Handed a set with no edges it
+        degenerates to a lattice, which is exactly the grid of dots that was
+        reported. Concentric ranks by weight instead, so the biggest collection
+        lands in the middle and the tail goes to the rim."""
+        _, layout = defaults_for(GraphView.OVERVIEW)
+
+        assert layout is LayoutName.CONCENTRIC
+
+    def test_a_rooted_view_keeps_making_no_claim_about_size(self) -> None:
+        """Only the map changes. A topic or a message view is small enough to
+        label completely and may have nothing scored yet, so its default stays
+        the one that does not assert a size it cannot back."""
+        for view in (GraphView.TOPIC, GraphView.MESSAGE, GraphView.ADDRESS):
+            assert defaults_for(view) == (SizeBy.UNIFORM, LayoutName.COSE)
+
+    def test_a_crowded_canvas_labels_only_the_nodes_worth_reading(self) -> None:
+        """Above :data:`LABEL_DENSITY_LIMIT` nodes the labels collide into an
+        unreadable smear, which loses *every* name rather than the small ones.
+        The heaviest :data:`LABELLED_MAX` keep theirs and the tail is drawn
+        unlabelled."""
+        drawn = _nodes(elements_of(_crowd(75), size_by=SizeBy.COUNT))
+        labelled = [one for one in drawn.values() if one["label"]]
+
+        assert len(labelled) == LABELLED_MAX
+        assert {one["id"] for one in labelled} == {
+            f"topic:{index:03d}" for index in range(LABELLED_MAX)
+        }
+
+    def test_an_uncrowded_canvas_labels_everything(self) -> None:
+        """The cut is for the smear and nothing else, so a picture that fits its
+        names keeps all of them."""
+        drawn = _nodes(elements_of(_crowd(LABEL_DENSITY_LIMIT), size_by=SizeBy.COUNT))
+
+        assert all(one["label"] for one in drawn.values())
+
+    def test_dropping_a_label_never_drops_the_node_or_its_card(self) -> None:
+        """The tail is still on the canvas, still the right size, still
+        clickable — and the details column names it, because ``card_of`` reads
+        the subgraph rather than the element."""
+        crowd = _crowd(75)
+        drawn = _nodes(elements_of(crowd, size_by=SizeBy.COUNT))
+
+        assert len(drawn) == 75
+        assert drawn["topic:074"]["weight"] > 0
+        assert card_of(crowd.nodes[74]).title == "a topic called number 74"
+
+    def test_the_hidden_labels_are_the_light_ones_whatever_the_order(self) -> None:
+        """Sorted by weight and not by arrival: the reader must not have to
+        know what order a statement returned its rows in."""
+        crowd = _crowd(75)
+        shuffled = Subgraph(nodes=tuple(reversed(crowd.nodes)), edges=())
+
+        assert {
+            one["id"]
+            for one in _nodes(elements_of(shuffled, size_by=SizeBy.COUNT)).values()
+            if one["label"]
+        } == {
+            one["id"]
+            for one in _nodes(elements_of(crowd, size_by=SizeBy.COUNT)).values()
+            if one["label"]
+        }

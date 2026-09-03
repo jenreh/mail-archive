@@ -25,21 +25,27 @@ from mailarc_ui.kit import (
     column_card,
     count_chip,
     empty_panel,
+    group_chevron,
+    group_header,
     label_chip,
     list_row,
-    pill_action,
+    pill_icon_action,
     quiet_button,
+    range_select,
     relevance_chip,
     spinner,
 )
 from mailarc_ui.message_detail import COLUMN, ROW_BORDER, LabelChip, message_tabs
 from mailarc_ui.search.form import FORM_WIDTH, search_form
-from mailarc_ui.search.model import ResultRow
+from mailarc_ui.search.model import GROUPING_OPTIONS, ListLine
 from mailarc_ui.search.state import MailSearchState
 from mailarc_ui.shell import routes
 
 PAPERCLIP = "paperclip"
 """What a row wears when it carries files."""
+
+CONVERSATION = "messages-square"
+"""What a heading wears beside how many messages the conversation holds."""
 
 LIST_MIN_WIDTH = 280
 """Narrow enough to give the message room, wide enough for a subject line."""
@@ -48,6 +54,12 @@ LIST_MAX_WIDTH = 620
 """Past this the list is a page of its own and the message is a column."""
 
 CHIP_GAP = 6
+
+GROUP_BY = "Group by"
+"""What the dropdown over the list is for, said beside it."""
+
+GROUPING_WIDTH = 176
+"""Wide enough for *Conversation / Thread*, the longest thing it can say."""
 
 GRAPH_LINK = f"{routes.GRAPH}?view=message&id="
 """The explorer, rooted at one message.
@@ -67,7 +79,7 @@ def _label_pill(chip: LabelChip) -> rx.Component:
     return label_chip(chip.text, chip.color)
 
 
-def _attachment_pill(row: ResultRow) -> rx.Component:
+def _attachment_pill(line: ListLine) -> rx.Component:
     """The paperclip, with a number beside it when the archive knows one.
 
     It usually does not: a summary answers *whether* a message carries files
@@ -75,43 +87,53 @@ def _attachment_pill(row: ResultRow) -> rx.Component:
     :attr:`~mailarc_ui.search.model.ResultRow.attachment_count`.
     """
     return rx.cond(
-        row.attachment_count > 0,
-        count_chip(PAPERCLIP, row.attachment_count),
+        line.attachment_count > 0,
+        count_chip(PAPERCLIP, line.attachment_count),
         count_chip(PAPERCLIP, ""),
     )
 
 
-def _chips(row: ResultRow) -> rx.Component:
-    """The pill row under the preview: files, labels, and how well it ranked."""
+def _chips(line: ListLine) -> rx.Component:
+    """The pill row under the preview: files, labels, and how well it ranked.
+
+    On a heading the conversation's size joins them, first, because it is what
+    the line is *about* — the rest describe the message it happens to show.
+    """
     return mn.group(
-        rx.cond(row.has_attachments, _attachment_pill(row), rx.fragment()),
-        rx.foreach(row.labels, _label_pill),
         rx.cond(
-            row.relevance_label != "",
-            relevance_chip(row.relevance_label),
+            line.size_label != "",
+            count_chip(CONVERSATION, line.size_label),
             rx.fragment(),
         ),
+        rx.cond(line.has_attachments, _attachment_pill(line), rx.fragment()),
+        rx.foreach(line.labels, _label_pill),
+        rx.cond(
+            line.relevance_label != "",
+            relevance_chip(line.relevance_label),
+            rx.fragment(),
+        ),
+        rx.cond(line.can_expand, _whole_pill(line), rx.fragment()),
         gap=CHIP_GAP,
         wrap="wrap",
         pt=2,
     )
 
 
-def _sender_line(row: ResultRow) -> rx.Component:
+def _sender_line(line: ListLine) -> rx.Component:
     """Who it is from, and how long ago — ``Anna Bauer · 9m``."""
     return mn.group(
         mn.text(
-            row.sender,
+            line.sender,
             size="md",
             fw=500,
             truncate="end",
             style={"minWidth": 0},
         ),
         rx.cond(
-            row.when_label != "",
+            line.when_label != "",
             mn.group(
                 mn.text("·", size="sm", c="dimmed"),
-                mn.text(row.when_label, size="sm", c="dimmed"),
+                mn.text(line.when_label, size="sm", c="dimmed"),
                 gap=CHIP_GAP,
                 wrap="nowrap",
                 style={"flexShrink": 0},
@@ -124,36 +146,105 @@ def _sender_line(row: ResultRow) -> rx.Component:
     )
 
 
-def _graph_pill(row: ResultRow) -> rx.Component:
+def _graph_pill(line: ListLine) -> rx.Component:
     """Take this message to the explorer, rooted at itself.
 
     ``rx.redirect`` from a button rather than an ``rx.link`` around one: the
     row is already clickable, and an anchor inside it is the nested-anchor
     hydration error the rail exists to keep out of this application.
     """
-    return pill_action(
-        "Show in graph",
+    return pill_icon_action(
         icon="waypoints",
-        on_click=rx.redirect(GRAPH_LINK + row.id),
+        label="Show in graph",
+        on_click=rx.redirect(GRAPH_LINK + line.id),
     )
 
 
-def _result_row(row: ResultRow) -> rx.Component:
+def _whole_pill(line: ListLine) -> rx.Component:
+    """Fetch the members this answer left out, for this one conversation.
+
+    Its own loading flag and never the list's: asking one conversation for the
+    rest of itself is not a search, and putting the page-wide spinner up for it
+    would take the Search button away while it ran.
+    """
+    return pill_icon_action(
+        icon="messages-square",
+        label="Show whole conversation",
+        loading=line.busy,
+        on_click=MailSearchState.show_whole_conversation(
+            line.group_id
+        ).stop_propagation,
+    )
+
+
+def _body(line: ListLine) -> rx.Component:
+    """Everything a line says about the message it is showing."""
+    return mn.stack(
+        _sender_line(line),
+        mn.text(line.subject, size="md", fw=600, truncate="end", w="100%"),
+        mn.text(line.preview, size="sm", c="dimmed", truncate="end", w="100%"),
+        _chips(line),
+        gap=2,
+        style={"minWidth": 0, "flex": "1 1 auto"},
+    )
+
+
+def _message_row(line: ListLine) -> rx.Component:
     """One hit: the sender's initials, and everything the row says about it."""
     return list_row(
-        avatar_initials(row.initials),
-        mn.stack(
-            _sender_line(row),
-            mn.text(row.subject, size="md", fw=600, truncate="end", w="100%"),
-            mn.text(row.preview, size="sm", c="dimmed", truncate="end", w="100%"),
-            _chips(row),
-            gap=2,
-            style={"minWidth": 0, "flex": "1 1 auto"},
-        ),
-        _graph_pill(row),
-        selected=MailSearchState.selected_id == row.id,
-        on_click=lambda: MailSearchState.select(row.id),
+        avatar_initials(line.initials),
+        _body(line),
+        _graph_pill(line),
+        selected=MailSearchState.selected_id == line.id,
+        on_click=lambda: MailSearchState.select(line.id),
+        custom_attrs={"data-child": rx.cond(line.indented, "true", "false")},
         w="100%",
+    )
+
+
+def _group_row(line: ListLine) -> rx.Component:
+    """A conversation's heading, which is the newest message it holds.
+
+    The same row, with a chevron in front. Two gestures on one line and they
+    stay separable: the row opens the message it is showing, the chevron opens
+    the conversation — which is what every mail client that groups does, and
+    what makes a closed group hide nothing a reader had already been shown.
+    """
+    return list_row(
+        group_chevron(
+            expanded=line.expanded,
+            on_click=MailSearchState.toggle_group(line.group_id).stop_propagation,
+        ),
+        avatar_initials(line.initials),
+        _body(line),
+        _graph_pill(line),
+        selected=MailSearchState.selected_id == line.id,
+        on_click=lambda: MailSearchState.select(line.id),
+        w="100%",
+    )
+
+
+def _section_row(line: ListLine) -> rx.Component:
+    """A section over a group that is not a conversation — a sender, a topic.
+
+    Not a message row: there is nothing to open behind it, so the whole line
+    is the one gesture, and it opens or closes the group. Which is why the
+    chevron inside it carries no handler of its own.
+    """
+    return group_header(
+        line.label,
+        line.size_label,
+        expanded=line.expanded,
+        on_click=MailSearchState.toggle_group(line.group_id),
+    )
+
+
+def _list_line(line: ListLine) -> rx.Component:
+    """One line of the list, whichever of the three kinds it is."""
+    return rx.cond(
+        line.is_section,
+        _section_row(line),
+        rx.cond(line.is_header, _group_row(line), _message_row(line)),
     )
 
 
@@ -174,8 +265,32 @@ def _load_more() -> rx.Component:
     )
 
 
+def _grouping_select() -> rx.Component:
+    """What the list is grouped by — the one thing this strip decides.
+
+    ``range_select`` and not a field: it changes what the panel is showing and
+    saves nothing, which is exactly what that control is for. The options are
+    a constant because the archive always offers all eight; a grouping whose
+    read has nothing to say — a topic on an archive nobody has rebuilt — draws
+    one bucket rather than going grey.
+    """
+    return mn.group(
+        mn.text(GROUP_BY, size="xs", c="dimmed"),
+        range_select(
+            value=MailSearchState.grouping,
+            data=GROUPING_OPTIONS,
+            on_change=MailSearchState.choose_grouping,
+            aria_label=GROUP_BY,
+            w=GROUPING_WIDTH,
+        ),
+        gap=CHIP_GAP,
+        align="center",
+        wrap="nowrap",
+    )
+
+
 def _count_strip() -> rx.Component:
-    """How many of how many, over the list."""
+    """How many of how many, over the list — and how the list is grouped."""
     return mn.group(
         mn.text(
             MailSearchState.count_label,
@@ -183,7 +298,9 @@ def _count_strip() -> rx.Component:
             c="dimmed",
             class_name="ma-tabular",
         ),
+        _grouping_select(),
         justify="space-between",
+        align="center",
         px="md",
         py="xs",
         w="100%",
@@ -222,7 +339,7 @@ def result_list() -> rx.Component:
                 MailSearchState.has_rows,
                 mn.scroll_area(
                     mn.stack(
-                        rx.foreach(MailSearchState.rows, _result_row),
+                        rx.foreach(MailSearchState.lines, _list_line),
                         gap=0,
                     ),
                     _load_more(),

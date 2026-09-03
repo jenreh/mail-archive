@@ -31,6 +31,7 @@ invites a reader to believe the numbers moved when only the label did.
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import reflex as rx
@@ -45,16 +46,23 @@ from mailarc_analytics.semantic import (
 from mailarc_core.archive.search import SearchFilters
 from mailarc_ui.message_detail.state import MessageDetailState
 from mailarc_ui.search import reads
+from mailarc_ui.search.memberships import read_memberships
 from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
     ATTACH_WITHOUT,
     MODE_FULLTEXT,
     MODE_SEMANTIC,
+    READ_GROUPINGS,
     SEARCH_FAILED,
+    Grouping,
+    ListLine,
+    Membership,
     ResultRow,
     SearchAnswer,
     filters_of,
+    grouping_of,
+    lines_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,6 +130,16 @@ class MailSearchState(MessageDetailState, rx.State):
     semantic_note: str = ""
     """Why the semantic segment is off, beside the selector while it is."""
 
+    grouping: str = Grouping.CONVERSATION.value
+    """What the list is grouped by — the **Group by** dropdown's value.
+
+    Conversations by default, because a mail list that does not group is a
+    mail list that shows an answer twice: the question and the reply, pages
+    apart. A plain string rather than the enum, because it is what the
+    dropdown binds and what the socket sends back; :func:`grouping_of` is what
+    every reader of it goes through.
+    """
+
     _answered: SearchFilters = _EMPTY
     """The question the rows on screen came from.
 
@@ -132,9 +150,55 @@ class MailSearchState(MessageDetailState, rx.State):
     it.
     """
 
+    _memberships: dict[str, Membership] = {}
+    """Which group each row on screen sits in, keyed by message id.
+
+    Accumulated across pages rather than replaced, because a group's heading
+    stays where its first member put it and page two's members join it there
+    — and emptied on a switch, because a thread id is not a topic id.
+    """
+
+    _collapsed: set[str] = set()
+    """The groups a reader closed. Everything else is open.
+
+    Held as what was *closed* rather than what is open, so a group that
+    arrives on a later page is open without anything having to notice it
+    arrived.
+    """
+
+    _whole: dict[str, list[ResultRow]] = {}
+    """Conversations somebody asked to see in full, by conversation id.
+
+    Kept across a grouping toggle: switching the list to messages and back is
+    a change of view, not an instruction to forget what was fetched.
+    """
+
+    _expanding: str = ""
+    """The one conversation whose fetch is running. Never :attr:`searching`."""
+
     @rx.var
     def has_rows(self) -> bool:
         return len(self.rows) > 0
+
+    @rx.var
+    def lines(self) -> list[ListLine]:
+        """The list as it is drawn — headings, members, and plain rows.
+
+        Every value it needs is read here as a plain attribute rather than
+        through a helper, for the reason :attr:`can_search` gives: Reflex
+        watches the body of a computed var to decide when to recompute it, and
+        a dependency reached through a method is one it can lose. The rules
+        themselves are :func:`~mailarc_ui.search.model.lines_of`'s, which is
+        pure and knows nothing about any of this.
+        """
+        return lines_of(
+            self.rows,
+            self._memberships,
+            grouping=grouping_of(self.grouping),
+            collapsed=self._collapsed,
+            whole=self._whole,
+            busy=self._expanding,
+        )
 
     @rx.var
     def has_more(self) -> bool:
@@ -296,10 +360,87 @@ class MailSearchState(MessageDetailState, rx.State):
     @rx.event
     async def select(self, message_id: str) -> None:
         """Open the message a row names; an id from nowhere is ignored."""
-        row = next((one for one in self.rows if one.id == message_id), None)
+        row = self._row(message_id)
         if row is None:
             return
         await self._open_message(message_id, row.eml_sha256)
+
+    @rx.event
+    def toggle_group(self, group_id: str) -> None:
+        """Open or close one group. A group nobody drew is ignored.
+
+        The value arrives over the socket, so it is checked against what is on
+        screen — the headings and sections :attr:`lines` is drawing — rather
+        than trusted, the same guard :meth:`select` keeps. Against the lines
+        and not the memberships, because the bucket a read did not file has a
+        section and no membership. Assigned rather than mutated: Reflex tracks
+        a var's dirtiness by assignment, so ``set.add`` alone would never reach
+        the browser.
+        """
+        drawn = {one.group_id for one in self.lines if one.is_header or one.is_section}
+        if group_id not in drawn:
+            return
+        if group_id in self._collapsed:
+            self._collapsed = self._collapsed - {group_id}
+        else:
+            self._collapsed = self._collapsed | {group_id}
+
+    @rx.event(background=True)
+    async def choose_grouping(self, value: str) -> None:
+        """Group the list some other way. The **Group by** dropdown.
+
+        Background because the new grouping may need the memberships of rows
+        that are already up — the read is made for the grouping in force, and
+        for no other — while the flat list, the sender and the subject write
+        one string and read nothing.
+
+        The old memberships and the closed groups go at once: a thread id is
+        not a topic id, and a read that then fails leaves the rows in one
+        bucket rather than filed under the previous grouping's groups. What
+        was fetched for "show whole conversation" stays, because switching
+        away and back is a change of view, not an instruction to forget.
+        """
+        async with self:
+            wanted = grouping_of(value)
+            if wanted.value == self.grouping:
+                return
+            self.grouping = wanted.value
+            self._memberships = {}
+            self._collapsed = set()
+            ids = [row.id for row in self.rows] if wanted in READ_GROUPINGS else []
+        if not ids:
+            return
+        found = await _memberships_of(ids, wanted)
+        async with self:
+            if self.grouping != wanted.value:
+                return
+            self._memberships = {**self._memberships, **found}
+
+    @rx.event(background=True)
+    async def show_whole_conversation(self, conversation_id: str) -> None:
+        """Fetch the members this answer left out, for one group.
+
+        Deliberately never touches :attr:`searching`. That var puts the
+        list-wide spinner up and takes the Search button away, and asking one
+        conversation for the rest of itself is not a search — the group says so
+        itself, through :attr:`_expanding`.
+        """
+        async with self:
+            offered = {one.group_id for one in self._memberships.values()}
+            if (
+                self._expanding
+                or self.grouping != Grouping.CONVERSATION
+                or conversation_id not in offered
+            ):
+                return
+            self._expanding = conversation_id
+        rows, error = await _conversation_rows(conversation_id)
+        async with self:
+            self._expanding = ""
+            if error:
+                self.error = error
+                return
+            self._whole = {**self._whole, conversation_id: list(rows)}
 
     @rx.event(background=True)
     async def load(self) -> None:
@@ -317,9 +458,11 @@ class MailSearchState(MessageDetailState, rx.State):
             self.notice = ""
             self.searched = False
             self._answered = _EMPTY
+            self._forget_memberships()
+            grouping = grouping_of(self.grouping)
         ready, note = _semantic_offer()
         accounts = await _accounts()
-        answer = await _answer(MODE_FULLTEXT, _EMPTY, 0)
+        answer = await _answer(MODE_FULLTEXT, _EMPTY, 0, grouping)
         async with self:
             self.semantic_ready = ready
             self.semantic_note = note
@@ -348,9 +491,11 @@ class MailSearchState(MessageDetailState, rx.State):
             self.total = 0
             self.offset = 0
             self._clear_selection()
+            self._forget_memberships()
             mode, filters = self.mode, self._asked()
+            grouping = grouping_of(self.grouping)
             self._answered = filters
-        answer = await _answer(mode, filters, 0)
+        answer = await _answer(mode, filters, 0, grouping)
         async with self:
             self._apply(answer, append=False)
             self.searching = False
@@ -372,7 +517,8 @@ class MailSearchState(MessageDetailState, rx.State):
                 return
             self.searching = True
             filters, offset = self._answered, self.offset
-        answer = await _answer(MODE_FULLTEXT, filters, offset)
+            grouping = grouping_of(self.grouping)
+        answer = await _answer(MODE_FULLTEXT, filters, offset, grouping)
         async with self:
             self._apply(answer, append=True)
             self.searching = False
@@ -410,7 +556,9 @@ class MailSearchState(MessageDetailState, rx.State):
         self.rows = [*self.rows, *answer.rows] if append else list(answer.rows)
         self.total = answer.total
         self.offset = len(self.rows)
-        if self.selected_id not in {row.id for row in self.rows}:
+        if answer.grouping == self.grouping:
+            self._memberships = {**self._memberships, **answer.memberships}
+        if self._row(self.selected_id) is None:
             self._clear_selection()
 
     def _forget(self) -> None:
@@ -422,7 +570,40 @@ class MailSearchState(MessageDetailState, rx.State):
         self.error = ""
         self.notice = ""
         self.searched = False
+        self._forget_memberships()
         self._clear_selection()
+
+    def _forget_memberships(self) -> None:
+        """Drop every grouping the last answer produced.
+
+        A group belongs to the answer that named it. Keeping one across a new
+        search would leave a heading standing over a group whose members are
+        gone, and a fetched conversation standing over a question that never
+        asked for it.
+        """
+        self._memberships = {}
+        self._collapsed = set()
+        self._whole = {}
+        self._expanding = ""
+
+    def _row(self, message_id: str) -> ResultRow | None:
+        """The row an id names, whether the answer brought it or a fetch did.
+
+        Both halves, because a member pulled in by "show the whole
+        conversation" is on screen and clickable but was never part of the
+        answer — looking only at :attr:`rows` would make it unopenable, and
+        would close it again on the next "Load more".
+        """
+        if not message_id:
+            return None
+        found = next((one for one in self.rows if one.id == message_id), None)
+        if found is not None:
+            return found
+        for members in self._whole.values():
+            found = next((one for one in members if one.id == message_id), None)
+            if found is not None:
+                return found
+        return None
 
     def _clear_selection(self) -> None:
         self.selected_id = ""
@@ -466,7 +647,9 @@ async def _accounts() -> list[dict[str, str]]:
         return []
 
 
-async def _answer(mode: str, filters: SearchFilters, offset: int) -> SearchAnswer:
+async def _answer(
+    mode: str, filters: SearchFilters, offset: int, grouping: Grouping
+) -> SearchAnswer:
     """One search, with every way it can fail turned into a sentence.
 
     Two clauses, and they are the taxonomy this page needs. A
@@ -482,8 +665,8 @@ async def _answer(mode: str, filters: SearchFilters, offset: int) -> SearchAnswe
     """
     try:
         if mode == MODE_SEMANTIC:
-            return await _nearest(filters.text)
-        return await asyncio.to_thread(_filtered, filters, offset)
+            return await _nearest(filters.text, grouping)
+        return await asyncio.to_thread(_filtered, filters, offset, grouping)
     except (SemanticError, ValueError) as error:
         logger.info("The archive cannot answer this search: %s", error)
         return SearchAnswer(notice=str(error))
@@ -492,21 +675,68 @@ async def _answer(mode: str, filters: SearchFilters, offset: int) -> SearchAnswe
         return SearchAnswer(error=SEARCH_FAILED)
 
 
-def _filtered(filters: SearchFilters, offset: int) -> SearchAnswer:
-    """One page of whatever the form asked for. Blocking — hence the thread."""
+def _filtered(
+    filters: SearchFilters, offset: int, grouping: Grouping
+) -> SearchAnswer:
+    """One page of whatever the form asked for. Blocking — hence the thread.
+
+    The membership read rides in the same thread as the page, so one frozen
+    answer still crosses the state lock — and it is not made at all for a
+    grouping that needs none. A failure in it is not one this page has to
+    survive specially: it comes out of the same archive the page came out of,
+    so the caller's own handler catches it and the list reports one fault
+    rather than half an answer.
+    """
     page = reads.archive_reader().search_messages(
         filters, limit=PAGE_SIZE, offset=offset
     )
+    memberships = read_memberships([one.summary.id for one in page.hits], grouping)
     now = datetime.now(UTC)
     return SearchAnswer(
         rows=tuple(
-            ResultRow.from_summary(one.summary, now, one.relevance) for one in page.hits
+            ResultRow.from_summary(one.summary, now, one.relevance)
+            for one in page.hits
         ),
         total=page.total or 0,
+        memberships=memberships,
+        grouping=grouping.value,
     )
 
 
-async def _nearest(question: str) -> SearchAnswer:
+async def _memberships_of(ids: list[str], grouping: Grouping) -> dict[str, Membership]:
+    """The memberships of rows already on screen — what a switch needs.
+
+    A failure leaves the list in one bucket rather than emptied: the rows are
+    right, only the sections are missing, and a page that threw them away to
+    report a fault would be worse than one that quietly draws what it has.
+    """
+    try:
+        return await asyncio.to_thread(read_memberships, list(ids), grouping)
+    except Exception:
+        logger.exception("Could not read the %s of the result list", grouping.value)
+        return {}
+
+
+async def _conversation_rows(
+    conversation_id: str,
+) -> tuple[tuple[ResultRow, ...], str]:
+    """One whole conversation as rows, or the sentence to show instead.
+
+    The rows carry no relevance: a member the search never returned was not
+    ranked, and printing a score for it would invent one.
+    """
+    try:
+        summaries = await asyncio.to_thread(
+            reads.archive_reader().conversation_messages, conversation_id
+        )
+    except Exception:
+        logger.exception("Could not read conversation %s", conversation_id)
+        return (), SEARCH_FAILED
+    now = datetime.now(UTC)
+    return tuple(ResultRow.from_summary(one, now) for one in summaries), ""
+
+
+async def _nearest(question: str, grouping: Grouping) -> SearchAnswer:
     """The KNN's ranking, hydrated into rows in exactly that order.
 
     Two round trips on purpose. The embedding is HTTP and is awaited; the
@@ -525,8 +755,17 @@ async def _nearest(question: str) -> SearchAnswer:
     summaries = await asyncio.to_thread(
         reads.archive_reader().messages_by_ids, list(scores)
     )
+    memberships = await asyncio.to_thread(
+        read_memberships, [one.id for one in summaries], grouping
+    )
     now = datetime.now(UTC)
     rows = tuple(
         ResultRow.from_summary(one, now, scores.get(one.id)) for one in summaries
     )
-    return SearchAnswer(rows=rows, total=len(rows), notice=result.notice)
+    return SearchAnswer(
+        rows=rows,
+        total=len(rows),
+        memberships=memberships,
+        grouping=grouping.value,
+        notice=result.notice,
+    )

@@ -275,14 +275,23 @@ class TestTheGroundTruthIsUntouched:
         self, archived: GraphConfig
     ) -> None:
         """Spelled out, so "unchanged" is measured against a known shape rather
-        than against whatever the previous statement happened to leave."""
+        than against whatever the previous statement happened to leave.
+
+        **One ``Thread`` per message, less the pair that share one.** The
+        corpus is archived with a provider thread id on exactly two messages,
+        and every other one now opens a conversation of its own keyed on its
+        ``Message-ID`` — the writer's third key, and what makes a
+        References-threaded mailbox groupable at all. So 33 ``IN_THREAD``
+        edges and 32 threads, not 2 and 1. It is the storage cost of that fix,
+        counted here rather than estimated.
+        """
         with client.session(archived) as graph:
             counted = ground_truth(graph)
 
         assert counted == {
             "Message": 33,
             "Address": 8,
-            "Thread": 1,
+            "Thread": 32,
             "Label": 1,
             "Attachment": 1,
             "Account": 1,
@@ -290,7 +299,7 @@ class TestTheGroundTruthIsUntouched:
             "SENT_TO": 36,
             "COPIED_TO": 2,
             "BLIND_COPIED_TO": 2,
-            "IN_THREAD": 2,
+            "IN_THREAD": 33,
             "REPLIES_TO": 1,
             "LABELED": 1,
             "HAS_ATTACHMENT": 2,

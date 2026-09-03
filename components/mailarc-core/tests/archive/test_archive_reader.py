@@ -1,13 +1,20 @@
 """The projection from graph rows to summaries, and the blob lookup, without a
 graph.
 
-`FakeSession` answers the two calls :class:`MessageRepository` makes — the
-listing and the count — with what the test put in, the way
+`FakeSession` answers the calls :class:`MessageRepository` and
+:class:`ThreadRepository` make — the listing, the count, the labels and the
+three conversation reads — with what the test put in, the way
 `test_archive_writer.py` drives the writer. What is proved here is the
 projection: which node field lands in which summary field, what a missing
-sender or body becomes, and that a missing blob is a ``None`` and not a
-traceback. `test_archive_reader_local.py` proves the listing itself against a
-real FalkorDB.
+sender or body becomes, which of two threads a message is grouped into, and
+that a missing blob is a ``None`` and not a traceback.
+`test_archive_reader_local.py` proves the reads themselves against a real
+FalkorDB.
+
+The statement-shape assertions are not decoration. Two of them guard the
+misplacement `mailarc_core.archive.repository._filtered` documents at length —
+that a predicate naming a traversed variable is emitted after the last pattern
+clause, and lands on an ``OPTIONAL MATCH`` if one is there.
 """
 
 from datetime import UTC, datetime
@@ -20,12 +27,16 @@ from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.archive.model import (
     Address,
     BlobKind,
+    Conversation,
     Label,
     Message,
     MessageLabel,
     MessageSummary,
+    Recipient,
+    Thread,
 )
 from mailarc_core.archive.reader import (
+    CONVERSATION_LIMIT,
     PREVIEW_LENGTH,
     ArchiveReader,
     GraphSessionFactory,
@@ -39,10 +50,13 @@ SENT_AT = datetime(2026, 8, 19, 14, 28, tzinfo=UTC)
 class FakeSession:
     """A `runic.ogm.Session` stand-in that hands back canned rows.
 
-    ``all_with_edges`` records the statement it was given, so a test can read
-    the Cypher the repository built and check the limit and offset reached it.
-    It answers two statements: the listing with ``rows``, the label lookup —
-    told apart by the edge it walks — with ``labels``.
+    Both readers record the statement they were given, so a test can read the
+    Cypher the repository built and check that the limit, the offset and the
+    root reached it. Four statements, each told apart by its own shape: the
+    listing answers with ``rows``, the label lookup — by the edge it walks —
+    with ``labels``, the conversation lookup with ``threads``, and the two
+    projected reads with ``totals`` (it aggregates) or ``members`` (it does
+    not).
 
     What it records is the compiled Cypher with the compiler's backticks
     dropped. runic quotes every identifier it emits — ``m.`id``` — so that a
@@ -54,9 +68,17 @@ class FakeSession:
         self,
         rows: list[tuple[Message, Address | Label | None]],
         labels: list[tuple[Message, Address | Label | None]] | None = None,
+        threads: list[tuple[Message, Thread]] | None = None,
+        totals: dict[str, int] | None = None,
+        members: list[str] | None = None,
+        recipients: list[tuple[Message, Address]] | None = None,
     ) -> None:
         self.rows = rows
         self.labels = labels or []
+        self.threads = threads or []
+        self.recipients = recipients or []
+        self.totals = totals or {}
+        self.members = members or []
         self.statements: list[str] = []
 
     def __enter__(self) -> FakeSession:
@@ -75,7 +97,22 @@ class FakeSession:
         self.statements.append(cypher)
         if "LABELED" in cypher:
             return self.labels
+        if "IN_THREAD" in cypher:
+            return cast(Any, self.threads)
+        if "[:SENT_TO]" in cypher:
+            return cast(Any, self.recipients)
         return self.rows
+
+    def all_rows(self, statement) -> list[dict[str, Any]]:
+        """The two projected reads, told apart by whether they aggregate."""
+        cypher = self._cypher(statement)
+        self.statements.append(cypher)
+        if "count(" in cypher:
+            return [
+                {"thread_id": thread, "total": total}
+                for thread, total in self.totals.items()
+            ]
+        return [{"id": one} for one in self.members]
 
     def count(self, statement) -> int:
         """What ``MessageRepository.count`` runs: a filtered ``select``."""
@@ -87,6 +124,7 @@ def message(**overrides: Any) -> Message:
     fields: dict[str, Any] = {
         "id": "m1@example.com",
         "subject": "SwiftScan 19.08.2026 14.28.pdf",
+        "subject_norm": "swiftscan 19.08.2026 14.28.pdf",
         "sent_at": SENT_AT,
         "body_text": "Erstellt mit SwiftScan,\n\nder weltweit   führenden Scanner-App.",
         "body_clean": None,
@@ -132,6 +170,7 @@ class TestTheListing:
             sent_at=SENT_AT,
             has_attachments=True,
             eml_sha256="ab" * 32,
+            subject_norm="swiftscan 19.08.2026 14.28.pdf",
         )
 
     def test_a_message_without_a_sender_still_lists(self, blobs) -> None:
@@ -301,3 +340,251 @@ class TestThePreview:
     def test_no_body_is_an_empty_preview(self) -> None:
         assert preview_of(None) == ""
         assert preview_of("   ") == ""
+
+
+def thread(key: str, subject: str | None = None) -> Thread:
+    return Thread(id=key, subject=subject)
+
+
+class TestGroupingByConversation:
+    """Which conversation each message of a page sits in, and how big it is."""
+
+    def test_a_message_reaches_its_conversation_with_the_true_size(self, blobs) -> None:
+        session = FakeSession(
+            [],
+            threads=[(message(), thread("7:t-1"))],
+            totals={"7:t-1": 12},
+        )
+
+        found = reader(session, blobs).conversations_of(["m1@example.com"])
+
+        assert found == {"m1@example.com": Conversation(id="7:t-1", total=12)}
+
+    def test_a_message_in_no_thread_is_absent(self, blobs) -> None:
+        """The way a message without labels is absent from ``find_labels``."""
+        session = FakeSession(
+            [],
+            threads=[(message(id="m2@example.com"), thread("7:t-1"))],
+            totals={"7:t-1": 2},
+        )
+
+        found = reader(session, blobs).conversations_of(
+            ["m1@example.com", "m2@example.com"]
+        )
+
+        assert list(found) == ["m2@example.com"]
+
+    def test_two_threads_on_one_message_resolve_to_the_smallest_id(self, blobs) -> None:
+        """The same mail through two mailboxes carries two ``IN_THREAD`` edges."""
+        session = FakeSession(
+            [],
+            threads=[
+                (message(), thread("9:t-9")),
+                (message(), thread("7:t-1")),
+            ],
+            totals={"7:t-1": 3},
+        )
+
+        found = reader(session, blobs).conversations_of(["m1@example.com"])
+
+        assert found["m1@example.com"].id == "7:t-1"
+
+    def test_the_pick_does_not_depend_on_the_order_the_rows_came_back(
+        self, blobs
+    ) -> None:
+        """``collect`` promises no order, so neither may the answer depend on one."""
+        session = FakeSession(
+            [],
+            threads=[
+                (message(), thread("7:t-1")),
+                (message(), thread("9:t-9")),
+            ],
+            totals={"7:t-1": 3},
+        )
+
+        found = reader(session, blobs).conversations_of(["m1@example.com"])
+
+        assert found["m1@example.com"].id == "7:t-1"
+
+    def test_a_conversation_nothing_counted_reads_zero(self, blobs) -> None:
+        session = FakeSession([], threads=[(message(), thread("7:t-1"))], totals={})
+
+        found = reader(session, blobs).conversations_of(["m1@example.com"])
+
+        assert found["m1@example.com"].total == 0
+
+    def test_an_empty_ask_opens_no_session(self, blobs) -> None:
+        session = FakeSession([])
+
+        assert reader(session, blobs).conversations_of([]) == {}
+        assert session.statements == []
+
+    def test_the_count_is_rooted_at_the_thread(self, blobs) -> None:
+        """Rooted at ``t`` so the ``IN`` lands on the key before the expansion.
+
+        Rooted at the message it would expand every message in the archive and
+        filter afterwards — the misplacement ``_filtered`` documents.
+        """
+        session = FakeSession(
+            [], threads=[(message(), thread("7:t-1"))], totals={"7:t-1": 2}
+        )
+
+        reader(session, blobs).conversations_of(["m1@example.com"])
+
+        _, counting = session.statements
+        assert counting.startswith("MATCH (t:Thread)")
+        assert "WHERE t.id IN $p0" in counting
+        assert "count(DISTINCT m.id) AS total" in counting
+
+    def test_the_page_asks_once_per_page_and_once_per_conversation_set(
+        self, blobs
+    ) -> None:
+        """Two statements for a page, however many rows or threads it holds."""
+        session = FakeSession(
+            [],
+            threads=[
+                (message(), thread("7:t-1")),
+                (message(id="m2@example.com"), thread("7:t-2")),
+            ],
+            totals={"7:t-1": 2, "7:t-2": 5},
+        )
+
+        reader(session, blobs).conversations_of(["m1@example.com", "m2@example.com"])
+
+        assert len(session.statements) == 2
+
+
+class TestGroupingByRecipient:
+    """Whom each message of a page was sent to — one address, the same one
+    every time."""
+
+    def test_a_message_reaches_its_recipient_with_a_name(self, blobs) -> None:
+        session = FakeSession(
+            [], recipients=[(message(), sender(id="bob@example.com", display_names=["Bob"]))]
+        )
+
+        found = reader(session, blobs).recipients_of(["m1@example.com"])
+
+        assert found == {"m1@example.com": Recipient(address="bob@example.com", name="Bob")}
+
+    def test_an_address_without_a_display_name_is_filed_by_its_address(
+        self, blobs
+    ) -> None:
+        session = FakeSession(
+            [], recipients=[(message(), sender(id="bob@example.com", display_names=[]))]
+        )
+
+        found = reader(session, blobs).recipients_of(["m1@example.com"])
+
+        assert found["m1@example.com"].name == ""
+
+    def test_several_recipients_resolve_to_the_smallest_address(self, blobs) -> None:
+        """The graph keeps no header order, so the pick is a rule, not a guess."""
+        session = FakeSession(
+            [],
+            recipients=[
+                (message(), sender(id="zoe@example.com")),
+                (message(), sender(id="bob@example.com")),
+                (message(), sender(id="carl@example.com")),
+            ],
+        )
+
+        found = reader(session, blobs).recipients_of(["m1@example.com"])
+
+        assert found["m1@example.com"].address == "bob@example.com"
+
+    def test_a_message_sent_to_nobody_is_absent(self, blobs) -> None:
+        session = FakeSession(
+            [], recipients=[(message(id="m2@example.com"), sender(id="bob@example.com"))]
+        )
+
+        found = reader(session, blobs).recipients_of(
+            ["m1@example.com", "m2@example.com"]
+        )
+
+        assert list(found) == ["m2@example.com"]
+
+    def test_an_empty_ask_opens_no_session(self, blobs) -> None:
+        session = FakeSession([])
+
+        assert reader(session, blobs).recipients_of([]) == {}
+        assert session.statements == []
+
+    def test_the_page_asks_once_over_the_to_edge_alone(self, blobs) -> None:
+        """One ``IN`` per page, and ``SENT_TO`` without the Cc alternation."""
+        session = FakeSession([])
+
+        reader(session, blobs).recipients_of(["m1@example.com", "m2@example.com"])
+
+        [statement] = session.statements
+        assert "WHERE m.id IN $p0" in statement
+        assert "[:SENT_TO]->(r:Address)" in statement
+        assert "COPIED_TO" not in statement
+
+
+class TestOneWholeConversation:
+    def test_the_members_come_back_as_summaries_with_their_labels(self, blobs) -> None:
+        session = FakeSession(
+            [(message(), sender())],
+            labels=[(message(), label("Rechnungen"))],
+            members=["m1@example.com"],
+        )
+
+        [summary] = reader(session, blobs).conversation_messages("7:t-1")
+
+        assert summary.id == "m1@example.com"
+        assert summary.labels == (MessageLabel(name="Rechnungen"),)
+
+    def test_the_members_are_read_newest_first_with_an_id_tiebreak(self, blobs) -> None:
+        session = FakeSession([], members=[])
+
+        reader(session, blobs).conversation_messages("7:t-1")
+
+        [cypher] = session.statements
+        assert "WHERE t.id = $p0" in cypher
+        assert "ORDER BY m.sent_at DESC, m.id" in cypher
+
+    def test_the_member_read_has_no_optional_match_before_its_where(
+        self, blobs
+    ) -> None:
+        """The ``_filtered`` landmine, guarded rather than rediscovered.
+
+        A ``WHERE`` naming a traversed variable is emitted after the last
+        pattern clause, and one landing on an ``OPTIONAL MATCH`` nullifies the
+        optional binding instead of dropping the row. So this statement
+        traverses nothing optional: hydration is ``find_by_ids``'s job.
+        """
+        session = FakeSession([], members=[])
+
+        reader(session, blobs).conversation_messages("7:t-1")
+
+        [cypher] = session.statements
+        assert "OPTIONAL MATCH" not in cypher
+
+    def test_the_limit_reaches_the_statement(self, blobs) -> None:
+        session = FakeSession([], members=[])
+
+        reader(session, blobs).conversation_messages("7:t-1", limit=25)
+
+        [cypher] = session.statements
+        assert "LIMIT 25" in cypher
+
+    def test_the_default_limit_is_the_readers_cap(self, blobs) -> None:
+        session = FakeSession([], members=[])
+
+        reader(session, blobs).conversation_messages("7:t-1")
+
+        [cypher] = session.statements
+        assert f"LIMIT {CONVERSATION_LIMIT}" in cypher
+
+    def test_a_conversation_with_no_members_asks_for_nothing_more(self, blobs) -> None:
+        session = FakeSession([(message(), sender())], members=[])
+
+        assert reader(session, blobs).conversation_messages("7:t-1") == []
+        assert len(session.statements) == 1
+
+    def test_no_conversation_named_opens_no_session(self, blobs) -> None:
+        session = FakeSession([])
+
+        assert reader(session, blobs).conversation_messages("") == []
+        assert session.statements == []

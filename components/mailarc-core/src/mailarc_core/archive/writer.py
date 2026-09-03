@@ -239,10 +239,34 @@ def _thread_node(
 ) -> Thread | None:
     """The conversation this message sits in, if anything names one.
 
+    Three keys, tried in order, and the third one is what makes an IMAP
+    conversation whole.
+
     The provider's own thread id wins. ``thread_hint`` — the root taken out of
-    the ``References`` header — is what IMAP has instead of one.
+    the ``References`` header — is what IMAP has instead of one. But a
+    conversation's *first* message carries neither ``References`` nor
+    ``In-Reply-To``, so it used to get no thread at all while its own replies
+    grouped together without it: the root sat beside its answers as an
+    unrelated message. It opens a conversation of its own instead, keyed on the
+    Message-ID its replies will name.
+
+    ``rfc_message_id`` and deliberately not ``canonical_id``. A reply's hint is
+    ``references[0]``, normalised by the same
+    :func:`~mailarc_core.mail.parsing.normalise_message_id` that produced this
+    message's ``Message-ID``, so keying the root on its own is exactly what
+    makes the two meet. Where a message carries no ``Message-ID`` at all its
+    canonical id is a ``sha256:`` digest of the bytes, which no reply can ever
+    reference — a thread keyed on one would be a node nothing could ever join,
+    so that case still gets nothing.
+
+    The cost is one ``Thread`` node and one ``IN_THREAD`` edge per standalone
+    message, and one more orphan after a purge (:mod:`mailarc_core.archive.purge`
+    leaves ``Thread`` nodes standing). Paid because the alternative is a mail
+    client that cannot group IMAP mail.
     """
-    thread_id = source.provider_thread_id or message.thread_hint
+    thread_id = (
+        source.provider_thread_id or message.thread_hint or message.rfc_message_id
+    )
     if not thread_id:
         return None
     key = f"{source.account_id}:{thread_id}"

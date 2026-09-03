@@ -692,6 +692,27 @@ html body,
   color: var(--ma-text);
 }
 
+/* The dropdown over a list — the range switch with more than three
+ * positions. The same canvas fill and hairline as the switch's track, on
+ * Mantine's Select input; the doubled selector outranks the `filled`
+ * variant's own background the way `.ma-field` has to.
+ */
+.ma-range-select.ma-range-select .mantine-Input-input {
+  background: var(--ma-canvas);
+  border: 1px solid var(--ma-border);
+  border-radius: var(--ma-radius-chip);
+  min-height: 28px;
+  height: 28px;
+  font-size: 13px;
+  color: var(--ma-text);
+}
+
+.ma-range-select.ma-range-select .mantine-Input-input:focus,
+.ma-range-select.ma-range-select .mantine-Input-input:focus-within {
+  border-color: var(--ma-accent);
+  box-shadow: 0 0 0 3px var(--ma-accent-soft);
+}
+
 /* ── The chart's own type ────────────────────────────────────────────────── */
 
 /* recharts renders its ticks as SVG `<text>`, which inherits neither the card's
@@ -987,6 +1008,23 @@ html body,
 /* Closed points right, which is the only direction a reader has to learn. */
 .ma-group-chevron.ma-group-chevron[data-expanded="false"] {
   transform: rotate(-90deg);
+}
+
+/* A section over a group no message can stand in for — one sender's mail,
+ * one topic's. The whole line is the gesture, so it is the one line in the
+ * list that tints itself at rest: it is chrome over the rows, not one of them.
+ */
+.ma-group-header.ma-group-header {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--ma-border);
+  background: var(--ma-canvas);
+  color: var(--ma-text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.ma-group-header.ma-group-header:hover {
+  background: var(--ma-surface-hover);
 }
 
 /* ── Row chips ───────────────────────────────────────────────────────────── */

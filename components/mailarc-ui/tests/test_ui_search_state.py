@@ -37,22 +37,37 @@ from mailarc_analytics.semantic import (
     SemanticUnavailable,
     VectorCoverage,
 )
-from mailarc_core import ArchiveReader
-from mailarc_core.archive.model import MessageLabel, MessageSummary
+from mailarc_analytics import AnalyticsReader, GroupMembershipRow, TopicMembershipRow
+from mailarc_core import ArchiveReader, TagStore
+from mailarc_core.archive.model import (
+    Conversation,
+    MessageLabel,
+    MessageSummary,
+    Recipient,
+    TagSummary,
+)
 from mailarc_core.archive.search import MessageHit, SearchFilters, SearchPage
 from mailarc_core.database.entities import MailAccountEntity
 from mailarc_core.mail.model import LabelKind
-from mailarc_ui.search import reads
+from mailarc_ui.search import memberships, reads
 from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
     ATTACH_WITHOUT,
     MODE_FULLTEXT,
     MODE_SEMANTIC,
+    NO_GROUP,
+    READ_GROUPINGS,
     SEARCH_FAILED,
+    UNFILED,
+    Grouping,
+    Membership,
     ResultRow,
+    SearchAnswer,
     filters_of,
+    topic_label,
     initials_of,
+    lines_of,
     parse_date,
     percent_label,
     relative_label,
@@ -115,6 +130,34 @@ class FakeReader(ArchiveReader):
         self.relevance: dict[str, float] = {}
         self.error: Exception | None = None
         self.raw: dict[str, bytes] = {}
+        self.threads: dict[str, Conversation] = {}
+        self.grouped: list[list[str]] = []
+        self.members: dict[str, list[MessageSummary]] = {}
+        self.expanded: list[str] = []
+        self.thread_error: Exception | None = None
+        self.recipients: dict[str, Recipient] = {}
+        self.addressed: list[list[str]] = []
+        self.recipient_error: Exception | None = None
+
+    def recipients_of(self, ids: list[str]) -> dict[str, Recipient]:
+        self.addressed.append(list(ids))
+        if self.recipient_error is not None:
+            raise self.recipient_error
+        return {one: self.recipients[one] for one in ids if one in self.recipients}
+
+    def conversations_of(self, ids: list[str]) -> dict[str, Conversation]:
+        self.grouped.append(list(ids))
+        if self.thread_error is not None:
+            raise self.thread_error
+        return {one: self.threads[one] for one in ids if one in self.threads}
+
+    def conversation_messages(
+        self, conversation_id: str, *, limit: int = 200
+    ) -> list[MessageSummary]:
+        self.expanded.append(conversation_id)
+        if self.thread_error is not None:
+            raise self.thread_error
+        return list(self.members.get(conversation_id, []))[:limit]
 
     def search_messages(
         self, filters: SearchFilters, *, limit: int = 50, offset: int = 0
@@ -176,9 +219,57 @@ class FakeSearch(SemanticSearch):
         )
 
 
+class FakeTagStore(TagStore):
+    """The annotation layer, answering which of a page's rows wear a tag."""
+
+    def __init__(self) -> None:
+        self.tags: dict[str, tuple[TagSummary, ...]] = {}
+        self.asked: list[list[str]] = []
+        self.error: Exception | None = None
+
+    def tags_of(self, ids: Sequence[str]) -> dict[str, tuple[TagSummary, ...]]:
+        self.asked.append(list(ids))
+        if self.error is not None:
+            raise self.error
+        return {one: self.tags[one] for one in ids if one in self.tags}
+
+
+class FakeAnalytics(AnalyticsReader):
+    """The derived layer, answering which topic and which group a row is in."""
+
+    def __init__(self) -> None:
+        self.topics: dict[str, TopicMembershipRow] = {}
+        self.groups: dict[str, GroupMembershipRow] = {}
+        self.asked_topics: list[list[str]] = []
+        self.asked_groups: list[list[str]] = []
+        self.error: Exception | None = None
+
+    def topics_of(self, ids: Sequence[str]) -> dict[str, TopicMembershipRow]:
+        self.asked_topics.append(list(ids))
+        if self.error is not None:
+            raise self.error
+        return {one: self.topics[one] for one in ids if one in self.topics}
+
+    def groups_of(self, ids: Sequence[str]) -> dict[str, GroupMembershipRow]:
+        self.asked_groups.append(list(ids))
+        if self.error is not None:
+            raise self.error
+        return {one: self.groups[one] for one in ids if one in self.groups}
+
+
 @pytest.fixture
 def reader() -> FakeReader:
     return FakeReader([summary(one) for one in range(1, 5)])
+
+
+@pytest.fixture
+def tags() -> FakeTagStore:
+    return FakeTagStore()
+
+
+@pytest.fixture
+def analytics() -> FakeAnalytics:
+    return FakeAnalytics()
 
 
 @pytest.fixture
@@ -187,14 +278,18 @@ def search() -> FakeSearch:
 
 
 @pytest.fixture
-def published(reader: FakeReader, search: FakeSearch) -> Iterator[None]:
-    """Both services where the composition root would leave them."""
+def published(
+    reader: FakeReader, search: FakeSearch, tags: FakeTagStore, analytics: FakeAnalytics
+) -> Iterator[None]:
+    """All four services where the composition root would leave them."""
     from appkit_commons.registry import service_registry
 
     registry = service_registry()
     saved = registry.snapshot()
     registry.register_as(ArchiveReader, reader)
     registry.register_as(SemanticSearch, search)
+    registry.register_as(TagStore, tags)
+    registry.register_as(AnalyticsReader, analytics)
     yield
     registry.restore(saved)
 
@@ -247,6 +342,55 @@ async def _load_more(state: MailSearchState) -> None:
     enter, leave = _unlocked()
     with enter, leave:
         await MailSearchState.load_more.fn(state)
+
+
+async def _switch(state: MailSearchState, value: str) -> None:
+    """The Group by dropdown, same reason as :func:`_load`."""
+    enter, leave = _unlocked()
+    with enter, leave:
+        await MailSearchState.choose_grouping.fn(state, value)
+
+
+async def _expand(state: MailSearchState, conversation_id: str) -> None:
+    """The heading's "show the whole conversation", same reason."""
+    enter, leave = _unlocked()
+    with enter, leave:
+        await MailSearchState.show_whole_conversation.fn(state, conversation_id)
+
+
+def row(number: int, **overrides: Any) -> ResultRow:
+    """One result row, already printable."""
+    return ResultRow.from_summary(summary(number, **overrides), NOW)
+
+
+def filed(
+    *numbers: int, key: str, total: int = 0, label: str = ""
+) -> dict[str, Membership]:
+    """These rows, filed under one group — what a membership read hands over."""
+    return {
+        f"m{one}@example.com": Membership(group_id=key, label=label, total=total)
+        for one in numbers
+    }
+
+
+def drawn(
+    rows: list[ResultRow],
+    filed_as: dict[str, Membership] | None = None,
+    *,
+    grouping: Grouping = Grouping.CONVERSATION,
+    collapsed: set[str] | None = None,
+    whole: dict[str, list[ResultRow]] | None = None,
+    busy: str = "",
+) -> list:
+    """:func:`lines_of` with every knob defaulted to the quiet position."""
+    return lines_of(
+        rows,
+        filed_as or {},
+        grouping=grouping,
+        collapsed=collapsed or set(),
+        whole=whole or {},
+        busy=busy,
+    )
 
 
 class TestTheFormAsFilters:
@@ -964,3 +1108,694 @@ def _transaction(factory: async_sessionmaker[AsyncSession]) -> Any:
                 raise
 
     return opened()
+
+
+def group(key: str, total: int) -> Conversation:
+    return Conversation(id=key, total=total)
+
+
+class TestGroupingTheAnswer:
+    """:func:`lines_of` on its own — no state, no registry, no graph."""
+
+    def test_grouping_off_draws_one_line_per_row(self) -> None:
+        lines = drawn(
+            [row(1), row(2)], filed(1, 2, key="c1", total=2), grouping=Grouping.NONE
+        )
+
+        assert [one.key for one in lines] == ["m:m1@example.com", "m:m2@example.com"]
+        assert not any(one.is_header or one.is_section for one in lines)
+
+    def test_a_conversation_becomes_a_heading_and_its_members(self) -> None:
+        heading, member = drawn([row(1), row(2)], filed(1, 2, key="c1", total=2))
+
+        assert heading.is_header is True
+        assert heading.key == "c:c1"
+        assert heading.subject == "Rechnung 1"
+        assert heading.size_label == "2"
+        assert member.key == "m:m2@example.com"
+        assert member.indented is True
+
+    def test_the_heading_states_how_much_of_the_conversation_is_shown(self) -> None:
+        [heading] = drawn([row(1)], filed(1, key="c1", total=12))
+
+        assert heading.size_label == "1 of 12"
+        assert heading.can_expand is True
+
+    def test_a_conversation_of_one_is_a_plain_row(self) -> None:
+        """Chrome around a group of one says nothing."""
+        [line] = drawn([row(1)], filed(1, key="c1", total=1))
+
+        assert line.is_header is False
+        assert line.can_expand is False
+
+    def test_a_row_in_no_conversation_is_a_plain_row(self) -> None:
+        [line] = drawn([row(1)])
+
+        assert line.is_header is False
+        assert line.key == "m:m1@example.com"
+
+    def test_a_group_sits_where_its_first_seen_member_sat(self) -> None:
+        """Grouping never moves a hit down the page; it pulls siblings up."""
+        lines = drawn([row(1), row(2), row(3), row(4)], filed(2, 4, key="c1", total=2))
+
+        assert [one.key for one in lines] == [
+            "m:m1@example.com",
+            "c:c1",
+            "m:m4@example.com",
+            "m:m3@example.com",
+        ]
+
+    def test_a_collapsed_group_draws_its_heading_and_nothing_else(self) -> None:
+        lines = drawn(
+            [row(1), row(2)], filed(1, 2, key="c1", total=2), collapsed={"c1"}
+        )
+
+        assert [one.key for one in lines] == ["c:c1"]
+        assert lines[0].expanded is False
+
+    def test_a_fetched_conversation_supplies_the_members(self) -> None:
+        lines = drawn(
+            [row(1)],
+            filed(1, key="c1", total=3),
+            whole={"c1": [row(1), row(2), row(3)]},
+        )
+
+        assert [one.key for one in lines] == [
+            "c:c1",
+            "m:m2@example.com",
+            "m:m3@example.com",
+        ]
+        assert lines[0].can_expand is False
+        assert lines[0].size_label == "3"
+
+    def test_a_returned_hit_the_fetch_cut_off_is_kept(self) -> None:
+        """The fetch is capped; dropping a hit would take it off the screen."""
+        lines = drawn(
+            [row(4)], filed(4, key="c1", total=9), whole={"c1": [row(1), row(2)]}
+        )
+
+        assert [one.key for one in lines] == [
+            "c:c1",
+            "m:m2@example.com",
+            "m:m4@example.com",
+        ]
+
+    def test_only_the_group_being_fetched_says_it_is_busy(self) -> None:
+        lines = drawn(
+            [row(1), row(3)],
+            {**filed(1, key="c1", total=4), **filed(3, key="c2", total=4)},
+            busy="c1",
+        )
+
+        assert [one.busy for one in lines] == [True, False]
+
+    def test_a_heading_carries_everything_its_row_printed(self) -> None:
+        """A collapsed group must hide nothing the reader had already seen."""
+        source = summary(2, subject="Angebot", preview="anbei")
+        first = ResultRow.from_summary(source, NOW, 0.5)
+
+        [heading] = drawn([first], filed(2, key="c1", total=4), collapsed={"c1"})
+
+        assert heading.id == source.id
+        assert heading.subject == "Angebot"
+        assert heading.preview == "anbei"
+        assert heading.initials == "A B"
+        assert heading.has_attachments is True
+        assert heading.relevance_label == "50%"
+
+
+class TestSectioningTheAnswer:
+    """The other six groupings: a labelled section over every group."""
+
+    def test_senders_need_no_read_and_section_by_address(self) -> None:
+        bob = row(2, sender_name="Bob Baker", sender_address="bob@example.com")
+
+        lines = drawn([row(1), bob, row(3)], grouping=Grouping.SENDER)
+
+        assert [one.key for one in lines] == [
+            "g:anna@example.com",
+            "m:m1@example.com",
+            "m:m3@example.com",
+            "g:bob@example.com",
+            "m:m2@example.com",
+        ]
+        assert lines[0].is_section is True
+        assert lines[0].label == "Anna Bauer"
+        assert lines[0].size_label == "2"
+        assert lines[3].label == "Bob Baker"
+
+    def test_a_section_of_one_still_draws_its_header(self) -> None:
+        """Unlike a conversation: a row does not say which sender it is under
+        once the list is sectioned, so the section has to."""
+        section, member = drawn([row(1)], grouping=Grouping.SENDER)
+
+        assert section.is_section is True
+        assert section.id == ""
+        assert member.indented is True
+
+    def test_subjects_section_on_the_normalised_subject(self) -> None:
+        rows = [
+            row(1, subject="Re: Angebot", subject_norm="angebot"),
+            row(2, subject="Rechnung", subject_norm="rechnung"),
+            row(3, subject="AW: Angebot", subject_norm="angebot"),
+        ]
+
+        lines = drawn(rows, grouping=Grouping.SUBJECT)
+
+        assert [one.key for one in lines] == [
+            "g:angebot",
+            "m:m1@example.com",
+            "m:m3@example.com",
+            "g:rechnung",
+            "m:m2@example.com",
+        ]
+        assert lines[0].label == "Re: Angebot"
+
+    def test_a_row_without_a_subject_sits_in_the_bucket(self) -> None:
+        [section, _member] = drawn(
+            [row(1, subject="", subject_norm="")], grouping=Grouping.SUBJECT
+        )
+
+        assert section.group_id == NO_GROUP
+
+    def test_topics_come_from_the_memberships(self) -> None:
+        lines = drawn(
+            [row(1), row(2), row(3)],
+            filed(1, 3, key="topic:a", label="Angebot"),
+            grouping=Grouping.TOPIC,
+        )
+
+        assert [one.key for one in lines] == [
+            "g:topic:a",
+            "m:m1@example.com",
+            "m:m3@example.com",
+            f"g:{NO_GROUP}",
+            "m:m2@example.com",
+        ]
+        assert lines[0].label == "Angebot"
+        assert lines[3].label == "No topic"
+
+    @pytest.mark.parametrize(
+        "grouping",
+        [Grouping.TOPIC, Grouping.TAG, Grouping.RECURRING, Grouping.RECEIVER],
+    )
+    def test_a_row_the_read_did_not_file_lands_in_the_named_bucket(
+        self, grouping: Grouping
+    ) -> None:
+        [section, member] = drawn([row(1)], grouping=grouping)
+
+        assert section.group_id == NO_GROUP
+        assert section.label == UNFILED[grouping]
+        assert member.key == "m:m1@example.com"
+
+    def test_a_closed_section_draws_its_header_and_nothing_else(self) -> None:
+        lines = drawn(
+            [row(1), row(2)], grouping=Grouping.SENDER, collapsed={"anna@example.com"}
+        )
+
+        assert [one.key for one in lines] == ["g:anna@example.com"]
+        assert lines[0].expanded is False
+
+    def test_the_bucket_can_be_closed_too(self) -> None:
+        lines = drawn([row(1)], grouping=Grouping.TAG, collapsed={NO_GROUP})
+
+        assert [one.key for one in lines] == [f"g:{NO_GROUP}"]
+
+
+class TestNamingAGroup:
+    """What a section says, per kind of group."""
+
+    def test_a_topic_is_named_by_its_subject(self) -> None:
+        membership = Membership.of_topic(
+            TopicMembershipRow(topic_id="topic:a", label="Angebot", keywords=("x",))
+        )
+
+        assert membership == Membership(group_id="topic:a", label="Angebot")
+
+    def test_a_topic_without_a_subject_is_named_by_its_words(self) -> None:
+        found = topic_label(
+            TopicMembershipRow(topic_id="topic:a", keywords=("a", "b", "c", "d"))
+        )
+
+        assert found == "a · b · c"
+
+    def test_a_topic_with_neither_is_named_by_its_key(self) -> None:
+        assert topic_label(TopicMembershipRow(topic_id="topic:8f3a2c")) == "8f3a2c"
+
+    def test_a_recurring_group_is_named_by_its_size_and_key(self) -> None:
+        membership = Membership.of_group(
+            GroupMembershipRow(group_id="group:abc", size=5, message_count=9)
+        )
+
+        assert membership.label == "5 people · abc"
+
+    def test_a_recipient_is_named_by_name_then_address(self) -> None:
+        named = Membership.of_recipient(Recipient(address="bob@example.com", name="Bob"))
+        bare = Membership.of_recipient(Recipient(address="bob@example.com"))
+
+        assert (named.group_id, named.label) == ("bob@example.com", "Bob")
+        assert bare.label == "bob@example.com"
+
+    def test_the_first_tag_by_name_files_a_message(self) -> None:
+        tags = (
+            TagSummary(id="tag:a", name="Alpha"),
+            TagSummary(id="tag:b", name="Beta"),
+        )
+
+        assert Membership.of_tags(tags) == Membership(group_id="tag:a", label="Alpha")
+        assert Membership.of_tags(()) is None
+
+    def test_every_grouping_that_needs_a_read_has_one(self) -> None:
+        assert set(memberships._READERS) == set(READ_GROUPINGS)
+
+
+class TestTheGroupingDropdown:
+    async def test_the_list_is_grouped_by_conversation_before_anybody_asks(
+        self, state
+    ) -> None:
+        assert state.grouping == Grouping.CONVERSATION
+
+    async def test_loading_reads_the_conversations_of_its_page(
+        self, state, reader
+    ) -> None:
+        reader.threads = {"m1@example.com": group("c1", 3)}
+
+        await _load(state)
+
+        assert reader.grouped == [[one.id for one in reader.summaries]]
+        assert state._memberships["m1@example.com"].group_id == "c1"
+        assert state.lines[0].is_header is True
+
+    async def test_switching_to_none_reads_nothing_and_flattens(
+        self, state, reader
+    ) -> None:
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+        before = len(reader.grouped)
+
+        await _switch(state, Grouping.NONE)
+
+        assert state.grouping == Grouping.NONE
+        assert len(reader.grouped) == before
+        assert not any(one.is_header or one.is_section for one in state.lines)
+
+    async def test_switching_to_sender_reads_nothing_and_sections(
+        self, state, reader, tags, analytics
+    ) -> None:
+        await _load(state)
+        before = len(reader.grouped)
+
+        await _switch(state, Grouping.SENDER)
+
+        assert len(reader.grouped) == before
+        assert (reader.addressed, tags.asked, analytics.asked_topics) == ([], [], [])
+        assert state.lines[0].is_section is True
+        assert state.lines[0].label == "Anna Bauer"
+
+    async def test_switching_back_regroups_the_rows_on_screen(
+        self, state, reader
+    ) -> None:
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+        await _switch(state, Grouping.NONE)
+
+        await _switch(state, Grouping.CONVERSATION)
+
+        assert state.grouping == Grouping.CONVERSATION
+        assert state.lines[0].is_header is True
+
+    async def test_switching_to_the_grouping_already_chosen_reads_nothing(
+        self, state, reader
+    ) -> None:
+        await _load(state)
+        before = len(reader.grouped)
+
+        await _switch(state, Grouping.CONVERSATION)
+
+        assert len(reader.grouped) == before
+
+    async def test_a_grouping_nobody_offered_is_the_default(self, state, reader) -> None:
+        """The value arrives over the socket, so it is checked, not trusted."""
+        await _load(state)
+        await _switch(state, Grouping.NONE)
+
+        await _switch(state, "everything")
+
+        assert state.grouping == Grouping.CONVERSATION
+        assert len(reader.grouped) == 2
+
+    async def test_switching_forgets_the_closed_groups(self, state, reader) -> None:
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+        MailSearchState.toggle_group.fn(state, "c1")
+
+        await _switch(state, Grouping.SENDER)
+
+        assert state._collapsed == set()
+
+    async def test_switching_drops_the_old_memberships(self, state, reader) -> None:
+        """A thread id is not a tag id: every row is in the bucket until the
+        new read says otherwise."""
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+
+        await _switch(state, Grouping.TAG)
+
+        assert state._memberships == {}
+        assert [one.key for one in state.lines][0] == f"g:{NO_GROUP}"
+        assert state.lines[0].label == "No tag"
+
+    async def test_a_membership_read_that_fails_leaves_the_rows_in_one_bucket(
+        self, state, reader, analytics
+    ) -> None:
+        """The rows are right; only the sections are missing."""
+        await _load(state)
+        analytics.error = RuntimeError("graph gone")
+
+        await _switch(state, Grouping.TOPIC)
+
+        assert len(state.rows) == len(reader.summaries)
+        assert state.error == ""
+        assert state.lines[0].label == "No topic"
+
+    async def test_topics_are_read_for_the_rows_on_screen(
+        self, state, reader, analytics
+    ) -> None:
+        analytics.topics = {
+            "m1@example.com": TopicMembershipRow(topic_id="topic:a", label="Angebot")
+        }
+        await _load(state)
+
+        await _switch(state, Grouping.TOPIC)
+
+        assert analytics.asked_topics == [[one.id for one in reader.summaries]]
+        assert [one.key for one in state.lines] == [
+            "g:topic:a",
+            "m:m1@example.com",
+            f"g:{NO_GROUP}",
+            "m:m2@example.com",
+            "m:m3@example.com",
+            "m:m4@example.com",
+        ]
+        assert state.lines[0].label == "Angebot"
+
+    async def test_tags_section_the_rows_that_wear_one(self, state, tags) -> None:
+        tags.tags = {"m2@example.com": (TagSummary(id="tag:kunden", name="Kunden"),)}
+        await _load(state)
+
+        await _switch(state, Grouping.TAG)
+
+        assert len(tags.asked) == 1
+        assert [one.key for one in state.lines][:3] == [
+            f"g:{NO_GROUP}",
+            "m:m1@example.com",
+            "m:m3@example.com",
+        ]
+        assert state.lines[4].key == "g:tag:kunden"
+        assert state.lines[4].label == "Kunden"
+
+    async def test_recurring_groups_come_from_the_derived_layer(
+        self, state, analytics
+    ) -> None:
+        analytics.groups = {
+            "m1@example.com": GroupMembershipRow(group_id="group:abc", size=5)
+        }
+        await _load(state)
+
+        await _switch(state, Grouping.RECURRING)
+
+        assert len(analytics.asked_groups) == 1
+        assert state.lines[0].label == "5 people · abc"
+        assert state.lines[2].label == "No group"
+
+    async def test_receivers_come_from_the_archive(self, state, reader) -> None:
+        reader.recipients = {
+            "m1@example.com": Recipient(address="bob@example.com", name="Bob")
+        }
+        await _load(state)
+
+        await _switch(state, Grouping.RECEIVER)
+
+        assert reader.addressed == [[one.id for one in reader.summaries]]
+        assert state.lines[0].label == "Bob"
+        assert state.lines[2].label == "No recipient"
+
+    async def test_a_failed_recipient_read_leaves_the_rows_alone(
+        self, state, reader
+    ) -> None:
+        await _load(state)
+        reader.recipient_error = RuntimeError("graph gone")
+
+        await _switch(state, Grouping.RECEIVER)
+
+        assert len(state.rows) == len(reader.summaries)
+        assert state.error == ""
+
+    async def test_a_load_reads_for_the_grouping_in_force(
+        self, state, reader, tags
+    ) -> None:
+        state.grouping = Grouping.TAG.value
+
+        await _load(state)
+
+        assert reader.grouped == []
+        assert tags.asked == [[one.id for one in reader.summaries]]
+
+    async def test_a_page_read_under_another_grouping_is_not_filed(
+        self, state
+    ) -> None:
+        """A switch made while a page was in flight must not file that page's
+        rows under the previous grouping's groups."""
+        state.grouping = Grouping.SENDER.value
+
+        state._apply(
+            SearchAnswer(
+                rows=(row(1),),
+                memberships=filed(1, key="c1", total=3),
+                grouping=Grouping.CONVERSATION.value,
+            ),
+            append=False,
+        )
+
+        assert state.rows == [row(1)]
+        assert state._memberships == {}
+
+    async def test_a_second_page_joins_the_section_its_first_page_made(
+        self, state, reader
+    ) -> None:
+        reader.summaries = [summary(one) for one in range(1, PAGE_SIZE + 3)]
+        await _load(state)
+        await _switch(state, Grouping.SENDER)
+
+        await _load_more(state)
+
+        assert state.lines[0].key == "g:anna@example.com"
+        assert state.lines[0].size_label == str(PAGE_SIZE + 2)
+
+    async def test_closing_a_group_keeps_its_heading_up(self, state, reader) -> None:
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+
+        MailSearchState.toggle_group.fn(state, "c1")
+
+        assert [one.key for one in state.lines] == ["c:c1"]
+
+    async def test_a_closed_group_opens_again(self, state, reader) -> None:
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+        MailSearchState.toggle_group.fn(state, "c1")
+
+        MailSearchState.toggle_group.fn(state, "c1")
+
+        assert state._collapsed == set()
+        assert len(state.lines) == len(reader.summaries)
+
+    async def test_a_section_closes_and_opens_like_a_heading(self, state) -> None:
+        await _load(state)
+        await _switch(state, Grouping.SENDER)
+
+        MailSearchState.toggle_group.fn(state, "anna@example.com")
+
+        assert [one.key for one in state.lines] == ["g:anna@example.com"]
+
+    async def test_the_bucket_nobody_read_can_be_closed(self, state) -> None:
+        """It has a section and no membership, so the guard is the lines."""
+        await _load(state)
+        await _switch(state, Grouping.TOPIC)
+
+        MailSearchState.toggle_group.fn(state, NO_GROUP)
+
+        assert [one.key for one in state.lines] == [f"g:{NO_GROUP}"]
+
+    async def test_a_group_nobody_drew_is_ignored(self, state, reader) -> None:
+        """The value arrives over the socket, so it is checked, not trusted."""
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+
+        MailSearchState.toggle_group.fn(state, "made-up")
+
+        assert next(one.key for one in state.lines) == "c:c1"
+
+    async def test_a_whole_conversation_is_only_fetched_under_conversations(
+        self, state, reader
+    ) -> None:
+        reader.threads = {"m1@example.com": group("c1", 9)}
+        reader.members = {"c1": reader.summaries}
+        await _load(state)
+        await _switch(state, Grouping.SENDER)
+
+        await _expand(state, "c1")
+
+        assert reader.expanded == []
+
+
+class TestPagingAGroupedList:
+    async def test_a_second_page_joins_the_group_its_heading_already_made(
+        self, state, reader
+    ) -> None:
+        reader.summaries = [summary(one) for one in range(1, PAGE_SIZE + 3)]
+        reader.threads = {
+            f"m{one}@example.com": group("c1", 60) for one in (1, PAGE_SIZE + 1)
+        }
+        await _load(state)
+
+        await _load_more(state)
+
+        keys = [one.key for one in state.lines]
+        assert keys[0] == "c:c1"
+        assert f"m:m{PAGE_SIZE + 1}@example.com" in keys
+
+    async def test_the_offset_still_counts_messages_and_not_lines(
+        self, state, reader
+    ) -> None:
+        reader.summaries = [summary(one) for one in range(1, PAGE_SIZE + 3)]
+        reader.threads = {f"m{one}@example.com": group("c1", 60) for one in (1, 2, 3)}
+
+        await _load(state)
+
+        assert state.offset == PAGE_SIZE
+
+    async def test_a_new_search_forgets_every_group(self, state, reader) -> None:
+        reader.threads = {one.id: group("c1", 4) for one in reader.summaries}
+        await _load(state)
+        MailSearchState.toggle_group.fn(state, "c1")
+        reader.members = {"c1": reader.summaries}
+        await _expand(state, "c1")
+        state.query = "rechnung"
+
+        await _submit(state)
+
+        assert state._collapsed == set()
+        assert state._whole == {}
+        assert state._expanding == ""
+
+
+class TestShowingTheWholeConversation:
+    async def test_the_missing_members_are_fetched_and_drawn(
+        self, state, reader
+    ) -> None:
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 3)}
+        reader.members = {"c1": [summary(one) for one in (1, 2, 3)]}
+        await _load(state)
+        assert state.lines[0].can_expand is True
+
+        await _expand(state, "c1")
+
+        assert reader.expanded == ["c1"]
+        assert [one.key for one in state.lines] == [
+            "c:c1",
+            "m:m2@example.com",
+            "m:m3@example.com",
+        ]
+        assert state.lines[0].can_expand is False
+
+    async def test_the_fetch_is_not_a_search(self, state, reader) -> None:
+        """``searching`` puts the list-wide spinner up and takes Search away."""
+        reader.threads = {"m1@example.com": group("c1", 9)}
+        reader.members = {"c1": reader.summaries}
+        await _load(state)
+
+        await _expand(state, "c1")
+
+        assert state.searching is False
+
+    async def test_a_failed_fetch_leaves_the_group_as_it_was(
+        self, state, reader
+    ) -> None:
+        reader.threads = {"m1@example.com": group("c1", 9)}
+        await _load(state)
+        before = [one.key for one in state.lines]
+        reader.thread_error = RuntimeError("graph gone")
+
+        await _expand(state, "c1")
+
+        assert state.error == SEARCH_FAILED
+        assert [one.key for one in state.lines] == before
+        assert state._expanding == ""
+
+    async def test_a_conversation_nobody_offered_is_never_fetched(
+        self, state, reader
+    ) -> None:
+        await _load(state)
+
+        await _expand(state, "made-up")
+
+        assert reader.expanded == []
+
+    async def test_a_fetched_member_can_be_opened(self, state, reader) -> None:
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 2)}
+        reader.members = {"c1": [summary(1), summary(2)]}
+        reader.raw = {DIGEST: RAW}
+        await _load(state)
+        await _expand(state, "c1")
+
+        await MailSearchState.select.fn(state, "m2@example.com")
+
+        assert state.selected_id == "m2@example.com"
+
+    async def test_a_fetched_member_survives_the_next_page(self, state, reader) -> None:
+        """``_apply`` checks the selection against both halves, or it closes it."""
+        reader.summaries = [summary(one) for one in range(1, PAGE_SIZE + 3)]
+        reader.threads = {"m1@example.com": group("c1", 60)}
+        reader.members = {"c1": [summary(1), summary(500)]}
+        reader.raw = {DIGEST: RAW}
+        await _load(state)
+        await _expand(state, "c1")
+        await MailSearchState.select.fn(state, "m500@example.com")
+
+        await _load_more(state)
+
+        assert state.selected_id == "m500@example.com"
+
+
+class TestGroupingASemanticAnswer:
+    async def test_the_ranking_is_grouped_without_being_reordered(
+        self, state, reader, search
+    ) -> None:
+        search.hits = tuple(
+            SearchHit(message_id=f"m{one}@example.com", score=1.0 - one / 10)
+            for one in (2, 1, 3)
+        )
+        reader.threads = {
+            "m1@example.com": group("c1", 5),
+            "m3@example.com": group("c1", 5),
+        }
+        await _load(state)
+        state.mode = MODE_SEMANTIC
+        state.query = "rechnung"
+
+        await _submit(state)
+
+        assert reader.hydrated[-1] == [
+            "m2@example.com",
+            "m1@example.com",
+            "m3@example.com",
+        ]
+        assert [one.key for one in state.lines] == [
+            "m:m2@example.com",
+            "c:c1",
+            "m:m3@example.com",
+        ]
+        assert state.lines[1].subject == "Rechnung 1"

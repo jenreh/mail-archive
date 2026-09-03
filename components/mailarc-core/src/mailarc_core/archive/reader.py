@@ -29,12 +29,18 @@ from mailarc_core.archive.blobs import BlobStore
 from mailarc_core.archive.model import (
     Address,
     BlobKind,
+    Conversation,
     Label,
     Message,
     MessageLabel,
     MessageSummary,
+    Recipient,
 )
-from mailarc_core.archive.repository import AddressRepository, MessageRepository
+from mailarc_core.archive.repository import (
+    AddressRepository,
+    MessageRepository,
+    ThreadRepository,
+)
 from mailarc_core.archive.search import (
     MessageHit,
     ScoredId,
@@ -50,6 +56,16 @@ type GraphSessionFactory = Callable[[], AbstractContextManager[Session]]
 
 PREVIEW_LENGTH = 160
 """How much body a summary carries — two lines of a list row, not a page."""
+
+CONVERSATION_LIMIT = 200
+"""How much of one conversation :meth:`ArchiveReader.conversation_messages`
+brings back.
+
+A ``References`` root on a mailing list can name thousands of messages, and a
+button that quietly loads all of them into a list column is a hang. The header
+still states the conversation's true size, so a cut is visible rather than
+silent.
+"""
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -146,6 +162,79 @@ class ArchiveReader:
             repository = MessageRepository(graph)
             return self._summaries(repository, repository.find_by_ids(ids))
 
+    def conversations_of(self, ids: list[str]) -> dict[str, Conversation]:
+        """Which conversation each of these messages sits in, and how big it is.
+
+        The read a grouped listing makes *beside* :meth:`search_messages`
+        rather than inside it, and the separation is deliberate three times
+        over. It is not made at all while grouping is switched off, so the flat
+        list costs exactly what it costs today. It serves the semantic path,
+        which hydrates through :meth:`messages_by_ids` and never sees a
+        :class:`~mailarc_core.archive.search.SearchPage`. And it leaves
+        :meth:`search_messages` — whose clause order is load-bearing and pinned
+        by its own tests — untouched.
+
+        Keyed by message id, so a caller groups by looking each row up. A
+        message in no thread is absent, the way
+        :meth:`~mailarc_core.archive.repository.MessageRepository.find_labels`
+        leaves out a message without labels; an empty ask never opens a
+        session.
+        """
+        if not ids:
+            return {}
+        with self._graph_session() as graph:
+            repository = ThreadRepository(graph)
+            threads = repository.find_for_messages(ids)
+            totals = repository.count_members(sorted(set(threads.values())))
+            return {
+                message_id: Conversation(id=thread, total=totals.get(thread, 0))
+                for message_id, thread in threads.items()
+            }
+
+    def recipients_of(self, ids: list[str]) -> dict[str, Recipient]:
+        """Whom each of these messages was sent to, one address per message.
+
+        The read a listing grouped by receiver makes beside
+        :meth:`search_messages`, the way :meth:`conversations_of` is made
+        beside it and for the same three reasons: it is not made at all
+        while the list is grouped some other way, it serves the semantic path
+        too, and it leaves the search statement's clause order alone.
+
+        One address, and which one is :class:`~mailarc_core.archive.model.Recipient`'s
+        contract: the smallest normalised id among the ``To`` addresses. A
+        message sent to nobody is absent; an empty ask never opens a session.
+        """
+        if not ids:
+            return {}
+        with self._graph_session() as graph:
+            found = MessageRepository(graph).find_recipients(ids)
+            return {
+                message_id: _first_recipient(addresses)
+                for message_id, addresses in found.items()
+                if addresses
+            }
+
+    def conversation_messages(
+        self, conversation_id: str, *, limit: int = CONVERSATION_LIMIT
+    ) -> list[MessageSummary]:
+        """One whole conversation, newest first — what "show the rest" asks for.
+
+        Two statements and not one, for the reason
+        :meth:`~mailarc_core.archive.repository.ThreadRepository.find_members`
+        gives: it names the ids, and
+        :meth:`~mailarc_core.archive.repository.MessageRepository.find_by_ids`
+        — already proven, already order-preserving — attaches the senders.
+        """
+        if not conversation_id:
+            return []
+        with self._graph_session() as graph:
+            threads = ThreadRepository(graph)
+            ids = threads.find_members(conversation_id, limit=limit)
+            if not ids:
+                return []
+            repository = MessageRepository(graph)
+            return self._summaries(repository, repository.find_by_ids(ids))
+
     def remote_content_trusted(self, address: str) -> bool:
         """Whether this sender's remote content may load without asking."""
         if not address:
@@ -204,6 +293,7 @@ class ArchiveReader:
             has_attachments=message.has_attachments,
             eml_sha256=message.eml_sha256,
             labels=labels_of(labels),
+            subject_norm=message.subject_norm or "",
         )
 
 
@@ -263,3 +353,14 @@ def preview_of(body: str | None, length: int = PREVIEW_LENGTH) -> str:
 
 def _first(values: list[str]) -> str:
     return values[0] if values else ""
+
+
+def _first_recipient(addresses: list[Address]) -> Recipient:
+    """The address a message is filed under — the smallest id, every time.
+
+    Inside the session on purpose, like :meth:`ArchiveReader._summarise`: the
+    node's fields are read here, once, and nothing above the reader holds an
+    ``Address``.
+    """
+    chosen = min(addresses, key=lambda one: one.id)
+    return Recipient(address=chosen.id, name=_first(chosen.display_names))

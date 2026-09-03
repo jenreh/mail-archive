@@ -286,12 +286,22 @@ class EmbedderSettingsState(FieldErrors, rx.State):
 
     @rx.var
     def key_matters(self) -> bool:
-        """Whether the chosen provider uses a key at all. Ollama ignores one."""
-        return self.provider == SemanticProvider.OPENAI.value
+        """Whether the chosen provider uses a key at all. Ollama ignores one.
+
+        Both paid providers do — OpenAI and Azure OpenAI attach the same
+        secret under different header names, and a form that asked "is this
+        openai" would leave Azure OpenAI silently unwarned about the
+        identical 401.
+        """
+        return self.provider in (
+            SemanticProvider.OPENAI.value,
+            SemanticProvider.AZURE_OPENAI.value,
+        )
 
     @rx.var
     def key_missing(self) -> bool:
-        """OpenAI is chosen and no key reaches it — a 401 waiting to happen.
+        """A keyed provider is chosen and no key reaches it — a 401 waiting to
+        happen.
 
         Over :attr:`api_key_in_force`: an archive keyed from ``config.yaml``
         has no stored row and no 401 either.

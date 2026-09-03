@@ -955,3 +955,37 @@ class TestTheCanvasIsPaintedForBothSchemes:
 
         assert Palette.LIGHT[NodeKind.MESSAGE.value] in drawn
         assert Palette.DARK[NodeKind.MESSAGE.value] in drawn
+
+
+class TestTheViewDecidesHowItIsFirstDrawn:
+    """Reported from a real archive: the map opened as seventy-five identical
+    dots in a lattice. Both halves of that were defaults, not data.
+    """
+
+    async def test_the_map_opens_sized_by_count_and_ranked_in_rings(
+        self, state: GraphExplorerState
+    ) -> None:
+        await state.choose_view(GraphView.OVERVIEW.value)
+
+        assert state.size_by == SizeBy.COUNT.value
+        assert state.layout_name == LayoutName.CONCENTRIC.value
+
+    async def test_a_rooted_view_opens_making_no_claim_about_size(
+        self, state: GraphExplorerState
+    ) -> None:
+        await state.choose_view(GraphView.OVERVIEW.value)
+        await state.choose_view(GraphView.TOPIC.value)
+
+        assert state.size_by == SizeBy.UNIFORM.value
+        assert state.layout_name == LayoutName.COSE.value
+
+    async def test_a_chosen_size_survives_picking_a_root(
+        self, state: GraphExplorerState
+    ) -> None:
+        """Once somebody has touched a control the picture is theirs. Rooting
+        the same view somewhere else must not silently re-decide it."""
+        await state.choose_view(GraphView.TOPIC.value)
+        state.set_size_by(SizeBy.IMPORTANCE.value)
+        await state.pick("topic:abc")
+
+        assert state.size_by == SizeBy.IMPORTANCE.value

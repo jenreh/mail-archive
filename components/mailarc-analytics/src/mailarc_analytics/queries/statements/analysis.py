@@ -447,6 +447,49 @@ Unlimited and ordered by id: the population is the tags a human made, which is
 a list somebody is already looking at.
 """
 
+TOPICS_OF_MESSAGES = (
+    select(_message)
+    .where(_message.id.in_(param("ids")))
+    .traverse(Topic.messages, from_=_topic, to=_message)
+    .project(
+        _message.id.as_("message_id"),
+        _topic.id.as_("topic_id"),
+        _topic.label,
+        _topic.keywords,
+    )
+)
+"""Which topic each of a page's messages sits in — the read a listing grouped
+by topic makes beside its page.
+
+Rooted at the message and filtered on the root, so ``m.id IN $ids`` lands in
+the root ``WHERE`` and the store seeks the page's nodes rather than every
+topic; the traversal is spelled ``from_`` the topic because ``ABOUT`` is
+declared on :class:`~mailarc_analytics.derived.model.Topic` alone — the same
+shape :data:`~mailarc_analytics.queries.statements.graph.MESSAGE_TOPICS` uses
+for one message. Not optional: a message in no topic is absent, the way
+:meth:`~mailarc_core.archive.reader.ArchiveReader.conversations_of` leaves out
+a message in no thread. Unpaged, because the page is the ``$ids``.
+"""
+
+GROUPS_OF_MESSAGES = (
+    select(_message)
+    .where(_message.id.in_(param("ids")))
+    .traverse(Group.messages, from_=_group, to=_message)
+    .project(
+        _message.id.as_("message_id"),
+        _group.id.as_("group_id"),
+        _group.size,
+        _group.message_count,
+    )
+)
+"""Which recurring group each of a page's messages was addressed to.
+
+:data:`TOPICS_OF_MESSAGES` over ``ADDRESSED_GROUP``. A message has at most one
+group — the node is keyed by the message's own ``participant_key`` — and a
+message whose set of people never recurred has none, which is what an absent
+row means here.
+"""
+
 _suggestion_score = _suggested.score.as_("score")
 """``r.score AS score`` — the edge's own number, named for the ``ORDER BY``."""
 

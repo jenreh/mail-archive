@@ -44,6 +44,7 @@ from mailarc_ui.graph.model import (
     NodeCard,
     SizeBy,
     card_of,
+    defaults_for,
     elements_of,
     layout_of,
     stylesheet_of,
@@ -238,6 +239,7 @@ class GraphExplorerState(TagActionsState, MessageDetailState, rx.State):
         """
         async with self:
             self.view_name, self.picked_id = self._asked_for()
+            self._adopt_defaults(self.view_name)
             self.loading = True
             self.error = ""
             wanted, root, depth = self.view_name, self.picked_id, self.depth
@@ -262,6 +264,7 @@ class GraphExplorerState(TagActionsState, MessageDetailState, rx.State):
         kind = view_of(value)
         self.view_name = kind.value
         self.picked_id = ""
+        self._adopt_defaults(kind)
         self.options, _ = await answered(
             lambda: picker_options(kind), "list what a view roots at", []
         )
@@ -487,6 +490,21 @@ class GraphExplorerState(TagActionsState, MessageDetailState, rx.State):
         if kind is GraphView.COMMUNITY:
             return RECOMPUTED_CIRCLE
         return NOTHING_HERE
+
+    def _adopt_defaults(self, view: GraphView | str) -> None:
+        """Draw *view* the way that view wants to be drawn.
+
+        Called where the root is already being reset — a page load and a change
+        of view — because these two controls answer to the same thing the root
+        does: what is on the canvas. A map wants its collections sized by how
+        much they hold and ranked in rings; a rooted view wants neither.
+
+        Not called from :meth:`pick`, :meth:`set_size_by` or
+        :meth:`set_layout`: once somebody has touched a control, the picture is
+        theirs and re-deciding it under them is the bug this replaces.
+        """
+        size_by, layout = defaults_for(view)
+        self.size_by, self.layout_name = size_by.value, layout.value
 
     def _asked_for(self) -> tuple[str, str]:
         """The view and root the address bar names, or the ones already held.

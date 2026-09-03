@@ -83,8 +83,11 @@ def config(tmp_path_factory) -> GraphConfig:
 @pytest.fixture(scope="session")
 def server(config: GraphConfig) -> Iterator[FalkorDBServer]:
     instance = FalkorDBServer(config)
-    instance.start()
     try:
+        # `start` inside the try: it spawns the process and only then waits for
+        # it to answer, so a failure in that wait used to leave a redis-server
+        # holding the port with this `finally` never reached.
+        instance.start()
         yield instance
     finally:
         # Explicit, deterministic shutdown — never left to interpreter exit.
@@ -244,13 +247,18 @@ def test_stop_is_idempotent_and_leaves_nothing_running(config, tmp_path) -> None
         startup_timeout=30.0,
     )
     instance = FalkorDBServer(disposable)
-    instance.start()
-    assert read_status(disposable).reachable is True
+    try:
+        instance.start()
+        assert read_status(disposable).reachable is True
 
-    instance.stop()
-    instance.stop()
+        instance.stop()
+        instance.stop()
 
-    assert read_status(disposable).reachable is False
+        assert read_status(disposable).reachable is False
+    finally:
+        # A failed assertion between the start and the stops would otherwise
+        # leave this server running for the rest of the session.
+        instance.stop()
 
 
 def test_a_server_that_dies_at_startup_reports_its_output(tmp_path) -> None:
@@ -280,6 +288,51 @@ def test_a_server_that_dies_at_startup_reports_its_output(tmp_path) -> None:
         assert instance.startup_error is not None
     finally:
         instance.stop()
+
+
+def test_a_start_that_fails_after_the_spawn_leaves_nothing_running(
+    tmp_path, monkeypatch
+) -> None:
+    """The leak this pins is the one nothing else could see.
+
+    ``_start_local`` ``Popen``s the server and only *then* waits for it to
+    answer, so every failure after that line — a readiness timeout, a
+    ``KeyboardInterrupt``, pytest-timeout landing inside a fixture's setup —
+    left a redis-server holding the port with no handle anywhere admitting to
+    own it. Measured before the fix: an exception raised during ``start``
+    left a vendored server alive after the process that spawned it exited,
+    and because ``_free_port`` skips a port something is listening on, every
+    later run simply picked the next one and the orphans accumulated.
+
+    A ``KeyboardInterrupt`` rather than a plain exception on purpose: it is
+    not an ``Exception``, so it is what proves the handler is broad enough.
+    """
+    stranded = GraphConfig(
+        mode=GraphServerMode.LOCAL,
+        host="127.0.0.1",
+        port=_free_port(),
+        graph_name="stranded",
+        data_dir=tmp_path / "data",
+        runtime_dir=RUNTIME_DIR,
+        startup_timeout=30.0,
+    )
+    ready = FalkorDBServer._await_ready
+
+    def come_up_then_be_interrupted(self: FalkorDBServer) -> None:
+        ready(self)  # let it really bind the port first
+        raise KeyboardInterrupt("interrupted while starting")
+
+    monkeypatch.setattr(FalkorDBServer, "_await_ready", come_up_then_be_interrupted)
+    instance = FalkorDBServer(stranded)
+
+    with pytest.raises(KeyboardInterrupt):
+        instance.start()
+
+    monkeypatch.undo()
+    assert read_status(stranded).reachable is False, (
+        "start() left a server running after failing — it must stop whatever "
+        "it spawned before the failure propagates"
+    )
 
 
 def test_a_missing_runtime_fails_with_an_actionable_message(

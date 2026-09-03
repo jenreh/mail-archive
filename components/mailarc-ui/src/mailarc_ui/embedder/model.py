@@ -365,12 +365,13 @@ def host_advice(
     unchanged. Only the person typing knows, so this says so rather than
     deciding for them.
 
-    The second is the credential. ``OpenAIEmbedder._headers`` attaches the
-    stored bearer token to every call at whatever URL is configured, and the
-    key does not have to be re-typed for the host to change — so nothing else
-    on the page signals that the secret now travels somewhere else. Cleartext
-    to anything but this machine gets the loudest colour on the page, because
-    that is a token on a wire.
+    The second is the credential. ``OpenAIEmbedder._headers`` and
+    ``AzureOpenAIEmbedder._headers`` both attach the stored key to every call
+    at whatever URL is configured — one as a bearer token, the other as
+    Azure's own ``api-key`` header, and neither has to be re-typed for the
+    host to change — so nothing else on the page signals that the secret now
+    travels somewhere else. Cleartext to anything but this machine gets the
+    loudest colour on the page, because that is a token on a wire.
 
     Empty is not a host: ``SemanticConfig`` reads ``""`` as the provider's own
     endpoint, which is where an unconfigured archive already sends it.
@@ -387,7 +388,7 @@ def host_advice(
         f"moved, there is nothing to do; if it is a different one, rebuild the "
         f"vectors afterwards."
     )
-    if not (keyed and provider == "openai" and now):
+    if not (keyed and provider in _KEYED_PROVIDERS and now):
         return Advice(text=space, color="blue")
     if _is_cleartext_to_elsewhere(now):
         return Advice(
@@ -407,6 +408,14 @@ def host_advice(
         )
     )
 
+
+_KEYED_PROVIDERS = (SemanticProvider.OPENAI.value, SemanticProvider.AZURE_OPENAI.value)
+"""The providers whose adapter attaches the stored key to every call.
+
+Ollama ignores the key entirely, so moving its host never sends a credential
+anywhere — the only two that do are the two paid ones, whichever header each
+puts it under.
+"""
 
 _LOOPBACK = ("localhost", "127.0.0.1", "::1", "[::1]")
 """Hosts that never put a packet on a network, so cleartext to them is not a leak."""
@@ -552,13 +561,27 @@ PROVIDER_OPTIONS = [
         "value": SemanticProvider.OPENAI.value,
         "label": "OpenAI — uploads message text to a third party",
     },
+    {
+        "value": SemanticProvider.AZURE_OPENAI.value,
+        "label": "Azure OpenAI — uploads message text to your Azure resource",
+    },
 ]
-"""The three providers, labelled by what choosing one means rather than by name.
+"""The four providers, labelled by what choosing one means rather than by name.
 
-``openai`` is the one where the label has to carry a consequence: every message
-body embedded that way is sent, once, to somebody else's service. A user
-picking from a list of three words has no way to know that, and a mail archive
-is the last place to leave it implicit.
+``openai`` and ``azure_openai`` are the two where the label has to carry a
+consequence: every message body embedded either way is sent, once, off this
+machine. A user picking from a list of words has no way to know that, and a
+mail archive is the last place to leave it implicit. The two labels are not the
+same sentence on purpose — Azure's destination is the reader's own resource,
+not "somebody else's service", which is usually the whole reason it was chosen
+over the other one; :func:`host_advice` is what still warns when a *stored key*
+starts travelling somewhere neither label promised.
+
+Checked against ``SemanticProvider`` by
+``test_ui_embedder_state.py::TestWhatTheFormOffers``: an enum member with no
+entry here is one nobody chosen from the dropdown can select — see
+:meth:`~mailarc_ui.embedder.state.EmbedderSettingsState.set_provider`, which
+refuses any value that is not literally one of these.
 """
 
 NO_CONTROL = (

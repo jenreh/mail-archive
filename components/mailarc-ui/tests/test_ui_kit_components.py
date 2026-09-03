@@ -25,6 +25,8 @@ from mailarc_ui.kit import (
     field_label,
     field_note,
     graph_canvas,
+    group_chevron,
+    group_header,
     input_field,
     job_progress,
     label_chip,
@@ -34,9 +36,11 @@ from mailarc_ui.kit import (
     number_field,
     password_field,
     pill_action,
+    pill_icon_action,
     placeholder_block,
     primary_button,
     quiet_button,
+    range_select,
     range_switch,
     relevance_chip,
     score_bar,
@@ -239,6 +243,23 @@ class TestButtons:
         assert "leftSection" in drawn
         assert "LucideDownload" in drawn
 
+    def test_the_icon_pill_wears_the_pill_and_drops_the_words(self) -> None:
+        """Same chrome, glyph alone — the label is not drawn as button text."""
+        drawn = _rendered(pill_icon_action(icon="download", label="Download"))
+
+        assert "ma-pill-action" in drawn
+        assert "LucideDownload" in drawn
+        assert "leftSection" not in drawn
+
+    def test_the_icon_pill_keeps_its_label_where_it_can_be_read(self) -> None:
+        """A glyph nobody can name is not a button: the words become the
+        tooltip and the accessible name."""
+        drawn = _rendered(pill_icon_action(icon="download", label="Download"))
+
+        assert "Tooltip" in drawn
+        assert "aria-label" in drawn
+        assert drawn.count("Download") >= 2
+
 
 class TestChips:
     def test_count_chip_is_a_pill_with_tabular_digits(self) -> None:
@@ -277,6 +298,39 @@ class TestListRow:
         assert '(false ? \\"true\\" : \\"false\\")' in _rendered(
             list_row(selected=False)
         )
+
+
+class TestTheGroupChevron:
+    def test_it_wears_its_class_and_its_open_attribute(self) -> None:
+        drawn = _rendered(group_chevron(expanded=True))
+
+        assert "ma-group-chevron" in drawn
+        assert "data-expanded" in drawn
+
+    def test_being_open_drives_the_attributes_value(self) -> None:
+        """The stylesheet turns it on ``[data-expanded="false"]``, so the value
+        must be a conditional over exactly those two spellings — the same
+        contract ``list_row`` keeps for selection."""
+        assert '(true ? \\"true\\" : \\"false\\")' in _rendered(
+            group_chevron(expanded=True)
+        )
+        assert '(false ? \\"true\\" : \\"false\\")' in _rendered(
+            group_chevron(expanded=False)
+        )
+
+
+class TestTheGroupHeader:
+    def test_it_wears_its_class_and_its_open_attribute(self) -> None:
+        drawn = _rendered(group_header("Anna Bauer", 4, expanded=True))
+
+        assert "ma-group-header" in drawn
+        assert "ma-group-chevron" in drawn
+        assert "Anna Bauer" in drawn
+        assert '(true ? \\"true\\" : \\"false\\")' in drawn
+
+    def test_it_is_not_a_list_row(self) -> None:
+        """Nothing opens behind it, so it must not look like something does."""
+        assert "ma-list-row" not in _rendered(group_header("Anna", 1))
 
 
 class TestAttachmentCard:
@@ -468,6 +522,21 @@ class TestTheRangeSwitch:
 
         assert "ma-field-label" not in drawn
         assert "error" not in drawn
+
+
+class TestTheRangeSelect:
+    """The switch with more than three positions — chrome, in the kit."""
+
+    def test_it_wears_its_own_recipe_and_not_the_field_one(self) -> None:
+        drawn = _rendered(range_select(data=["a", "b"]))
+
+        assert "ma-range-select" in drawn
+        assert "ma-field" not in drawn
+        assert "ma-field-label" not in drawn
+
+    def test_it_always_holds_a_value(self) -> None:
+        """A list has to be grouped some way, and "None" is one of the ways."""
+        assert "allowDeselect:false" in _rendered(range_select(data=["a", "b"]))
 
 
 class TestWhileAReadIsOut:

@@ -5,12 +5,24 @@ say so — that refusal is what keeps :mod:`~mailarc_core.graph.client` honest
 about being backend-independent.
 """
 
+import contextlib
+import socket
+import threading
 from typing import Any, Never
 
 import pytest
 from runic.ogm import FalkorDBDriver, GraphDriver
 
 from mailarc_core.graph import admin
+
+_PROBE_PATIENCE_SECONDS = 15
+"""How long a probe of a silent host may take before the test calls it hung.
+
+Generous against ``admin._PING_TIMEOUT_SECONDS`` of one, because the number
+being pinned is "bounded at all" and not "bounded at one second" — a CI box
+under load must not turn a fixed bug red. The failure it catches is unbounded,
+so any finite ceiling separates the two.
+"""
 
 
 class FakeGraph:
@@ -166,3 +178,59 @@ class TestIsServing:
         monkeypatch.setattr(admin, "FalkorDB", Mute)
 
         assert admin.is_serving("127.0.0.1", 6379) is False
+
+    def test_a_host_that_accepts_and_then_says_nothing_still_answers(self) -> None:
+        """The one case every other test here fakes, against a real socket.
+
+        The three above monkeypatch ``FalkorDB``, so they assert what this
+        module does with an exception rather than whether one ever arrives —
+        and the answer was that it did not. A host that completes the TCP
+        handshake and then sends nothing (a VPN, a corporate firewall, a
+        draining load balancer, a wedged server) left the PING blocked
+        forever, because only ``socket_connect_timeout`` was set and it does
+        not bound a read.
+
+        That is not a slow probe, it is one that never returns, and
+        ``FalkorDBServer._await_ready`` checks its ``startup_timeout``
+        *between* probes — so the desktop application hung at startup with
+        nothing in the log. Observed on a network that accepts connections to
+        unrouted addresses, which is what made
+        ``test_server_local.py::test_a_server_that_dies_at_startup_reports_its_output``
+        hang rather than fail.
+
+        Run on a thread with a join, so a regression is a red test rather than
+        a suite that stops here.
+        """
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        accepted: list[socket.socket] = []
+
+        def accept_and_ignore() -> None:
+            with contextlib.suppress(OSError):
+                connection, _ = listener.accept()
+                accepted.append(connection)
+
+        door = threading.Thread(target=accept_and_ignore, daemon=True)
+        door.start()
+
+        answer: list[bool] = []
+        probe = threading.Thread(
+            target=lambda: answer.append(
+                admin.is_serving("127.0.0.1", listener.getsockname()[1])
+            ),
+            daemon=True,
+        )
+        probe.start()
+        probe.join(timeout=_PROBE_PATIENCE_SECONDS)
+
+        try:
+            assert not probe.is_alive(), (
+                "is_serving never returned against a host that accepts and "
+                "stays silent — it needs a read timeout, not only a connect one"
+            )
+            assert answer == [False]
+        finally:
+            for connection in accepted:
+                connection.close()
+            listener.close()

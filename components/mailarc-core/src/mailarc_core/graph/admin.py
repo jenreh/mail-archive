@@ -22,6 +22,21 @@ from mailarc_core.graph.model import ServerMetrics
 logger = logging.getLogger(__name__)
 
 _PING_TIMEOUT_SECONDS = 1
+"""Bounds both halves of the probe below — reaching the host, and hearing back.
+
+Both, because they fail differently and only one of them is the obvious one. A
+connect timeout covers an address nothing answers at; a **read** timeout covers
+an address something answers at and then says nothing, which is what a VPN, a
+corporate firewall, a draining load balancer and a wedged server all look like
+from here. Without the second, :func:`is_serving` blocks forever on exactly
+those, and it is called from
+:meth:`~mailarc_core.graph.server.FalkorDBServer._await_ready`, whose
+``startup_timeout`` is checked *between* probes — so one probe that never
+returns is a desktop application that never finishes starting and never says
+why. Measured on a network that accepts connections to unrouted addresses:
+without a read timeout the PING below hung indefinitely; with one it fails in
+1.01s.
+"""
 
 #: FalkorDB reports its module version as major*10000 + minor*100 + patch.
 _VERSION_MAJOR_SCALE = 10_000
@@ -34,10 +49,17 @@ def is_serving(host: str, port: int) -> bool:
     A liveness probe for :mod:`~mailarc_core.graph.server`, not a query: it
     has to answer before there is a graph worth opening a driver on, so it
     never goes through runic.
+
+    **Always returns**, which is the whole contract and the reason both
+    timeouts are set — see :data:`_PING_TIMEOUT_SECONDS`. A probe that can
+    block has no answer for its caller's deadline.
     """
     try:
         db = FalkorDB(
-            host=host, port=port, socket_connect_timeout=_PING_TIMEOUT_SECONDS
+            host=host,
+            port=port,
+            socket_connect_timeout=_PING_TIMEOUT_SECONDS,
+            socket_timeout=_PING_TIMEOUT_SECONDS,
         )
         try:
             return bool(db.connection.ping())

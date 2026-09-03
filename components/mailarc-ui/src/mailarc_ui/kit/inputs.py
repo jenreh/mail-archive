@@ -210,3 +210,24 @@ def range_switch(**props: Any) -> rx.Component:
         class_name=f"ma-range {extra}".strip(),
         **props,
     )
+
+
+def range_select(**props: Any) -> rx.Component:
+    """The dropdown over a list — :func:`range_switch` with more than three
+    positions.
+
+    Chrome, not a field, for the same reason: it changes what a panel is
+    showing and saves nothing, so it has no label, no error state and a recipe
+    of its own (``.ma-range-select``), the same light pill the switch wears.
+    It always holds a value — ``allow_deselect`` is off, because a list has to
+    be grouped some way, and "None" is one of the ways.
+    """
+    props.setdefault("size", "xs")
+    props.setdefault("radius", "md")
+    props.setdefault("allow_deselect", False)
+    props.setdefault("check_icon_position", "right")
+    extra = str(props.pop("class_name", "") or "")
+    return mn.select(
+        class_name=f"ma-range-select {extra}".strip(),
+        **props,
+    )

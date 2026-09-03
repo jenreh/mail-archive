@@ -14,13 +14,16 @@ The second is that the entries name themselves. The rail is 76px wide and
 shows no text, so an item's ``label`` reaches a person only through the
 tooltip beside it — a missing one is an icon nobody can identify.
 
-The third is the administration. Four maintenance pages sit behind one icon in
-an ``mn.menu``, and their entries navigate with ``rx.redirect`` rather than
-with a link, because a link inside a menu item is an anchor inside a button.
-That is the same class of bug the previous sidebar hit with ``mn.nav_link``
-("<a> cannot contain a nested <a>. This will cause a hydration error"), so the
-guard against it is replaced here rather than dropped: **no rail entry may
-render a second anchor**.
+The third is that the administration is a second run of icons rather than a
+popover, and that the two sections are therefore indistinguishable to a
+renderer: every entry of both is a router link with a tooltip. The popover it
+replaced is worth naming because its absence is what these tests now pin — one
+``mn.menu`` behind a settings icon, whose rows navigated with ``rx.redirect``
+because a link inside a menu item is an anchor inside a button. That is the
+same class of bug the previous sidebar hit with ``mn.nav_link`` ("<a> cannot
+contain a nested <a>. This will cause a hydration error"), so the guard against
+it is kept whatever the rail is made of: **no rail entry may render a second
+anchor**.
 
 The fourth is that a page carries no authentication check. It is one handler
 in a list, it has no visual trace, and putting it back would lock the whole
@@ -179,7 +182,7 @@ def test_every_menu_entry_renders_a_router_target(
     """The rail's square carries no href of its own — it is an `mn.box`. The
     `rx.link` around it is what makes it navigate, and this is the only place
     that shows."""
-    assert _link_targets(rendered_rail) == {item.href for item in MENU.items}
+    assert _link_targets(rendered_rail) == {item.href for item in _nav_items()}
 
 
 def test_every_menu_entry_names_itself_in_a_tooltip(
@@ -198,105 +201,7 @@ def test_every_menu_entry_names_itself_in_a_tooltip(
         if isinstance(prop, str) and prop.startswith('label:"')
     }
 
-    assert {item.label for item in MENU.items} <= labelled
-
-
-def _menu_rows(node: Any) -> dict[str, str]:
-    """Every administration row the render offers: its label, and where it goes.
-
-    The label is a *child* of the rendered ``Menu.Item`` and the destination is
-    inside its ``onClick`` — two different places, which is why a row can lose
-    one and keep the other without looking any different.
-    """
-    rows: dict[str, str] = {}
-    for item in _named(node, "Menu.Item"):
-        label = next(
-            (
-                str(child["contents"]).strip('"')
-                for child in item.get("children", [])
-                if isinstance(child, dict) and "contents" in child
-            ),
-            "",
-        )
-        opens = next(
-            (
-                match.group(1)
-                for prop in item.get("props", [])
-                if isinstance(prop, str) and (match := REDIRECT_PATH.search(prop))
-            ),
-            "",
-        )
-        rows[label] = opens
-    return rows
-
-
-def test_the_administration_menu_offers_every_admin_page(
-    rendered_rail: dict[str, Any],
-) -> None:
-    """One icon, three labelled rows behind it, each redirecting to its page.
-
-    Both halves matter and they fail differently: a missing row is a page that
-    can only be reached by typing its path, and a row whose `on_click` was
-    dropped is a row that looks right and does nothing.
-    """
-    assert _menu_rows(rendered_rail) == {
-        item.label: item.href for item in ADMINISTRATION.items
-    }
-
-
-def test_the_administration_trigger_lights_up_on_every_page_it_holds(
-    rendered_rail: dict[str, Any],
-) -> None:
-    """The trigger is not a link, so nothing else would ever show it as active.
-
-    The condition is an explicit OR over the three routes rather than a prefix
-    test on the path, which is what this reads: each of the three has to appear
-    in the same ``data-active`` expression.
-    """
-    active = [
-        prop
-        for prop in _props(rendered_rail)
-        if prop.startswith('"data-active"') and routes.ACCOUNTS in prop
-    ]
-
-    assert active, "no rail item is keyed on the administration's routes"
-    for item in ADMINISTRATION.items:
-        assert any(f'"{item.href}"' in prop for prop in active), (
-            f"the administration trigger stays dark on {item.href}"
-        )
-
-
-def test_the_administration_trigger_carries_no_state_of_its_own(
-    rendered_rail: dict[str, Any],
-) -> None:
-    """`Menu.Target` opens the dropdown by cloning its child with an `onClick`
-    and a `ref`, and Reflex compiles any element holding a state-dependent
-    attribute into a `memo(({children}) => …)` wrapper that takes children and
-    discards every other prop. Put `data-active` on the trigger and the clone's
-    handler and ref both land on that wrapper: the button renders without so
-    much as an `aria-haspopup`, and the administration becomes unreachable by
-    mouse and by keyboard alike. Measured in a browser, twice — once as a box
-    and once as a button, because the element was never the point.
-
-    So the trigger stays static and the active state rides on a hidden marker
-    beside it, which `.ma-rail-flag[data-active] ~ .ma-rail-item` reaches. This
-    pins the half a renderer cannot: that nothing state-dependent has crept
-    back onto the element `Menu.Target` clones.
-    """
-    targets = _named(rendered_rail, "Menu.Target")
-
-    assert len(targets) == 1, "the rail should hold exactly one menu trigger"
-    trigger = targets[0]["children"][0]
-
-    assert trigger["name"] == "UnstyledButton", (
-        "the trigger must be a real Mantine component, not a box: a box "
-        f"forwards neither ref nor onClick, and this is a {trigger['name']}"
-    )
-    assert not any(prop.startswith('"data-active"') for prop in _props(trigger)), (
-        "the menu trigger carries a state-dependent attribute again, which "
-        "memoises it and leaves the dropdown unopenable — put it on the "
-        ".ma-rail-flag marker instead"
-    )
+    assert {item.label for item in _nav_items()} <= labelled
 
 
 def test_the_search_entry_accepts_both_spellings_of_the_index(
@@ -312,6 +217,19 @@ def test_the_search_entry_accepts_both_spellings_of_the_index(
     )
 
 
+def _nests_an_anchor(node: Any, inside: bool = False) -> bool:
+    """Whether any `ReactRouterLink` sits inside another one."""
+    if not isinstance(node, dict):
+        return False
+    here = node.get("name") == "ReactRouterLink"
+    if here and inside:
+        return True
+    return any(
+        _nests_an_anchor(child, inside or here)
+        for child in (node.get("children") or [])
+    )
+
+
 def test_no_rail_entry_renders_a_second_anchor(rendered_rail: dict[str, Any]) -> None:
     """The replacement for the `mn.nav_link` guard the sidebar needed.
 
@@ -319,15 +237,25 @@ def test_no_rail_entry_renders_a_second_anchor(rendered_rail: dict[str, Any]) ->
     "<a> cannot contain a nested <a>. This will cause a hydration error" —
     which was measured in a browser rather than reasoned about, and is
     invisible to every other test here because the navigation still renders
-    and still navigates. The rail's square is an `mn.box` and the
-    administration's rows redirect rather than link, so exactly one anchor per
-    entry may exist: the `ReactRouterLink` the `rx.link` puts there.
+    and still navigates.
+
+    The property is **one anchor per entry and none inside another**, which is
+    what `mn.nav_link` broke by rendering an anchor of its own inside the
+    `rx.link` around it. It is deliberately not a count of the *menu* section:
+    that pinned a layout — the administration behind a popover — rather than
+    the hydration bug, and went red the moment the rail grew a section or a
+    page. Every rail square is an `mn.box`, a plain div, so the `rx.link`
+    around it stays the only anchor it has.
     """
     anchors = _named(rendered_rail, "ReactRouterLink")
 
-    assert len(anchors) == len(MENU.items), (
+    assert not _nests_an_anchor(rendered_rail), (
+        "a rail entry renders an anchor inside another anchor, which React "
+        "refuses to hydrate"
+    )
+    assert len(anchors) == len(_nav_items()), (
         f"the rail renders {len(anchors)} router anchors for "
-        f"{len(MENU.items)} menu entries"
+        f"{len(_nav_items())} entries"
     )
     for anchor in anchors:
         assert not _named(anchor, "ReactRouterLink")[1:], (

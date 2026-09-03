@@ -26,6 +26,7 @@ from mailarc_ui.kit.avatar import avatar_initials
 from mailarc_ui.kit.badge import dot_badge, status_badge
 from mailarc_ui.kit.buttons import (
     pill_action,
+    pill_icon_action,
     primary_button,
     quiet_button,
     soft_button,
@@ -34,6 +35,7 @@ from mailarc_ui.kit.card import CardTone, card_heading, panel_card
 from mailarc_ui.kit.chips import count_chip, label_chip, relevance_chip
 from mailarc_ui.kit.empty import empty_panel
 from mailarc_ui.kit.graph import graph_canvas
+from mailarc_ui.kit.grouprow import group_chevron, group_header
 from mailarc_ui.kit.message import MessageTone, message, toned_message
 from mailarc_ui.kit.layout import (
     COLUMN_GAP,
@@ -52,6 +54,7 @@ from mailarc_ui.kit.inputs import (
     input_field,
     number_field,
     password_field,
+    range_select,
     range_switch,
     segmented_field,
     select_field,
@@ -87,6 +90,8 @@ __all__ = [
     "field_label",
     "field_note",
     "graph_canvas",
+    "group_chevron",
+    "group_header",
     "input_field",
     "job_progress",
     "label_chip",
@@ -97,9 +102,11 @@ __all__ = [
     "panel_card",
     "password_field",
     "pill_action",
+    "pill_icon_action",
     "placeholder_block",
     "primary_button",
     "quiet_button",
+    "range_select",
     "range_switch",
     "relevance_chip",
     "score_bar",

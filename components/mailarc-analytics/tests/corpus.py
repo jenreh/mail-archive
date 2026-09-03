@@ -32,6 +32,7 @@ from email.utils import format_datetime
 from pydantic import BaseModel, ConfigDict
 
 from mailarc_analytics import AnalyticsConfig, MessageFacts
+from mailarc_core.mail.model import ParsedMessage
 from mailarc_core.mail.parsing import parse_message, simhash
 
 OWN = "jens@nordlicht.example"
@@ -581,6 +582,25 @@ comparing a projected fact with one the reader fetched has to agree on that.
 """
 
 
+def _thread_key(planted: PlantedMessage, parsed: ParsedMessage) -> str | None:
+    """The ``Thread`` node key the writer would give this message.
+
+    A second implementation of ``mailarc_core.archive.writer._thread_node``,
+    for the same reason the rest of this projection is one: two paths to the
+    same value is what makes either being wrong visible.
+
+    Three keys in order — the provider's own thread id, the root of
+    ``References``, and failing both the message's own ``Message-ID``. The
+    third is what makes a conversation whole where the provider hands out no
+    thread ids: its first message carries neither header, and would otherwise
+    sit outside the thread its own replies form. A message with no
+    ``Message-ID`` gets no thread, because its canonical id is a digest no
+    reply can reference.
+    """
+    named = planted.thread or parsed.thread_hint or parsed.rfc_message_id
+    return f"{ACCOUNT_ID}:{named}" if named else None
+
+
 def facts_of(
     planted: PlantedMessage,
     *,
@@ -616,7 +636,7 @@ def facts_of(
         participant_key=parsed.participant_key,
         simhash=simhash(parsed.body_text) if fingerprint_body_text else parsed.simhash,
         refs=parsed.refs,
-        thread_id=f"{ACCOUNT_ID}:{planted.thread}" if planted.thread else None,
+        thread_id=_thread_key(planted, parsed),
         sender=sender,
         addressed=addressed,
         participants=tuple(sorted(everyone)),

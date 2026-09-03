@@ -28,7 +28,9 @@ import pytest
 from mailarc_ui.message_detail.model import LabelChip
 from mailarc_ui.search.components import (
     _chips,
-    _result_row,
+    _group_row,
+    _message_row,
+    _section_row,
     _sender_line,
     result_list,
     search_panel,
@@ -38,7 +40,8 @@ from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
     ATTACH_WITHOUT,
-    ResultRow,
+    GROUPING_OPTIONS,
+    ListLine,
 )
 from mailarc_ui.search.state import MailSearchState
 
@@ -136,19 +139,45 @@ def _texts(component: Any) -> int:
     return _names(_taken(component.render())).count("Text")
 
 
-def row(**overrides: Any) -> ResultRow:
-    """One result row, as the state hands it to the list."""
+def row(**overrides: Any) -> ListLine:
+    """One line of the list, as the state hands it over."""
     fields: dict[str, Any] = {
+        "key": "m:m1@example.com",
         "id": "m1@example.com",
         "sender": "Anna Bauer",
         "initials": "A B",
-        "sender_address": "anna@example.com",
         "subject": "Rechnung 2026",
         "preview": "Die Rechnung liegt bei.",
         "when_label": "9m",
         "labels": [LabelChip(text="Kunden", color="blue")],
     }
-    return ResultRow(**{**fields, **overrides})
+    return ListLine(**{**fields, **overrides})
+
+
+def heading(**overrides: Any) -> ListLine:
+    """A conversation's heading — the same row, plus what the group says."""
+    fields: dict[str, Any] = {
+        "key": "c:c1",
+        "is_header": True,
+        "group_id": "c1",
+        "size_label": "3 of 12",
+        "can_expand": True,
+        "expanded": True,
+    }
+    return row(**{**fields, **overrides})
+
+
+def section(**overrides: Any) -> ListLine:
+    """A section over a group no message can stand in for."""
+    fields: dict[str, Any] = {
+        "key": "g:anna@example.com",
+        "is_section": True,
+        "group_id": "anna@example.com",
+        "label": "Anna Bauer",
+        "size_label": "4",
+        "expanded": True,
+    }
+    return ListLine(**{**fields, **overrides})
 
 
 class TestEveryFieldIsAKitField:
@@ -239,14 +268,14 @@ class TestWhatTheFormSaysBack:
 
 class TestAResultRow:
     def test_it_is_a_selectable_kit_row(self) -> None:
-        drawn = _drawn(_result_row(row()))
+        drawn = _drawn(_message_row(row()))
 
         assert "ma-list-row" in drawn
         assert "data-selected" in drawn
         assert "select" in drawn
 
     def test_it_shows_the_sender_the_time_and_the_subject(self) -> None:
-        drawn = _drawn(_result_row(row()))
+        drawn = _drawn(_message_row(row()))
 
         assert "Anna Bauer" in drawn
         assert "9m" in drawn
@@ -255,7 +284,7 @@ class TestAResultRow:
 
     def test_the_initials_are_the_archive_s_own(self) -> None:
         """Handed over as two words — see ``initials_of``."""
-        assert "A B" in _drawn(_result_row(row()))
+        assert "A B" in _drawn(_message_row(row()))
 
     def test_a_row_with_no_date_shows_no_separator(self) -> None:
         """The dot sits between two facts; with only one it would dangle.
@@ -267,7 +296,7 @@ class TestAResultRow:
         assert _texts(_sender_line(row(when_label=""))) == 1
 
     def test_the_preview_is_one_line(self) -> None:
-        assert 'truncate:\\"end\\"' in _drawn(_result_row(row()))
+        assert 'truncate:\\"end\\"' in _drawn(_message_row(row()))
 
 
 class TestTheChipsUnderARow:
@@ -301,9 +330,87 @@ class TestTheChipsUnderARow:
         assert "ma-chip-relevance" not in _drawn(_chips(row()))
 
 
+class TestAConversationHeading:
+    def test_it_is_a_row_with_a_chevron_in_front(self) -> None:
+        """A closed group must hide nothing the reader had already been shown."""
+        drawn = _drawn(_group_row(heading()))
+
+        assert "ma-list-row" in drawn
+        assert "ma-group-chevron" in drawn
+        assert "Anna Bauer" in drawn
+        assert "Rechnung 2026" in drawn
+        assert "Die Rechnung liegt bei." in drawn
+
+    def test_the_chevron_says_which_way_the_group_is(self) -> None:
+        assert "data-expanded" in _drawn(_group_row(heading()))
+
+    def test_the_two_gestures_do_not_run_into_each_other(self) -> None:
+        """The row opens a message; the chevron opens the group."""
+        drawn = _drawn(_group_row(heading()))
+
+        assert "select" in drawn
+        assert "toggle_conversation" in drawn
+        assert "stopPropagation" in drawn
+
+    def test_it_says_how_big_the_conversation_is(self) -> None:
+        assert "3 of 12" in _drawn(_chips(heading()))
+
+    def test_a_conversation_with_more_in_it_offers_the_rest(self) -> None:
+        drawn = _drawn(_chips(heading()))
+
+        assert "Show whole conversation" in drawn
+        assert "show_whole_conversation" in drawn
+
+    def test_a_conversation_already_whole_offers_nothing(self) -> None:
+        assert "Show whole conversation" not in _drawn(
+            _chips(heading(can_expand=False))
+        )
+
+    def test_a_plain_row_wears_no_size(self) -> None:
+        assert "messages-square" not in _drawn(_chips(row()))
+
+
+class TestAMemberRow:
+    def test_it_says_whether_it_sits_under_a_heading(self) -> None:
+        """Indentation is one CSS rule keyed on the attribute, not a style Var."""
+        assert "data-child" in _drawn(_message_row(row(indented=True)))
+
+
 class TestTheResultColumn:
     def test_it_says_how_many_of_how_many(self) -> None:
         assert "count_label" in _drawn(result_list())
+
+    def test_the_list_offers_every_grouping_in_one_dropdown(self) -> None:
+        drawn = _drawn(result_list())
+
+        assert "ma-range-select" in drawn
+        assert "Group by" in drawn
+        for option in GROUPING_OPTIONS:
+            assert option["label"] in drawn
+            assert option["value"] in drawn
+        assert "choose_grouping" in drawn
+        assert "mail_search_state.grouping" in drawn
+
+    def test_the_dropdown_is_chrome_and_not_a_field(self) -> None:
+        assert "ma-field-label" not in _drawn(result_list())
+
+
+class TestASectionRow:
+    def test_it_is_a_header_and_not_a_message_row(self) -> None:
+        drawn = _drawn(_section_row(section()))
+
+        assert "ma-group-header" in drawn
+        assert "Anna Bauer" in drawn
+        assert "ma-list-row" not in drawn
+
+    def test_the_whole_line_opens_and_closes_the_group(self) -> None:
+        drawn = _drawn(_section_row(section()))
+
+        assert "toggle_group" in drawn
+        assert "select" not in drawn.replace("mail_search_state.selected_id", "")
+
+    def test_it_says_how_many_it_holds(self) -> None:
+        assert "LucideLayers" in _drawn(_section_row(section(size_label="4")))
 
     @pytest.mark.parametrize("sentence", ["Nothing matched", "Nothing archived yet"])
     def test_both_empty_lists_are_on_the_page(self, sentence: str) -> None:

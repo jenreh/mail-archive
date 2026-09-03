@@ -219,6 +219,32 @@ class TopicKeywordsRow(BaseModel):
     message_count: int = 0
 
 
+class TopicMembershipRow(BaseModel):
+    """The topic one message sits in — a membership, read for a page at once.
+
+    Keyed by the caller (message id → this), so the message id is not
+    repeated here. ``keywords`` travel with it because a topic's ``label`` is
+    the subject its members had in common and is empty when they had none,
+    and a listing has to name the group somehow.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    topic_id: str
+    label: str = ""
+    keywords: tuple[str, ...] = ()
+
+
+class GroupMembershipRow(BaseModel):
+    """The recurring group one message was addressed to, read for a page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    group_id: str
+    size: int = 0
+    message_count: int = 0
+
+
 class TagSuggestionRow(BaseModel):
     """A message an analysis thinks a tag might want, and the case for it.
 

@@ -31,21 +31,25 @@ from datetime import UTC, date, datetime, timedelta
 
 from runic.ogm import Session
 
+from collections.abc import Sequence
+
 from mailarc_analytics.derived.model import TemplateDirection
 from mailarc_analytics.queries import catalog
 from mailarc_analytics.queries.catalog import Statement
 from mailarc_analytics.queries.model import (
-    ArchivedDay,
     ArchiveTotals,
+    ArchivedDay,
     CoAddressedAgreement,
     CoAddressedRow,
-    CommunityRow,
     CoRecipientRow,
+    CommunityRow,
+    GroupMembershipRow,
     GroupRow,
     ImportantMessageRow,
     TagSuggestionRow,
     TemplateRow,
     TopicKeywordsRow,
+    TopicMembershipRow,
     TopicRow,
 )
 from mailarc_analytics.queries.rows import (
@@ -404,6 +408,58 @@ class AnalyticsReader:
             )
             for row in rows
         )
+
+    def topics_of(self, ids: Sequence[str]) -> dict[str, TopicMembershipRow]:
+        """Which topic each of these messages sits in, keyed by message id.
+
+        The read a listing grouped by topic makes beside its page — one
+        statement over the page's ids, the shape
+        :meth:`~mailarc_core.archive.reader.ArchiveReader.conversations_of`
+        established. A message in no topic is absent; an empty ask opens no
+        session. A message the clustering filed twice resolves to the smallest
+        topic id, so the group it lands in does not depend on the order the
+        rows came back.
+        """
+        asked = list(dict.fromkeys(ids))
+        if not asked:
+            return {}
+        with self._graph_session() as graph:
+            rows = rows_of(graph, catalog.TOPICS_OF_MESSAGES, {"ids": asked})
+        found: dict[str, TopicMembershipRow] = {}
+        for row in rows:
+            message_id = as_text(row["message_id"])
+            candidate = TopicMembershipRow(
+                topic_id=as_text(row["topic_id"]),
+                label=as_text(row["label"]),
+                keywords=_as_words(row["keywords"]),
+            )
+            if message_id not in found or candidate.topic_id < found[message_id].topic_id:
+                found[message_id] = candidate
+        return found
+
+    def groups_of(self, ids: Sequence[str]) -> dict[str, GroupMembershipRow]:
+        """Which recurring group each of these messages went to, by message id.
+
+        :meth:`topics_of` over ``ADDRESSED_GROUP``, with the same absence and
+        the same tie rule — although a message has one ``participant_key`` and
+        therefore at most one group, so the tie is a guard rather than a case.
+        """
+        asked = list(dict.fromkeys(ids))
+        if not asked:
+            return {}
+        with self._graph_session() as graph:
+            rows = rows_of(graph, catalog.GROUPS_OF_MESSAGES, {"ids": asked})
+        found: dict[str, GroupMembershipRow] = {}
+        for row in rows:
+            message_id = as_text(row["message_id"])
+            candidate = GroupMembershipRow(
+                group_id=as_text(row["group_id"]),
+                size=as_int(row["size"]),
+                message_count=as_int(row["message_count"]),
+            )
+            if message_id not in found or candidate.group_id < found[message_id].group_id:
+                found[message_id] = candidate
+        return found
 
     def suggestion_counts(self) -> dict[str, int]:
         """How many messages each tag is being offered, keyed by tag id.

@@ -116,6 +116,7 @@ together for no reason other than that both render a job.
 
 METHOD_COLORS = {
     TopicSignal.REF: "teal",
+    TopicSignal.CONVERSATION: "cyan",
     TopicSignal.THREAD: "blue",
     TopicSignal.SUBJECT: "indigo",
     TopicSignal.ATTACHMENT: "yellow",
@@ -126,8 +127,14 @@ METHOD_COLORS = {
 §6.2 makes the method the difference between a fact and a suggestion — two
 messages naming the same ticket against two messages merely sent to the same
 people — and a reader has to see which one they are looking at without
-clicking. Cool for the signals that carry a topic on their own, warm for the
-two that only carry one together.
+clicking. Cool for the signals that carry a topic on their own -- `ref`,
+`conversation` and `thread` are all exact -- warm for the two that only carry
+one together.
+
+Every member of :class:`~mailarc_analytics.derived.model.TopicSignal` must
+appear here. The enum lives in another package, so nothing but
+``test_every_signal_the_analysis_can_write_has_a_colour`` keeps the two in
+step.
 """
 
 
@@ -141,7 +148,14 @@ def method_color(method: str) -> str:
     """
     try:
         return METHOD_COLORS[TopicSignal(method)]
-    except ValueError:
+    except ValueError, KeyError:
+        # Both halves of the promise above, and they are different misses.
+        # ValueError is a method string this build's enum does not have -- a
+        # graph written by a newer build. KeyError is a signal this build DOES
+        # know and has not coloured, which is the one that reached a user: the
+        # analysis gained `conversation` and this map did not, so the first
+        # rebuild that wrote such an edge made the whole card raise rather than
+        # render one grey chip.
         return "gray"
 
 

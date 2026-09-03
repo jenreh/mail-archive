@@ -63,6 +63,25 @@ class SemanticProvider(StrEnum):
     way is uploaded, once, to a third party.
     """
 
+    AZURE_OPENAI = "azure_openai"
+    """The same models, hosted on a customer's own Azure resource. Needs a key.
+
+    Not a variant of :attr:`OPENAI` as far as :class:`SemanticConfig` is
+    concerned, even though :class:`~mailarc_analytics.semantic.embedder.
+    AzureOpenAIEmbedder` speaks the identical request and response shape: an
+    OpenAI account has one root every customer shares, and an Azure OpenAI
+    resource does not — ``base_url`` names a specific deployment nobody else
+    can guess, so unlike every other provider here it has no usable default
+    and :attr:`SemanticConfig.model` (the deployment name, in Azure's own
+    words) has none either. Both are refused at the first request rather than
+    guessed at.
+
+    Still worth the same warning ``OPENAI`` gets: message text is uploaded,
+    once, off this machine — to the customer's own Azure tenant rather than to
+    a third party, which is usually the reason somebody chooses this provider
+    over the other one.
+    """
+
 
 class SemanticConfig(BaseConfig):
     """The embedder, the vectors it produces, and what a search does with them."""
@@ -89,6 +108,14 @@ class SemanticConfig(BaseConfig):
     selects on ``m.embedding_model <> $model``, so switching costs one job and
     not a re-import. A model name that lies about which model produced a vector
     would leave those messages unfindable and unrecomputable at the same time.
+
+    For :attr:`SemanticProvider.AZURE_OPENAI` this is the deployment name —
+    Azure calls it that rather than a model, though it travels in the same
+    ``model`` field of the same request OpenAI's own name would — and empty is
+    not a usable default there: a deployment is unique to one customer's
+    resource, so nothing here can guess one. Left empty, the archive refuses to
+    embed with a message naming this setting rather than a 404 for a model
+    that was never deployed.
     """
 
     dimension: int = 768
@@ -116,13 +143,24 @@ class SemanticConfig(BaseConfig):
     A setting and not a constant for the reason ``GmailConfig.api_base_url`` is
     one: it is what lets every adapter test run against a local HTTP server, so
     no test in this repository ever talks to Ollama or OpenAI.
+
+    :attr:`SemanticProvider.AZURE_OPENAI` has no default to fall back to —
+    unlike ``api.openai.com``, an Azure OpenAI resource belongs to one
+    customer, and nothing here can guess its name. Empty there is refused at
+    the first request rather than sent anywhere: ``https://YOUR-RESOURCE-NAME.
+    openai.azure.com/openai/v1`` is the whole root, deployment included in the
+    body of every request rather than in this path.
     """
 
     api_key: SecretStr | None = None
     """The bearer token, for the providers that want one.
 
-    Ollama ignores it. OpenAI without it is a 401, which the adapter reports as
-    an auth failure rather than as something to retry.
+    Ollama ignores it. OpenAI and Azure OpenAI without it both answer 401,
+    which the adapter reports as an auth failure rather than as something to
+    retry — Azure's own key travels in an ``api-key`` header rather than
+    OpenAI's ``Authorization: Bearer``, which is the one thing
+    :class:`~mailarc_analytics.semantic.embedder.AzureOpenAIEmbedder` changes
+    about how this value is sent.
     """
 
     batch_size: int = 32

@@ -76,21 +76,34 @@ The left edge is a slim icon rail; every icon names itself when you hover it.
 Search is the main page because finding a message is what somebody opens a mail
 archive to do; the dashboard is one click away rather than the other way round.
 
-### The result list groups conversations
+### The result list groups what it found
 
-A switch above the list reads **Conversations** or **Messages**, and it starts on
-Conversations. Grouped, an exchange is one row: the newest message that matched,
-with a chevron that opens the rest and a chip saying how many the conversation
-holds. Clicking the row opens the message it is showing; clicking the chevron
-opens the group.
+A **Group by** dropdown above the list decides how the hits are arranged. It
+starts on **Conversation / Thread** and offers eight ways:
 
-The chip says `1 of 12` when the search returned one message of a conversation
-that holds twelve, and a **Show whole conversation** button beside it fetches
-the other eleven. So the list groups what you asked for, and offers the context
-around it without pretending the search found more than it did.
+- **None** — a flat list. Worth choosing when the ranking of a full-text or
+  semantic search is what you want to read straight down.
+- **Conversation / Thread** — an exchange is one row: the newest message that
+  matched, with a chevron that opens the rest and a chip saying how many the
+  conversation holds. Clicking the row opens the message it is showing;
+  clicking the chevron opens the group. The chip says `1 of 12` when the
+  search returned one message of a conversation that holds twelve, and a
+  **Show whole conversation** button beside it fetches the other eleven.
+- **Topic**, **Tag**, **Recurring group** — the message's derived topic, the tag
+  you filed it under, or the set of people it keeps going to.
+- **Subject**, **Sender**, **Receiver** — the subject with its `Re:` and `AW:`
+  stripped, the address it came from, or the address it went to.
 
-Switch to **Messages** for a flat list — worth doing when the ranking of a
-full-text or semantic search is what you want to read straight down.
+Only a conversation shows a message as its heading. Every other grouping draws a
+labelled section — the sender's name, the topic's subject, `5 people · 8f3a…`
+for a recurring group — with the matching messages indented under it, and a
+message the archive could not file lands under **No topic**, **No tag**,
+**No group** or **No recipient**. Clicking a section closes or opens it.
+
+Topic and Recurring group read the derived layer, so on an archive that has
+never been rebuilt every message sits under **No topic** or **No group** until
+the first rebuild runs. Whatever the grouping, a group sits where its first hit
+sat: grouping never moves a good hit down the page.
 
 Mail imported before this feature existed may group less well if it came from
 IMAP: the archive learned to thread a conversation's first message only now, so

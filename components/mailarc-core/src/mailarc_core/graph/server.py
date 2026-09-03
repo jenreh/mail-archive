@@ -71,13 +71,31 @@ class FalkorDBServer:
         return self._startup_error
 
     def start(self) -> None:
-        """Ensure the server is running and accepting connections."""
+        """Ensure the server is running and accepting connections.
+
+        **A start that fails leaves nothing running.** ``_start_local``
+        ``Popen``s the server and only then waits for it to answer, so every
+        failure after that line — a readiness timeout, a ``KeyboardInterrupt``,
+        a test runner's own timeout landing mid-wait — would otherwise leave a
+        redis-server holding the port with no handle anywhere that admits to
+        owning it. Measured: an exception raised during ``start`` left a
+        vendored server alive after the process that spawned it had exited.
+
+        ``BaseException`` rather than ``Exception`` for exactly that reason:
+        the two interesting interruptions here are not ``Exception``\\ s. The
+        cleanup cannot swallow them, so the raise below is unconditional.
+
+        :meth:`stop` is safe to call in every one of these states — it is a
+        no-op when nothing was spawned, when the server was adopted rather than
+        started, and when the process has already exited.
+        """
         if self._config.mode is not GraphServerMode.LOCAL:
             logger.info("Using the remote FalkorDB at %s", self.endpoint)
             return
         try:
             self._start_local()
-        except Exception as exc:
+        except BaseException as exc:
+            self.stop()
             self._startup_error = str(exc)
             raise
         else:

@@ -20,7 +20,8 @@ One module per concern, layered so nothing points back up:
 ``writer``
     ``MessageArchiver`` — the idempotent upsert into the graph.
 ``repository``
-    ``MessageRepository`` — the graph listing, through runic's query builder.
+    ``MessageRepository`` / ``ThreadRepository`` — the graph listing and the
+    conversations it groups by, through runic's query builder.
 ``purge``
     ``purge_account`` — the writer's undo, for one mailbox and no other.
 ``reader``
@@ -41,11 +42,13 @@ from mailarc_core.archive.model import (
     ArchiveSource,
     Attachment,
     BlobKind,
+    Conversation,
     HasAttachment,
     Label,
     Message,
     MessageLabel,
     MessageSummary,
+    Recipient,
     Tag,
     Tagged,
     TagOrigin,
@@ -56,12 +59,21 @@ from mailarc_core.archive.model import (
     to_unsigned_64,
 )
 from mailarc_core.archive.purge import PurgeCounts, purge_account
-from mailarc_core.archive.reader import ArchiveReader, preview_of
-from mailarc_core.archive.repository import AddressRepository, MessageRepository
+from mailarc_core.archive.reader import (
+    CONVERSATION_LIMIT,
+    ArchiveReader,
+    preview_of,
+)
+from mailarc_core.archive.repository import (
+    AddressRepository,
+    MessageRepository,
+    ThreadRepository,
+)
 from mailarc_core.archive.tags import TagExists, TagRepository, TagStore, tag_id
 from mailarc_core.archive.writer import MessageArchiver
 
 __all__ = [
+    "CONVERSATION_LIMIT",
     "Account",
     "Address",
     "AddressRepository",
@@ -73,6 +85,7 @@ __all__ = [
     "Attachment",
     "BlobKind",
     "BlobStore",
+    "Conversation",
     "HasAttachment",
     "Label",
     "Message",
@@ -80,6 +93,7 @@ __all__ = [
     "MessageLabel",
     "MessageRepository",
     "MessageSummary",
+    "Recipient",
     "PurgeCounts",
     "Tag",
     "TagExists",
@@ -90,6 +104,7 @@ __all__ = [
     "TagSummary",
     "Tagged",
     "Thread",
+    "ThreadRepository",
     "preview_of",
     "purge_account",
     "tag_id",

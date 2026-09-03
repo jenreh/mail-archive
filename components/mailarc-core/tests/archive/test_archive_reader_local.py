@@ -181,3 +181,159 @@ def test_an_address_the_archive_never_saw_cannot_be_trusted(reader) -> None:
     assert reader.trust_remote_content("stranger@example.com") is False
     assert reader.remote_content_trusted("stranger@example.com") is False
     assert reader.trust_remote_content("") is False
+
+
+def unthreaded(number: int) -> ArchiveSource:
+    """A copy from a provider that hands out no thread ids — an IMAP mailbox."""
+    return ArchiveSource(
+        account_id="7",
+        account_address="anna@example.com",
+        provider=MailProvider.IMAP,
+        provider_message_id=f"i-{number}",
+        provider_thread_id=None,
+    )
+
+
+def reply(number: int, day: int, *, to: int) -> bytes:
+    """An answer, carrying the headers a References-threaded client writes."""
+    return (
+        "From: Bob Baker <bob@example.com>\r\n"
+        "To: Anna Bauer <anna@example.com>\r\n"
+        f"Subject: Re: Angebot {to}\r\n"
+        f"Date: Wed, {day:02d} Mar 2026 09:15:00 +0000\r\n"
+        f"Message-ID: <m{number}@example.com>\r\n"
+        f"In-Reply-To: <m{to}@example.com>\r\n"
+        f"References: <m{to}@example.com>\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "\r\n"
+        "Passt, danke.\r\n"
+    ).encode()
+
+
+class TestGroupingByConversation:
+    def test_the_members_of_one_provider_thread_share_a_conversation(
+        self, config, blobs, reader
+    ) -> None:
+        archive(config, blobs, eml(1, day=4), eml(2, day=6), eml(3, day=5))
+        ids = [row.id for row in reader.list_messages()]
+
+        found = reader.conversations_of(ids)
+
+        assert {one.id for one in found.values()} == {"7:t-1"}
+        assert {one.total for one in found.values()} == {3}
+
+    def test_a_message_outside_every_thread_is_absent(
+        self, config, blobs, reader
+    ) -> None:
+        """A message with no Message-ID and no thread id names no conversation."""
+        archiver = MessageArchiver(ArchiveConfig())
+        raw = eml(1, day=4).replace(b"Message-ID: <m1@example.com>\r\n", b"")
+        blobs.put(raw, BlobKind.MESSAGE)
+        with client.session(config) as graph:
+            archiver.archive(graph, parse_message(raw), unthreaded(1))
+        [row] = reader.list_messages()
+
+        assert reader.conversations_of([row.id]) == {}
+
+    def test_an_imap_root_and_its_reply_are_one_conversation(
+        self, config, blobs, reader
+    ) -> None:
+        """What the writer fix bought: no provider thread id anywhere in sight."""
+        archiver = MessageArchiver(ArchiveConfig())
+        with client.session(config) as graph:
+            for number, raw in ((1, eml(1, day=4)), (2, reply(2, day=5, to=1))):
+                blobs.put(raw, BlobKind.MESSAGE)
+                archiver.archive(graph, parse_message(raw), unthreaded(number))
+        ids = [row.id for row in reader.list_messages()]
+
+        found = reader.conversations_of(ids)
+
+        assert {one.id for one in found.values()} == {"7:m1@example.com"}
+        assert {one.total for one in found.values()} == {2}
+
+    def test_the_total_counts_the_archive_and_not_the_page(
+        self, config, blobs, reader
+    ) -> None:
+        archive(config, blobs, eml(1, day=4), eml(2, day=6), eml(3, day=5))
+        [newest] = reader.list_messages(limit=1)
+
+        found = reader.conversations_of([newest.id])
+
+        assert found[newest.id].total == 3
+
+
+class TestGroupingByRecipient:
+    def test_each_message_is_filed_under_the_address_it_went_to(
+        self, config, blobs, reader
+    ) -> None:
+        archive(config, blobs, eml(1, day=4), eml(2, day=6))
+        ids = [row.id for row in reader.list_messages()]
+
+        found = reader.recipients_of(ids)
+
+        assert set(found) == set(ids)
+        assert {one.address for one in found.values()} == {"bob@example.com"}
+        assert {one.name for one in found.values()} == {"Bob Baker"}
+
+    def test_a_copied_address_does_not_count_as_a_receiver(
+        self, config, blobs, reader
+    ) -> None:
+        raw = eml(1, day=4).replace(
+            b"To: Bob Baker <bob@example.com>\r\n",
+            b"To: Zoe Zed <zoe@example.com>\r\nCc: Al <al@example.com>\r\n",
+        )
+        archive(config, blobs, raw)
+        [row] = reader.list_messages()
+
+        found = reader.recipients_of([row.id])
+
+        assert found[row.id].address == "zoe@example.com"
+
+    def test_the_summary_carries_the_normalised_subject(
+        self, config, blobs, reader
+    ) -> None:
+        archive(config, blobs, reply(2, day=5, to=1))
+        [row] = reader.list_messages()
+
+        assert row.subject == "Re: Angebot 1"
+        assert row.subject_norm == "angebot 1"
+
+
+class TestOneWholeConversation:
+    def test_the_whole_thread_comes_back_from_one_member(
+        self, config, blobs, reader
+    ) -> None:
+        archive(config, blobs, eml(1, day=4), eml(2, day=6), eml(3, day=5))
+
+        members = reader.conversation_messages("7:t-1")
+
+        assert [one.subject for one in members] == [
+            "Angebot 2",
+            "Angebot 3",
+            "Angebot 1",
+        ]
+
+    def test_the_members_carry_their_labels(self, config, blobs, reader) -> None:
+        archive(
+            config,
+            blobs,
+            eml(1, day=4),
+            eml(2, day=6),
+            labels={2: (label("Kunden/Bauer"),)},
+        )
+
+        newest, _ = reader.conversation_messages("7:t-1")
+
+        assert [one.name for one in newest.labels] == ["Kunden/Bauer"]
+
+    def test_the_limit_cuts_the_conversation_newest_first(
+        self, config, blobs, reader
+    ) -> None:
+        archive(config, blobs, eml(1, day=4), eml(2, day=6), eml(3, day=5))
+
+        members = reader.conversation_messages("7:t-1", limit=2)
+
+        assert [one.subject for one in members] == ["Angebot 2", "Angebot 3"]
+
+    def test_a_conversation_the_graph_does_not_hold_is_empty(self, reader) -> None:
+        assert reader.conversation_messages("7:nothing") == []

@@ -47,6 +47,7 @@ KIT = PACKAGE / "kit"
 """The one package allowed to build any of these."""
 
 OWNED: dict[str, str] = {
+    "action_icon": "kit.pill_icon_action",
     "alert": "kit.message / kit.toned_message",
     "badge": "kit.status_badge / kit.dot_badge",
     "button": "kit.primary_button / soft_button / quiet_button / pill_action",

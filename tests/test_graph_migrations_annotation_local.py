@@ -93,8 +93,10 @@ def endpoint(tmp_path_factory: pytest.TempPathFactory) -> Iterator[GraphConfig]:
         startup_timeout=30.0,
     )
     server = FalkorDBServer(config)
-    server.start()
     try:
+        # Inside the try — a failure during `start` comes after the spawn; see
+        # `components/mailarc-core/tests/archive/conftest.py`.
+        server.start()
         yield config
     finally:
         server.stop()

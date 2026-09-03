@@ -142,6 +142,35 @@ class TestEdges:
         ):
             assert _field(Message, name).direction == "OUTGOING", name
 
+    def test_the_thread_can_be_walked_back_to_its_messages(self) -> None:
+        """``Thread.messages`` is what lets a count be rooted at the thread.
+
+        Rooted at the message end, runic emits ``t.id IN $ids`` after the whole
+        pipeline and the count expands every message in the archive before it
+        narrows — the misplacement ``repository._filtered`` documents.
+        """
+        field = _field(Thread, "messages")
+
+        assert field.relationship == "IN_THREAD"
+        assert field.direction == "INCOMING"
+        assert field.target == "Message"
+
+    def test_declaring_it_left_the_threads_own_fields_alone(self) -> None:
+        """The ``Any``-annotation landmine, whose failure mode is silent.
+
+        ``Message`` is declared below ``Thread``, so a forward reference on
+        that relation aborts runic's resolution pass and strips the converters
+        off every *other* field on the node. The symptom is not an error on
+        ``messages`` — it is ``subject`` quietly ceasing to round-trip.
+        """
+        node = Thread(id="7:t-1", subject="Angebot Q3")
+
+        assert node.subject == "Angebot Q3"
+        assert [fi.name for fi in Thread._fields if not fi.field.relationship] == [
+            "id",
+            "subject",
+        ]
+
     def test_the_two_edges_with_properties_carry_them(self) -> None:
         assert HasAttachment._edge_type == "HAS_ATTACHMENT"
         assert [fi.name for fi in HasAttachment._fields] == [

@@ -144,3 +144,28 @@ def test_the_same_mail_through_a_second_account_reuses_the_message(config) -> No
     # a Thread is scoped to the account, a Message is not.
     assert nodes_after == nodes_before + 2
     assert edges_after == edges_before + 2  # ARCHIVED_FROM and IN_THREAD
+
+
+def test_a_standalone_message_now_costs_a_thread_of_its_own(config) -> None:
+    """What the IMAP fix is paid for in, counted rather than estimated.
+
+    A message that names no conversation — no provider thread id, no
+    ``References``, no ``In-Reply-To`` — used to write no ``Thread`` at all.
+    It now opens one keyed on its own Message-ID, so that the reply which
+    names that id can join it. One node and one edge per standalone message,
+    for as long as the archive stands.
+    """
+    _archive(
+        config,
+        source=SOURCE.model_copy(update={"provider_thread_id": None, "labels": ()}),
+    )
+
+    nodes, edges = _counts(config)
+
+    # 1 message, 4 addresses, 1 thread, 1 attachment, 1 account — no labels.
+    assert nodes == 8
+    # from + 2 to + 1 cc + thread + attachment + account.
+    assert edges == 7
+    with client.session(config) as graph:
+        [[key]] = graph.execute("MATCH (t:Thread) RETURN t.id").rows
+    assert key == "7:m1@example.com"

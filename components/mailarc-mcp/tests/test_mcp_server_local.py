@@ -302,8 +302,10 @@ def endpoint(tmp_path_factory: pytest.TempPathFactory) -> Iterator[GraphConfig]:
         startup_timeout=30.0,
     )
     server = FalkorDBServer(config)
-    server.start()
     try:
+        # Inside the try — a failure during `start` comes after the spawn; see
+        # `components/mailarc-core/tests/archive/conftest.py`.
+        server.start()
         yield config
     finally:
         server.stop()
@@ -485,19 +487,21 @@ async def test_a_conversation_says_when_it_was_cut_short(client: Client) -> None
     assert answer.data.truncated is True
 
 
-async def test_a_message_in_no_thread_is_a_conversation_of_one(
+async def test_a_message_nobody_answered_is_a_conversation_of_one(
     client: Client,
 ) -> None:
     """Not every mail is an exchange, and that is an answer rather than a fault.
 
     The three reports were planted without a provider thread id, which is what
-    IMAP and a first mail nobody answered both look like.
+    IMAP and a first mail nobody answered both look like. Such a message does
+    now carry a thread — keyed on its own ``Message-ID``, so that a reply
+    naming it would join — and a conversation of one is what that thread holds.
     """
     anchor = await _message_id(client, "Monatsbericht Mai")
 
     answer = await client.call_tool("thread", {"message_id": anchor})
 
-    assert answer.data.thread_id == ""
+    assert answer.data.thread_id.endswith(anchor)
     assert [one.message_id for one in answer.data.messages] == [anchor]
     assert answer.data.messages[0].sender == OWN
 

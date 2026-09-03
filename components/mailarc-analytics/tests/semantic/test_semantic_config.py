@@ -294,6 +294,14 @@ class TestOverridesRefuseNonsense:
 
         assert stored.provider is SemanticProvider.OPENAI
 
+    def test_azure_openai_is_a_legal_stored_provider_too(self) -> None:
+        """``azure_openai`` is 12 characters — well under the column's 32 —
+        and the newest member of the enum, which is exactly the value most
+        likely to have been missed when this coercion was written."""
+        stored = SemanticOverrides(provider="azure_openai")
+
+        assert stored.provider is SemanticProvider.AZURE_OPENAI
+
 
 class TestTheKeyIsNotPrinted:
     def test_the_repr_does_not_carry_the_key(self) -> None:

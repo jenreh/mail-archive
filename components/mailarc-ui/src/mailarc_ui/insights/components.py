@@ -508,7 +508,11 @@ def communities_card() -> rx.Component:
         error=AnalyticsInsightsState.communities_error,
         loading=AnalyticsInsightsState.loading_communities,
         anything=AnalyticsInsightsState.communities,
-        nothing="No circle came out above the minimum size.",
+        # Never "none came out above the minimum size": that asserts a
+        # threshold was evaluated, and the commonest reason this card is
+        # empty is that the stage which evaluates it has never run. An
+        # empty state may not claim to know which of the two happened.
+        nothing="No circles yet — a rebuild works these out.",
         body=scroll_table(
             mn.table.thead(
                 mn.table.tr(

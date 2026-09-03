@@ -469,12 +469,40 @@ class TestWhatTheFormOffers:
             one.value for one in SemanticProvider
         }
 
+    def test_the_azure_option_says_where_the_text_goes_instead(self) -> None:
+        """Its own sentence rather than OpenAI's: the destination is the
+        reader's own Azure resource, which is usually why they picked it —
+        but the text still leaves this machine, and the label has to say so.
+        """
+        from mailarc_ui.embedder import PROVIDER_OPTIONS
+
+        azure = next(
+            one
+            for one in PROVIDER_OPTIONS
+            if one["value"] == SemanticProvider.AZURE_OPENAI
+        )
+        assert "uploads message text" in azure["label"]
+        assert "third party" not in azure["label"]
+
     async def test_openai_without_a_stored_key_is_flagged(
         self, state, sessions, searching
     ) -> None:
         await load_form(state)
 
         await state.set_provider(SemanticProvider.OPENAI.value)
+
+        assert state.key_matters is True
+        assert state.key_missing is True
+
+    async def test_azure_openai_without_a_stored_key_is_flagged_too(
+        self, state, sessions, searching
+    ) -> None:
+        """The same 401, under a header this form never names — see
+        ``AzureOpenAIEmbedder._headers``. A form that only recognised
+        ``openai`` would leave this provider's identical failure unwarned."""
+        await load_form(state)
+
+        await state.set_provider(SemanticProvider.AZURE_OPENAI.value)
 
         assert state.key_matters is True
         assert state.key_missing is True

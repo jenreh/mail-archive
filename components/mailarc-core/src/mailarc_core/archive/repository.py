@@ -18,7 +18,7 @@ from typing import Any
 
 from runic.ogm import Repository, Session, alias, count, fulltext_search, score, select
 
-from mailarc_core.archive.model import Account, Address, Label, Message
+from mailarc_core.archive.model import Account, Address, Label, Message, Thread
 from mailarc_core.archive.search import ScoredId, SearchFilters, searchable_terms
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,14 @@ search field should not un-hide it as a side effect.
 
 ACCOUNT = alias(Account, "a")
 """The ``ARCHIVED_FROM`` target — which mailbox imported this copy."""
+
+THREAD = alias(Thread, "t")
+"""The ``IN_THREAD`` target — the conversation a message sits in.
+
+``t`` because ``m``, ``s``, ``r`` and ``a`` are taken above and a grouped
+listing reads one statement against another: the same letter meaning two
+things across two reads is how a join stops being checkable by eye.
+"""
 
 _RECIPIENT_TYPES = ["SENT_TO", "COPIED_TO"]
 
@@ -119,6 +127,30 @@ class MessageRepository(Repository[Message]):
         for message, label in self._session.all_with_edges(statement):
             found.setdefault(message.id, []).append(label)
         logger.debug("Read labels for %d of %d messages", len(found), len(ids))
+        return found
+
+    def find_recipients(self, ids: list[str]) -> dict[str, list[Address]]:
+        """The ``To`` addresses of each of these messages, keyed by message id.
+
+        :meth:`find_labels`'s shape for the same reason: a message has several
+        recipients, so the edge is walked in a statement of its own with one
+        ``IN`` over the page's ids. ``SENT_TO`` alone and never the
+        :data:`RECIPIENT` alternation — a listing grouped "by receiver" means
+        who the mail was *to*, and folding Cc in would file a message under
+        whoever happened to be copied. A message that names nobody is absent.
+        """
+        if not ids:
+            return {}
+        statement = (
+            select(MESSAGE)
+            .where(MESSAGE.id.in_(ids))
+            .traverse(MESSAGE.recipients, to=RECIPIENT, optional=False)
+            .return_nodes(MESSAGE, RECIPIENT)
+        )
+        found: dict[str, list[Address]] = {}
+        for message, address in self._session.all_with_edges(statement):
+            found.setdefault(message.id, []).append(address)
+        logger.debug("Read recipients for %d of %d messages", len(found), len(ids))
         return found
 
     def find_filtered(
@@ -238,6 +270,130 @@ class MessageRepository(Repository[Message]):
             for message, sender in self._session.all_with_edges(statement)
         }
         return [found[one] for one in ids if one in found]
+
+
+class ThreadRepository(Repository[Thread]):
+    """Conversations, the way a grouped listing needs them.
+
+    Three reads, and they answer three different questions: which conversation
+    each message of a page sits in, how big each of those conversations really
+    is, and — when a reader asks for it — which messages one of them holds.
+
+    Separate from :class:`MessageRepository` because it is a different root.
+    That repository owns the listing, the filter, the full-text page and the
+    hydration, all rooted at ``m``; two of the three reads here are rooted at
+    ``t``, and that is not a stylistic choice — see :meth:`count_members`.
+    """
+
+    def __init__(self, session: Session) -> None:
+        super().__init__(session, Thread)
+
+    def find_for_messages(self, ids: list[str]) -> dict[str, str]:
+        """Which conversation each of these messages was filed under.
+
+        :meth:`MessageRepository.find_labels` with a different edge, and for
+        the same reason: one ``IN`` over the page's ids rather than a lazy
+        relation per row. A message in no thread is simply absent from the
+        answer, the way a message without labels is.
+
+        **A message can carry more than one ``IN_THREAD`` edge.** The writer
+        keys a ``Thread`` per account, and the same mail archived from two
+        mailboxes is deduplicated to one ``Message`` with an edge to each
+        account's thread. The **lexicographically smallest** thread id wins,
+        which is
+        :func:`mailarc_analytics.derived.reader._first`'s rule and is chosen
+        for the same reason: the store makes no promise about the order rows
+        come back in, and the only property that matters here is that the same
+        message lands in the same group whichever page brought it and however
+        the driver felt like ordering the rows.
+
+        Where two members of one exchange share no account, their smallest
+        keys differ and they land in two groups. That is deterministic and
+        wrong in the same way every time; joining them would need a
+        conversation node that crosses accounts, which is the analytics
+        component's job and not this one's.
+        """
+        if not ids:
+            return {}
+        statement = (
+            select(MESSAGE)
+            .where(MESSAGE.id.in_(ids))
+            .traverse(MESSAGE.thread, to=THREAD, optional=False)
+            .return_nodes(MESSAGE, THREAD)
+        )
+        found: dict[str, str] = {}
+        for message, thread in self._session.all_with_edges(statement):
+            here = found.get(message.id)
+            if here is None or thread.id < here:
+                found[message.id] = thread.id
+        logger.debug("Read conversations for %d of %d messages", len(found), len(ids))
+        return found
+
+    def count_members(self, thread_ids: list[str]) -> dict[str, int]:
+        """How many messages each of these conversations really holds.
+
+        Rooted at the thread, and that is the whole point of declaring
+        :attr:`~mailarc_core.archive.model.Thread.messages`. runic emits a
+        predicate naming a *traversed* variable after the whole pipeline, so
+        the message-rooted spelling would expand every message in the archive
+        and filter afterwards; rooted here the ``IN`` lands on the primary key
+        before anything is expanded.
+
+        ``count(DISTINCT m.id)`` rather than ``count(*)`` because a member
+        archived from two accounts reaches this thread once but is one message,
+        and the number a header prints has to count messages.
+        """
+        if not thread_ids:
+            return {}
+        statement = (
+            select(THREAD)
+            .where(THREAD.id.in_(thread_ids))
+            .traverse(Thread.messages, to=MESSAGE, optional=False)
+            .project(
+                THREAD.id.as_("thread_id"),
+                count(MESSAGE.id, distinct=True).as_("total"),
+            )
+        )
+        rows = self._session.all_rows(statement)
+        return {
+            str(row.get("thread_id") or ""): int(row.get("total") or 0)
+            for row in rows
+            if row.get("thread_id")
+        }
+
+    def find_members(
+        self, thread_id: str, *, limit: int = 200, offset: int = 0
+    ) -> list[str]:
+        """The ids of one conversation's messages, newest first.
+
+        Ids and nothing else, so hydration is
+        :meth:`MessageRepository.find_by_ids`'s job — the same division every
+        ranked answer already makes. That is not tidiness: attaching the
+        display sender here would mean an ``OPTIONAL MATCH`` beside a ``WHERE``
+        that names a traversed variable, which is precisely the misplacement
+        :func:`_filtered` exists to document. One more statement on a path that
+        runs once per button press buys the whole class of bug away.
+
+        Ordered like the listing it feeds, id tiebreak included, so a
+        conversation reads the same way round as the page it expands into.
+        """
+        if not thread_id:
+            return []
+        statement = (
+            select(MESSAGE)
+            .traverse(MESSAGE.thread, to=THREAD, optional=False)
+            .where(THREAD.id == thread_id)
+            .order_by(MESSAGE.sent_at, desc=True)
+            .order_by(MESSAGE.id)
+            .distinct()
+            .skip(offset)
+            .limit(limit)
+            .project(MESSAGE.id.as_("id"))
+        )
+        rows = self._session.all_rows(statement)
+        found = [str(row.get("id") or "") for row in rows]
+        logger.debug("Conversation %s holds %d listed messages", thread_id, len(found))
+        return [one for one in found if one]
 
 
 class AddressRepository(Repository[Address]):

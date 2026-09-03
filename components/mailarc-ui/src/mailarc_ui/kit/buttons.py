@@ -2,9 +2,10 @@
 
 A primary action is coral and filled; a real action beside one is soft — a
 tint rather than a fill; anything dismissive is quiet, ink on nothing; and the
-reading-pane header carries small bordered pills. Four functions rather than
-four prop spellings, for the same reason ``panel_card`` exists: the moment a
-second page writes its own ``mn.button(variant=…, color=…)`` the two drift.
+reading-pane header carries small bordered pills, which a list row wears as
+the glyph alone. Five functions rather than five prop spellings, for the same
+reason ``panel_card`` exists: the moment a second page writes its own
+``mn.button(variant=…, color=…)`` the two drift.
 
 ``soft_button`` was the last one added and it was found the way the others
 were — by counting. Five call sites across the job panels were passing
@@ -76,4 +77,26 @@ def pill_action(label: str, icon: str | None = None, **props: Any) -> rx.Compone
         radius="xl",
         class_name=_merged("ma-pill-action", props),
         **props,
+    )
+
+
+def pill_icon_action(icon: str, label: str, **props: Any) -> rx.Component:
+    """The same pill, worn by a row that has no width to spare for words.
+
+    A list row spends every pixel it has on the subject line, and a pill
+    spelling "Show whole conversation" takes them from it. The label does not
+    go away — it becomes the tooltip and the accessible name, which is what
+    keeps this a button and not a glyph somebody has to guess at.
+    """
+    return mn.tooltip(
+        mn.action_icon(
+            rx.icon(icon, size=14),
+            variant="default",
+            size="md",
+            radius="xl",
+            aria_label=label,
+            class_name=_merged("ma-pill-action", props),
+            **props,
+        ),
+        label=label,
     )

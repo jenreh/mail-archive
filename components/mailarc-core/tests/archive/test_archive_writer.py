@@ -293,10 +293,46 @@ class TestThread:
 
         assert ("IN_THREAD", "m1@example.com", "7:root@example.com") in session.edges
 
-    def test_nothing_naming_a_conversation_means_no_thread_node(
+    def test_a_message_naming_no_conversation_opens_one_of_its_own(
         self, archiver, session
     ) -> None:
+        """Keyed on its own Message-ID, which is what its replies will name."""
         archiver.archive(session, mail(), origin(provider_thread_id=None))
+
+        assert ("IN_THREAD", "m1@example.com", "7:m1@example.com") in session.edges
+
+    def test_an_imap_root_and_its_reply_land_on_one_thread(
+        self, archiver, session
+    ) -> None:
+        """The whole point: IMAP hands out no thread ids, so the headers do.
+
+        The root has neither ``References`` nor ``In-Reply-To``, and used to
+        get no thread while its own reply grouped without it.
+        """
+        archiver.archive(session, mail(), origin(provider_thread_id=None))
+        archiver.archive(
+            session,
+            mail(
+                canonical_id="m2@example.com",
+                rfc_message_id="m2@example.com",
+                in_reply_to="m1@example.com",
+                thread_hint="m1@example.com",
+            ),
+            origin(provider_message_id="i-2", provider_thread_id=None),
+        )
+
+        assert ("IN_THREAD", "m1@example.com", "7:m1@example.com") in session.edges
+        assert ("IN_THREAD", "m2@example.com", "7:m1@example.com") in session.edges
+
+    def test_a_message_without_a_message_id_still_gets_no_thread(
+        self, archiver, session
+    ) -> None:
+        """Its canonical id is a digest of the bytes; no reply can name one."""
+        archiver.archive(
+            session,
+            mail(canonical_id="sha256:abc", rfc_message_id=None),
+            origin(provider_thread_id=None),
+        )
 
         assert not any(isinstance(node, Thread) for node in session.added)
         assert not any(rel == "IN_THREAD" for rel, _, _ in session.edges)

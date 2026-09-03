@@ -136,6 +136,61 @@ class MessageSummary(BaseModel):
     """What the provider filed it under: a human's labels first, the
     provider's own (INBOX, UNREAD) last, each group by name."""
 
+    subject_norm: str = ""
+    """The subject with its reply prefixes and ticket tokens stripped — what
+    :func:`~mailarc_core.mail.parsing.normalise_subject` wrote at import.
+
+    Carried so a listing can group by subject without re-deriving the rule
+    above the archive: ``Re: Angebot`` and ``AW: Angebot`` are one group, and
+    the word that decides it was already on the node.
+    """
+
+
+class Recipient(BaseModel):
+    """The one ``To`` address a grouped listing files a message under.
+
+    Deliberately one and not the list. The graph keeps no header order on
+    ``SENT_TO`` — a recipient is a set of edges — so "the first recipient" is
+    not a fact the archive holds, and a listing that pretended otherwise
+    would file the same message under a different person after a rebuild.
+    The reader picks the smallest normalised address instead, which is the
+    same tie rule :meth:`~mailarc_core.archive.repository.ThreadRepository.find_for_messages`
+    keeps for a message in two threads: arbitrary, and the same every time.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    address: str
+    name: str = ""
+
+
+class Conversation(BaseModel):
+    """One provider thread the way a grouped listing needs it.
+
+    A projection of a :class:`Thread` node, and deliberately two fields. It
+    exists beside :class:`MessageSummary` rather than as two more fields on it
+    because ``total`` is a fact about a *conversation*: put it on every member
+    and the type can express a state that cannot exist — two messages of one
+    group disagreeing about how big the group is. It is the same call the
+    search page already made for ``relevance``, which lives on
+    :class:`~mailarc_core.archive.search.MessageHit` and not on the summary,
+    because it belongs to *this answer* rather than to the message.
+
+    No subject. A listing reads the heading off whichever member it is showing
+    at the top, which is the message a reader is looking at; a ``Thread``
+    node's subject is whichever member happened to be imported first, and that
+    is ``Re: …`` about as often as it is not.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    """The ``Thread`` node's key — ``{account}:{provider_thread_id}``."""
+
+    total: int = 0
+    """How many messages the **whole** conversation holds, which is not how
+    many of them a given page returned."""
+
 
 class TagOrigin(StrEnum):
     """Where a tag came from — a human, or a cluster somebody promoted.
@@ -263,6 +318,32 @@ class Thread(Node, labels=["Thread"]):
 
     id: str = Field(primary_key=True)
     subject: str | None = Field(default=None)
+
+    messages: Any = Relation(
+        relationship="IN_THREAD", direction="INCOMING", target="Message"
+    )
+    """The messages in this conversation — :attr:`Message.thread` from the
+    other end.
+
+    Declared here so a statement can be **rooted at the thread**, which is the
+    same argument :attr:`Account.copies` and :attr:`Tag.messages` make: runic
+    emits a predicate naming a traversed variable *after* the whole pipeline,
+    so ``t.id IN $ids`` on a traversal from the message end lands behind the
+    expansion it was meant to narrow — and counting a conversation's members
+    means narrowing to the thread first and expanding second, or the count
+    scans every message in the archive.
+
+    Nothing writes this edge from this side; the writer creates one
+    ``IN_THREAD`` per message through :attr:`Message.thread`.
+
+    Annotated ``Any`` for the reason :attr:`Account.copies` is, and it is the
+    same landmine: ``Message`` is declared *below* this class, so runic —
+    which resolves annotations while the class body runs — would abort the
+    whole resolution pass on a forward reference and silently strip the
+    converters off every other field on the node. ``target`` carries the real
+    type as a string, which runic resolves through its registry after both
+    classes exist.
+    """
 
 
 class Label(Node, labels=["Label"]):

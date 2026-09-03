@@ -38,6 +38,7 @@ from mailarc_analytics.semantic.config import SemanticConfig, SemanticProvider
 from mailarc_analytics.semantic.embedder import (
     DEFAULT_BASE_URLS,
     DEFAULT_MODELS,
+    AzureOpenAIEmbedder,
     OllamaEmbedder,
     OpenAIEmbedder,
     _retry_after_seconds,
@@ -53,6 +54,8 @@ from mailarc_core.mail.errors import (
 OLLAMA_PATH = "/api/embed"
 OPENAI_ROOT = "/v1"
 OPENAI_PATH = f"{OPENAI_ROOT}/embeddings"
+AZURE_ROOT = "/openai/v1"
+AZURE_PATH = f"{AZURE_ROOT}/embeddings"
 
 MODEL = "probe-model"
 DIMENSION = 4
@@ -86,6 +89,26 @@ def openai_config(httpserver, **overrides: Any) -> SemanticConfig:
         "model": MODEL,
         "dimension": DIMENSION,
         "base_url": httpserver.url_for(OPENAI_ROOT),
+        "api_key": KEY,
+        "request_timeout": 5.0,
+    }
+    return SemanticConfig(**(settings | overrides))
+
+
+def azure_config(httpserver, **overrides: Any) -> SemanticConfig:
+    """The paid adapter's Azure sibling, key and deployment included.
+
+    Its root carries ``/openai/v1`` because that is the whole endpoint an
+    Azure OpenAI resource answers requests on — unlike OpenAI's, there is no
+    root shared by every customer for a default to point at, so every test
+    here states one explicitly the same way it states the deployment (in
+    ``model``, which is what Azure calls it).
+    """
+    settings: dict[str, Any] = {
+        "provider": SemanticProvider.AZURE_OPENAI,
+        "model": MODEL,
+        "dimension": DIMENSION,
+        "base_url": httpserver.url_for(AZURE_ROOT),
         "api_key": KEY,
         "request_timeout": 5.0,
     }
@@ -139,6 +162,20 @@ def headers_seen(httpserver) -> list[str | None]:
     return [request.headers.get("Authorization") for request, _ in httpserver.log]
 
 
+def azure_headers_seen(httpserver) -> list[tuple[str | None, str | None]]:
+    """Both auth headers of every request, so a test can assert one is unset.
+
+    A pair rather than one string: the whole reason ``AzureOpenAIEmbedder``
+    overrides ``_headers`` is that ``api-key`` and ``Authorization: Bearer``
+    are not interchangeable, and a test that only read one of them could not
+    tell "sent the right header" from "sent both".
+    """
+    return [
+        (request.headers.get("api-key"), request.headers.get("Authorization"))
+        for request, _ in httpserver.log
+    ]
+
+
 async def embed(
     embedder, texts: Sequence[str], **kwargs: Any
 ) -> Sequence[Sequence[float]]:
@@ -165,6 +202,19 @@ class TestBuildingOne:
             build_embedder(SemanticConfig(provider=SemanticProvider.OPENAI)),
             OpenAIEmbedder,
         )
+        assert isinstance(
+            build_embedder(SemanticConfig(provider=SemanticProvider.AZURE_OPENAI)),
+            AzureOpenAIEmbedder,
+        )
+
+    def test_azure_openai_has_no_guessable_default(self) -> None:
+        """Unlike every other provider, neither table can offer this one
+        anything — a resource and its deployment belong to one customer, so
+        :func:`build_embedder` still has to hand back an adapter (§4.1: it
+        runs at process import) rather than raise, and the adapter refuses
+        the first request instead. See ``TestTheAzureAdapter``."""
+        assert DEFAULT_BASE_URLS[SemanticProvider.AZURE_OPENAI] == ""
+        assert DEFAULT_MODELS[SemanticProvider.AZURE_OPENAI] == ""
 
     def test_an_empty_model_becomes_the_providers_own_default(self) -> None:
         """One shared default would be wrong for whichever provider did not
@@ -391,6 +441,97 @@ class TestThePaidAdapter:
 
         with pytest.raises(MailPermanentError, match="'data' list"):
             await embed(OpenAIEmbedder(openai_config(httpserver)), ["first"])
+
+
+class TestTheAzureAdapter:
+    """What is not shared with :class:`OpenAIEmbedder`, which the rest of the
+    request and response handling is inherited from wholesale — the sort by
+    ``index``, the ``dimensions`` parameter, the refusal taxonomy all have
+    their one test each already, against the parent class."""
+
+    async def test_it_sends_the_azure_key_header_and_not_a_bearer_token(
+        self, httpserver
+    ) -> None:
+        httpserver.expect_request(AZURE_PATH, method="POST").respond_with_json(
+            openai_body((0, FIRST))
+        )
+
+        await embed(AzureOpenAIEmbedder(azure_config(httpserver)), ["first"])
+
+        assert azure_headers_seen(httpserver) == [(KEY, None)]
+
+    async def test_it_still_asks_for_the_configured_dimension(self, httpserver) -> None:
+        """Same body OpenAI sends — the two APIs agree past the header."""
+        httpserver.expect_request(AZURE_PATH, method="POST").respond_with_json(
+            openai_body((0, FIRST))
+        )
+
+        await embed(AzureOpenAIEmbedder(azure_config(httpserver)), ["first"])
+
+        assert sent_bodies(httpserver) == [
+            {
+                "model": MODEL,
+                "input": ["first"],
+                "encoding_format": "float",
+                "dimensions": DIMENSION,
+            }
+        ]
+
+    async def test_entries_are_still_sorted_by_their_own_index(
+        self, httpserver
+    ) -> None:
+        httpserver.expect_request(AZURE_PATH, method="POST").respond_with_json(
+            openai_body((1, SECOND), (0, FIRST))
+        )
+
+        vectors = await embed(
+            AzureOpenAIEmbedder(azure_config(httpserver)), ["first", "second"]
+        )
+
+        assert [list(one) for one in vectors] == [FIRST, SECOND]
+
+    async def test_a_missing_endpoint_is_refused_before_any_request(
+        self, httpserver
+    ) -> None:
+        """Neither table has a default for this provider (§4.1: raising at
+        construction would crash ``app/app.py`` at import instead), so the
+        refusal has to happen here, on the first call, and it must not cost a
+        request to a host nobody configured."""
+        config = azure_config(httpserver, base_url="")
+
+        with pytest.raises(MailPermanentError, match="app_semantic_base_url"):
+            await embed(AzureOpenAIEmbedder(config), ["first"])
+
+        assert httpserver.log == []
+
+    async def test_a_missing_deployment_is_refused_before_any_request(
+        self, httpserver
+    ) -> None:
+        config = azure_config(httpserver, model="")
+
+        with pytest.raises(MailPermanentError, match="app_semantic_model"):
+            await embed(AzureOpenAIEmbedder(config), ["first"])
+
+        assert httpserver.log == []
+
+    async def test_both_missing_are_named_together(self, httpserver) -> None:
+        """Naming only the first found would send somebody back here twice."""
+        config = azure_config(httpserver, base_url="", model="")
+
+        with pytest.raises(
+            MailPermanentError, match="app_semantic_base_url and app_semantic_model"
+        ):
+            await embed(AzureOpenAIEmbedder(config), ["first"])
+
+    async def test_an_empty_batch_skips_the_configuration_check_too(
+        self, httpserver
+    ) -> None:
+        """Consistent with every other adapter: nothing to embed is answered
+        without even looking at whether the embedder could have worked."""
+        config = azure_config(httpserver, base_url="", model="")
+
+        assert await embed(AzureOpenAIEmbedder(config), []) == []
+        assert httpserver.log == []
 
 
 class TestWhatARefusalMeans:

@@ -16,6 +16,7 @@ between a bug in the write path and a rebuild that has not been run yet.
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from unittest import mock
 
 import pytest
 import reflex as rx
@@ -39,6 +40,7 @@ from mailarc_analytics import (
     CoRecipientRow,
     TemplateDirection,
 )
+from mailarc_analytics.derived.model import TopicSignal
 from mailarc_analytics.queries import catalog
 from mailarc_ui.insights import (
     AgreementView,
@@ -65,7 +67,12 @@ from mailarc_ui.insights import (
     topics_card,
     totals_card,
 )
-from mailarc_ui.insights.model import DISPUTE_LIMIT, sample_label, short_date
+from mailarc_ui.insights.model import (
+    DISPUTE_LIMIT,
+    METHOD_COLORS,
+    sample_label,
+    short_date,
+)
 
 __all__ = ["fresh", "graph", "published", "tags"]
 """pytest collects a fixture off the importing module's namespace, so the four
@@ -786,6 +793,27 @@ class TestTheProjection:
         assert method_color("ref") == "teal"
         assert method_color("semantic") == "gray"
         assert method_color("") == "gray"
+
+    def test_every_signal_the_analysis_can_write_has_a_colour(self) -> None:
+        """The exhaustiveness this file was missing.
+
+        `TopicSignal.CONVERSATION` was added to the analysis and not to
+        `METHOD_COLORS`, and the miss reached a user: the first rebuild that
+        wrote a `conversation` edge made the whole topics card raise
+        `KeyError` instead of rendering. A signal is added in one package and
+        coloured in another, so nothing but this assertion joins them.
+        """
+        assert set(METHOD_COLORS) == set(TopicSignal)
+
+    def test_a_signal_with_no_colour_is_still_grey_rather_than_a_crash(self) -> None:
+        """`method_color`'s own docstring promises grey "for one we do not
+        know", but it caught only `ValueError` — the unknown-*string* case. A
+        `TopicSignal` this build knows and has not coloured raised `KeyError`
+        straight through it. Both misses are the same promise."""
+        missing = next(iter(TopicSignal))
+
+        with mock.patch.dict(METHOD_COLORS, clear=True):
+            assert method_color(missing.value) == "gray"
 
     def test_a_view_cannot_be_edited_once_read(self) -> None:
         row = PairView(left_id="a", right_id="b", together=1)

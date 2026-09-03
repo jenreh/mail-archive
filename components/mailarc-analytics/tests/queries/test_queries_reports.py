@@ -553,6 +553,82 @@ class TestWhatPhaseTwoAsksFor:
             "limit": 10,
         }
 
+    def test_a_page_s_topics_bind_its_ids_once(self) -> None:
+        fake, reader = _reader()
+
+        reader.topics_of(["m1", "m2", "m1"])
+
+        assert fake.parameters(catalog.TOPICS_OF_MESSAGES) == {"ids": ["m1", "m2"]}
+        assert fake.opened == 1
+
+    def test_a_topic_membership_names_the_topic_and_its_words(self) -> None:
+        _fake, reader = _reader(
+            {
+                catalog.TOPICS_OF_MESSAGES: Reply(
+                    columns=["message_id", "topic_id", "label", "keywords"],
+                    rows=[["m1", "topic:8f3", "Angebot", ["angebot", "q3"]]],
+                )
+            }
+        )
+
+        found = reader.topics_of(["m1", "m2"])
+
+        assert list(found) == ["m1"]
+        assert found["m1"].topic_id == "topic:8f3"
+        assert found["m1"].label == "Angebot"
+        assert found["m1"].keywords == ("angebot", "q3")
+
+    def test_a_message_filed_twice_resolves_to_the_smallest_topic(self) -> None:
+        """Whatever order the rows came back in."""
+        _fake, reader = _reader(
+            {
+                catalog.TOPICS_OF_MESSAGES: Reply(
+                    columns=["message_id", "topic_id", "label", "keywords"],
+                    rows=[
+                        ["m1", "topic:b", "", None],
+                        ["m1", "topic:a", "", None],
+                    ],
+                )
+            }
+        )
+
+        assert reader.topics_of(["m1"])["m1"].topic_id == "topic:a"
+
+    def test_no_ids_ask_for_no_topics(self) -> None:
+        fake, reader = _reader()
+
+        assert reader.topics_of([]) == {}
+        assert fake.opened == 0
+
+    def test_a_page_s_groups_bind_its_ids_once(self) -> None:
+        fake, reader = _reader()
+
+        reader.groups_of(["m1", "m2"])
+
+        assert fake.parameters(catalog.GROUPS_OF_MESSAGES) == {"ids": ["m1", "m2"]}
+        assert fake.opened == 1
+
+    def test_a_group_membership_carries_the_group_s_size(self) -> None:
+        _fake, reader = _reader(
+            {
+                catalog.GROUPS_OF_MESSAGES: Reply(
+                    columns=["message_id", "group_id", "size", "message_count"],
+                    rows=[["m1", "group:9c", 5, 40], ["m1", "group:1a", 3, 4]],
+                )
+            }
+        )
+
+        found = reader.groups_of(["m1"])
+
+        assert found["m1"].group_id == "group:1a"
+        assert (found["m1"].size, found["m1"].message_count) == (3, 4)
+
+    def test_no_ids_ask_for_no_groups(self) -> None:
+        fake, reader = _reader()
+
+        assert reader.groups_of([]) == {}
+        assert fake.opened == 0
+
     def test_a_suggestion_row_carries_the_case_that_was_made_for_it(self) -> None:
         """``score`` and ``method`` both, because "these two share a thread" and
         "these two are in the same circle" are not the same claim."""

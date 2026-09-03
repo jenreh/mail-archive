@@ -1,4 +1,4 @@
-"""Asking the archive what the three analyses found — the read façade.
+"""Asking the archive what the analyses found — the read façade.
 
 :class:`~mailarc_core.archive.reader.ArchiveReader`'s counterpart, one layer
 up: that one answers what the import wrote, this one answers what a rebuild
@@ -39,9 +39,13 @@ from mailarc_analytics.queries.model import (
     ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
+    CommunityRow,
     CoRecipientRow,
     GroupRow,
+    ImportantMessageRow,
+    TagSuggestionRow,
     TemplateRow,
+    TopicKeywordsRow,
     TopicRow,
 )
 from mailarc_analytics.queries.rows import (
@@ -89,7 +93,7 @@ archive's worth of pairs in memory.
 class AnalyticsReader:
     """The derived layer as a page needs it.
 
-    Six listings, six counts and one verdict.
+    Eleven listings, six counts and one verdict.
 
     Read-only, unlike its counterpart in ``mailarc-core``. Nothing here writes,
     because everything it reads is written by ``rebuild-derived`` and a report
@@ -334,6 +338,122 @@ class AnalyticsReader:
             for row in rows
         )
 
+    def communities(self, *, limit: int = REPORT_LIMIT) -> tuple[CommunityRow, ...]:
+        """Circles of correspondents, busiest first — B3's answer as a listing.
+
+        Ordered by the mail that circulates in a circle rather than by how many
+        people are in it, which is :meth:`recurring_groups`' choice and the
+        same one: a circle of forty who exchanged three mails is a directory,
+        and a circle of five who exchanged four hundred is where the work is.
+        """
+        with self._graph_session() as graph:
+            rows = rows_of(graph, catalog.TOP_COMMUNITIES, {"limit": _limit(limit)})
+        return tuple(
+            CommunityRow(
+                id=as_text(row["id"]),
+                label=as_text(row["label"]),
+                size=as_int(row["size"]),
+                message_count=as_int(row["message_count"]),
+                method=as_text(row["method"]),
+                first_seen=as_datetime(row["first_seen"]),
+                last_seen=as_datetime(row["last_seen"]),
+            )
+            for row in rows
+        )
+
+    def important_messages(
+        self, *, limit: int = REPORT_LIMIT
+    ) -> tuple[ImportantMessageRow, ...]:
+        """What probably matters, best first — B2's answer, with its reasons.
+
+        The statement filters ``importance IS NOT NULL``, so an archive nobody
+        has run a rebuild over answers with nothing rather than with whichever
+        unscored messages the store happened to visit.
+        """
+        with self._graph_session() as graph:
+            rows = rows_of(graph, catalog.TOP_IMPORTANT, {"limit": _limit(limit)})
+        return tuple(
+            ImportantMessageRow(
+                id=as_text(row["id"]),
+                subject=as_text(row["subject"]),
+                sent_at=as_datetime(row["sent_at"]),
+                sender=as_text(row["sender"]),
+                importance=as_float(row["importance"]),
+                reasons=_as_words(row["reasons"]),
+            )
+            for row in rows
+        )
+
+    def topic_keywords(
+        self, *, limit: int = REPORT_LIMIT
+    ) -> tuple[TopicKeywordsRow, ...]:
+        """What each topic is about, in its members' own words.
+
+        One row per topic, unlike :meth:`topics` — that one is per topic *per
+        signal*, and these words would come back once for every way the
+        topic's messages were joined.
+        """
+        with self._graph_session() as graph:
+            rows = rows_of(graph, catalog.TOPIC_KEYWORDS, {"limit": _limit(limit)})
+        return tuple(
+            TopicKeywordsRow(
+                id=as_text(row["id"]),
+                label=as_text(row["label"]),
+                keywords=_as_words(row["keywords"]),
+                message_count=as_int(row["message_count"]),
+            )
+            for row in rows
+        )
+
+    def suggestion_counts(self) -> dict[str, int]:
+        """How many messages each tag is being offered, keyed by tag id.
+
+        A mapping rather than a row type, because the tag itself is not this
+        reader's to describe: ``Tag`` belongs to ``mailarc-core`` and a page
+        already holds
+        :class:`~mailarc_core.archive.model.TagSummary` values from
+        :class:`~mailarc_core.archive.tags.TagStore`. What is missing there is
+        the badge, and a badge is a number.
+
+        **Every tag is in it, including the ones with nothing to accept.** The
+        statement's traversal is optional, so a tag no analysis had anything to
+        say about comes back as a zero — which is a state a user should be
+        shown, and absence is not.
+
+        Unlimited, alone among the listings here: the population is the tags a
+        person made by hand.
+        """
+        with self._graph_session() as graph:
+            rows = rows_of(graph, catalog.SUGGESTION_COUNTS)
+        return {as_text(row["id"]): as_int(row["suggestions"]) for row in rows}
+
+    def suggestions_for(
+        self, tag_id: str, *, limit: int = REPORT_LIMIT
+    ) -> tuple[TagSuggestionRow, ...]:
+        """What one tag is being offered, strongest case first.
+
+        The tag arrives as a **bound parameter** and never as part of a
+        statement, which is the catalogue's rule and matters more here than
+        anywhere else in this file: this is the one listing whose argument
+        comes from something a user typed.
+        """
+        with self._graph_session() as graph:
+            rows = rows_of(
+                graph,
+                catalog.TAG_SUGGESTIONS,
+                {"tag": tag_id, "limit": _limit(limit)},
+            )
+        return tuple(
+            TagSuggestionRow(
+                message_id=as_text(row["id"]),
+                subject=as_text(row["subject"]),
+                sent_at=as_datetime(row["sent_at"]),
+                score=as_float(row["score"]),
+                method=as_text(row["method"]),
+            )
+            for row in rows
+        )
+
 
 def _co_recipients(session: Session, limit: int) -> tuple[CoRecipientRow, ...]:
     """A1 off the ground truth. Taken as a session so the cross-check can run
@@ -398,6 +518,22 @@ def _as_day(value: object) -> date | None:
     except ValueError:
         logger.warning("Ignoring unparseable archiving day %r", value)
         return None
+
+
+def _as_words(value: object) -> tuple[str, ...]:
+    """A stored list of strings as a tuple, in the order the rebuild wrote it.
+
+    ``Message.importance_reasons`` and ``Topic.keywords`` are the only list
+    properties a report reads, and both are ordered on purpose — the reasons as
+    the scorer sorted them, the keywords most discriminating first — so this
+    keeps the order and never sorts. A property the rebuild has not written is
+    ``None`` and comes back as ``()``: a message scored with no reason at all
+    and a message never scored both render as no chips, and the listing already
+    filters the second one out.
+    """
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(one) for one in value if one is not None)
 
 
 def _span(first: date, last: date) -> tuple[date, ...]:

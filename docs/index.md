@@ -46,6 +46,8 @@ features:
 | [Getting started](./user/getting-started.md) | Install the tools, create the database, get the app running |
 | [Connecting a mailbox](./user/connecting-a-mailbox.md) | Add an account, get through Google's consent screen |
 | [Importing mail](./user/importing-mail.md) | Start an import, read the progress, cancel, resume, see what arrived |
+| [Insights](./user/insights.md) | Topics, circles, what probably matters, and tagging mail so it stays tagged |
+| [The graph explorer](./user/graph-explorer.md) | Drawing one corner of the archive, and why a topic link goes stale |
 | [Semantic search](./user/semantic-search.md) | Turning an embedder on, what it costs, and what an assistant may read |
 | [Configuration](./user/configuration.md) | Profiles, environment variables, every setting there is |
 | [The desktop app](./user/desktop-app.md) | Building the macOS `.app`, what it bundles, what it does not |
@@ -56,11 +58,12 @@ features:
 | Page | What it answers |
 | --- | --- |
 | [Architecture](./developer/architecture.md) | The six components, who may import whom, and why |
-| [Data model](./developer/data-model.md) | The graph nodes, the six tables, the blob store |
+| [Data model](./developer/data-model.md) | The graph's three layers, the six tables, the blob store |
 | [The import pipeline](./developer/import-pipeline.md) | Stage by stage, and the two decisions that shape it |
 | [Jobs and the worker](./developer/jobs-and-worker.md) | Leases, claims, cancellation, crash recovery |
 | [Adding a mail provider](./developer/adding-a-provider.md) | What implementing `MailSourcePort` involves |
-| [The MCP server](./developer/mcp-server.md) | The six read-only tools, wiring a client, and the trust model |
+| [The graph explorer](./developer/graph-explorer.md) | The cytoscape wrapper, its prop and event contract, and the state behind it |
+| [The MCP server](./developer/mcp-server.md) | The ten read-only tools, wiring a client, and the trust model |
 | [Testing](./developer/testing.md) | Where tests live, what the markers mean, the isolation test |
 | [Operations](./developer/operations.md) | Migrations, tasks, the quality gate |
 
@@ -100,12 +103,24 @@ Built and tested:
   co-addressed counts from the messages and holds them against the edge a
   rebuild wrote, so a wrong write path says so instead of being reported as a
   finding.
+- Four more findings on top of them, all still arithmetic and all still
+  recomputed from scratch by one job: correspondent **circles** out of label
+  propagation, a **keyword** list per topic, an **importance** score that names
+  every term that produced it, and **suggestions** that offer a tag the untagged
+  mail which looks like it belongs. See [Insights](./user/insights.md).
+- The **annotation layer**: a `Tag` a person writes by hand, which no rebuild
+  and no mailbox clear-out can reach. It is the durable reference a topic id is
+  not.
+- The **graph explorer** at `/graph`, which draws one corner of the archive with
+  cytoscape.js and is the only wrapped React component in the application. See
+  [the user guide](./user/graph-explorer.md) and [the developer
+  page](./developer/graph-explorer.md).
 
 - Semantic search and the MCP server. An embedder is optional and off by
   default — see [Semantic search](./user/semantic-search.md) — and with one
   configured, the `embed` job fills in `Message.embedding`, the search page
   gains its semantic path, A2 gains its sixth signal, and `mail-archive-mcp`
-  answers six read-only tools over the same query catalogue.
+  answers ten read-only tools over the same query catalogue.
 
 Not there yet:
 

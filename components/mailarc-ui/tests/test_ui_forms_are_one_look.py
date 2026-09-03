@@ -30,7 +30,20 @@ from typing import Any
 import mailarc_ui
 from mailarc_ui.accounts.components import account_settings, add_account_form
 from mailarc_ui.embedder.components import api_key_field, settings_form
+from mailarc_ui.graph.state import GraphExplorerState
 from mailarc_ui.search.form import search_form
+from mailarc_ui.tags.components import promote_form
+
+
+def _promote_form() -> Any:
+    """The tag form, bound to the state that hosts the mixin on ``/graph``.
+
+    A closure because the form takes the cluster it is about — the two hosts of
+    ``TagActionsState`` hold that differently — and because every entry in
+    :data:`FORMS` is called with no arguments.
+    """
+    return promote_form(GraphExplorerState, "topic", "topic:example")
+
 
 VALIDATING = {
     "accounts (add a mailbox)": (add_account_form, 4),
@@ -141,6 +154,7 @@ FORMS = {
     "accounts (the open mailbox)": account_settings,
     "embedder (settings)": settings_form,
     "embedder (the key)": api_key_field,
+    "tags (promote a cluster)": _promote_form,
 }
 """Every form this application draws, by the name a failure should say."""
 

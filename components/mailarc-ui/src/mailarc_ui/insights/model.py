@@ -10,6 +10,11 @@ already arrived. Checking the first needs no graph, no registry and no event
 loop — a row in, a string out — and while both halves shared a file that was
 true but impossible to see.
 
+There is no ``TagView`` here, and that is deliberate: it lives in
+:mod:`mailarc_ui.tags.model` beside the mixin that fills it, because the graph
+explorer prints the same chip. This module imports it for
+:class:`Readout` and projects nothing onto it.
+
 The projections are named ``…View`` rather than ``…Row`` for one reason:
 ``mailarc_analytics`` already exports a ``GroupRow``, a ``TopicRow`` and a
 ``TemplateRow``, and this module holds the other half of each of those pairs.
@@ -25,6 +30,7 @@ with a status rather than an exception.
 """
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
@@ -33,14 +39,17 @@ from mailarc_analytics import (
     ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
+    CommunityRow,
     ComparedPair,
     GroupRow,
+    ImportantMessageRow,
     TemplateRow,
     TopicRow,
     TopicSignal,
 )
 from mailarc_sync.jobs import JobState, SyncJob
 from mailarc_ui.imports import percent_of
+from mailarc_ui.tags.model import TagView
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +80,24 @@ twenty do. The count of what was left out is shown beside it.
 
 _NO_PERCENT = "—"
 """Stands in while a rebuild has not reported a stage yet."""
+
+NO_DOMAIN = "(no common domain)"
+"""What a circle whose members share no domain is called.
+
+A ``Community.label`` is the commonest domain among its members and never a
+name anybody invented (§3.2), so it is legitimately empty — and an empty cell
+would read as a label that went missing, which is a different claim.
+"""
+
+NO_SUBJECT = "(no subject)"
+"""And what a message that was sent without one is called in a listing."""
+
+UNKNOWN_METHOD = "unknown"
+"""How a row whose method this build does not recognise names it.
+
+Never hidden: a finding produced by a signal this version has no word for is
+one to be sceptical of, not one to drop.
+"""
 
 _STATE_COLORS = {
     JobState.QUEUED: "gray",
@@ -494,20 +521,128 @@ class TopicView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    id: str = ""
+    """The topic's whole id, which :attr:`key` is only the readable end of.
+
+    Carried because a link to the explorer has to name it in full, and dropped
+    from the table on purpose: what a reader needs is enough to tell two rows
+    apart. It is not a durable reference — a rebuild mints a new one (R7) —
+    which is why a link built from it is a link that can go stale, and why the
+    explorer says so rather than drawing an empty canvas.
+    """
+
     key: str = ""
     label: str = ""
     method: str = ""
     method_color: str = "gray"
     messages: int = 0
 
+    keywords: list[str] = []
+    """What the topic is about, in its members' own words, best first.
+
+    Passed in rather than read off :class:`~mailarc_analytics.TopicRow`, because
+    the two listings behind this row have different shapes: a topic comes back
+    once per *signal* and its keywords once per topic, so the words are looked
+    up by id and the same set lands on every signal the topic was joined by.
+
+    Empty is a legitimate answer and not a gap in the join: the keyword stage
+    runs after the clustering, so a rebuild interrupted between them leaves a
+    topic with no words at all.
+    """
+
     @classmethod
-    def from_row(cls, row: TopicRow) -> TopicView:
+    def from_row(cls, row: TopicRow, keywords: Sequence[str] = ()) -> TopicView:
         return cls(
+            id=row.id,
             key=short_key(row.id),
             label=row.label or "(no subject in common)",
-            method=row.method or "unknown",
+            method=row.method or UNKNOWN_METHOD,
             method_color=method_color(row.method),
             messages=row.messages,
+            keywords=list(keywords),
+        )
+
+
+class CommunityView(BaseModel):
+    """One circle of correspondents, as the listing prints it.
+
+    Not a :class:`GroupView`. A group is one exact set of people a message was
+    addressed to, hashed; a circle is a partition of the whole co-addressing
+    graph, so two of its members need never have shared a single message. The
+    two panels stand beside each other because that difference is the finding.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = ""
+    """The whole id, which a link into the explorer has to name in full.
+
+    A digest of the circle's members, so it survives a rebuild that renumbers
+    the partition — but not one that moves somebody in or out, which is why a
+    tag and never an id is the durable reference (R7).
+    """
+
+    key: str = ""
+    label: str = ""
+    size: int = 0
+    message_count: int = 0
+    method: str = ""
+    span: str = ""
+
+    @classmethod
+    def from_row(cls, row: CommunityRow) -> CommunityView:
+        return cls(
+            id=row.id,
+            key=short_key(row.id),
+            label=row.label or NO_DOMAIN,
+            size=row.size,
+            message_count=row.message_count,
+            method=row.method or UNKNOWN_METHOD,
+            span=span_label(row.first_seen, row.last_seen),
+        )
+
+
+class ImportantMessageView(BaseModel):
+    """A message that probably matters, and the case the archive makes for it.
+
+    The reasons travel with the score and are never dropped for width. B2 is
+    arithmetic over headers rather than a model's opinion precisely so that
+    every term can be named, and a bar on its own is a ranking a reader has no
+    way to argue with.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = ""
+    subject: str = ""
+    sender: str = ""
+    when: str = ""
+
+    score: float = 0.0
+    """The importance as a bar takes it, ``0..100``."""
+
+    score_label: str = "0.00"
+    """The same number as the scorer defines it, ``0..1``."""
+
+    reasons: list[str] = []
+    """The fixed vocabulary behind the score, in the order it was stored.
+
+    A list and not a tuple because Reflex serialises what a component iterates
+    over, and empty is an honest state: the listing already filters out the
+    messages nothing scored, so a row with no chips is one the scorer reached
+    and had nothing to say about.
+    """
+
+    @classmethod
+    def from_row(cls, row: ImportantMessageRow) -> ImportantMessageView:
+        return cls(
+            id=row.id,
+            subject=row.subject or NO_SUBJECT,
+            sender=row.sender,
+            when=short_date(row.sent_at),
+            score=round(100.0 * row.importance, 1),
+            score_label=f"{row.importance:.2f}",
+            reasons=list(row.reasons),
         )
 
 
@@ -612,3 +747,14 @@ class Readout(BaseModel):
     sent: list[TemplateView] = []
     received: list[TemplateView] = []
     templates_error: str = ""
+    communities: list[CommunityView] = []
+    communities_error: str = ""
+    important: list[ImportantMessageView] = []
+    important_error: str = ""
+    tags: list[TagView] = []
+    tag_error: str = ""
+    """The annotation layer, which is the one panel here that is not derived.
+
+    Carried in the same readout all the same: it is read in the same pass, and
+    a page that assigned it separately could show a tag listing from before a
+    rebuild beside the suggestion counts from after it."""

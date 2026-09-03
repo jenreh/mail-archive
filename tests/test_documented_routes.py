@@ -111,6 +111,7 @@ def test_the_pages_agree_on_where_they_are() -> None:
         "/",
         "/dashboard",
         "/insights",
+        "/graph",
         "/admin/accounts",
         "/admin/embedder",
         "/admin/status",

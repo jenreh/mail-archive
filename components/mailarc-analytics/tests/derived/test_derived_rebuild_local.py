@@ -8,15 +8,26 @@ And that it never touches the ground truth, so an analysis bug costs one run
 rather than a restore.
 
 The graph is deliberately dirtied first. A ``CO_ADDRESSED`` edge naming an
-address that must never be co-addressed, and three derived nodes belonging to
+address that must never be co-addressed, and four derived nodes belonging to
 no analysis, are planted before the first rebuild — because a rebuild that only
 ever wrote into an empty derived layer would prove nothing about the delete
 half, and the delete half is the one that could take the archive with it.
+
+The **annotation layer** is planted too, and it is the one thing here that has
+to come out the other side unchanged: a ``Tag`` with its memberships, written
+by ``mailarc-core`` before the rebuild and read back after two of them. Ground
+truth can be imported again; a tag is what a person decided and nothing outside
+the graph ever held a copy of it.
 """
 
 import corpus
 import pytest
-from planted_graph import archive, archive_refingerprinted, ground_truth
+from planted_graph import (
+    archive,
+    archive_refingerprinted,
+    ground_truth,
+    named_properties,
+)
 from runic.ogm import Session
 
 from mailarc_analytics import (
@@ -41,6 +52,17 @@ STALE_COUNT = 999
 
 SIGN_BIT = 1 << 63
 
+IMPORTANCE_PROPERTIES = ("importance", "importance_reasons", "importance_version")
+RANK_PROPERTIES = ("rank", "rank_version")
+"""The five properties this phase writes onto ground-truth nodes, split the way
+the two statements that write them are.
+
+``test_derived_rebuild_tags_local.py`` asserts that everything *but* these came
+through a rebuild untouched; :func:`_snapshot` carries them along with the
+derived layer, because they are recomputed from the same facts and two runs
+have to agree about them too.
+"""
+
 
 def _snapshot(session: Session) -> dict[str, object]:
     """Everything derived, down to the property values, in a stable order.
@@ -48,6 +70,20 @@ def _snapshot(session: Session) -> dict[str, object]:
     Ids and counts would miss the case that matters most: a rebuild that wrote
     the same nodes with a different score, or hung the same edge off them with
     a different method. Two runs have to agree about all of it.
+
+    ``Community``, ``MEMBER_OF`` and ``IN_CIRCLE`` are in here although R1
+    reserved the right to leave them out. FalkorDB's label propagation takes no
+    seed, so an *ambiguous* node can legitimately land in a different circle
+    between two runs over an unchanged graph — but a circle is keyed on the
+    digest of its members rather than on the number the procedure assigned, the
+    iteration count is pinned, and the planted corpus's two cliques are
+    unambiguous. Measured over repeated runs rather than assumed; if a future
+    corpus makes them flap, these three come out and the partition is asserted
+    on its own instead.
+
+    The five properties this phase writes onto ground-truth nodes are in here
+    too, for the same reason and with none of the doubt: they are recomputed
+    arithmetic over the same facts.
     """
     found: dict[str, object] = {
         label: [
@@ -56,7 +92,7 @@ def _snapshot(session: Session) -> dict[str, object]:
                 f"MATCH (n:{label}) RETURN properties(n) ORDER BY n.id"
             ).rows
         ]
-        for label in ("Group", "Topic", "Template")
+        for label in ("Group", "Topic", "Template", "Community")
     }
     found["CO_ADDRESSED"] = [
         row[0]
@@ -65,11 +101,17 @@ def _snapshot(session: Session) -> dict[str, object]:
             "RETURN [a.id, b.id, properties(r)] ORDER BY a.id, b.id"
         ).rows
     ]
-    for edge, target in (("ABOUT", "Topic"), ("INSTANCE_OF", "Template")):
+    for source, edge, target in (
+        ("Message", "ABOUT", "Topic"),
+        ("Message", "INSTANCE_OF", "Template"),
+        ("Message", "SUGGESTED", "Tag"),
+        ("Message", "IN_CIRCLE", "Community"),
+        ("Address", "MEMBER_OF", "Community"),
+    ):
         found[edge] = [
             row[0]
             for row in session.execute(
-                f"MATCH (m:Message)-[r:{edge}]->(t:{target}) "
+                f"MATCH (m:{source})-[r:{edge}]->(t:{target}) "
                 f"RETURN [m.id, t.id, properties(r)] ORDER BY m.id, t.id"
             ).rows
         ]
@@ -80,6 +122,8 @@ def _snapshot(session: Session) -> dict[str, object]:
             "RETURN [m.id, g.id] ORDER BY m.id, g.id"
         ).rows
     ]
+    found["importance"] = named_properties(session, "Message", IMPORTANCE_PROPERTIES)
+    found["rank"] = named_properties(session, "Address", RANK_PROPERTIES)
     return found
 
 
@@ -87,15 +131,15 @@ def _dirty(session: Session) -> None:
     """Leave behind exactly what a previous, different rebuild would have.
 
     A pair that must not exist — the Bcc'd address, co-addressed with the one
-    visible recipient — and one node of each derived label under a key no
-    analysis will mint again.
+    visible recipient — and one node of each of the four derived labels under a
+    key no analysis will mint again.
     """
     session.execute(
         "MATCH (a:Address {id: $left}), (b:Address {id: $right}) "
         "MERGE (a)-[r:CO_ADDRESSED]-(b) SET r.count = $count",
         {"left": corpus.ANNA, "right": corpus.REVISION, "count": STALE_COUNT},
     )
-    for label in ("Group", "Topic", "Template"):
+    for label in ("Group", "Topic", "Template", "Community"):
         session.execute(
             f"MERGE (n:{label} {{id: 'stale'}}) SET n.message_count = $count",
             {"count": STALE_COUNT},
@@ -119,11 +163,19 @@ def _pair(row: dict[str, object]) -> tuple[object, object, object]:
 
 
 class TestWhatOneRebuildFinds:
-    """Exactly what was planted — five findings out of thirty-three messages."""
+    """Exactly what was planted — six findings out of thirty-three messages."""
 
-    def test_the_counts_are_the_ones_the_three_analyses_report(
+    def test_the_counts_are_the_ones_the_nine_analyses_report(
         self, archived: GraphConfig
     ) -> None:
+        """Every field of ``DerivedCounts`` at once, which is the point.
+
+        ``algorithms_skipped`` is nought here and that is the assertion doing
+        the most work: the corpus has co-addressed addresses, so label
+        propagation really ran over a graph that holds the label, and an empty
+        partition would mean the archive has no circles rather than that
+        nothing looked.
+        """
         counts = _rebuild(archived)
 
         assert counts == DerivedCounts(
@@ -139,6 +191,14 @@ class TestWhatOneRebuildFinds:
             templates=2,
             unhashable_messages=0,
             dropped_template_buckets=0,
+            communities=1,
+            circles=33,
+            ranked_addresses=3,
+            ranked_messages=33,
+            keyworded_topics=1,
+            scored_messages=33,
+            suggestions=0,
+            algorithms_skipped=0,
             deleted_nodes=0,
             deleted_edges=0,
         )
@@ -346,7 +406,7 @@ class TestTheDeleteHalf:
                 "MATCH (n) WHERE n.id = 'stale' RETURN count(n)"
             ).rows[0][0]
 
-        assert (counts.deleted_nodes, counts.deleted_edges) == (3, 1)
+        assert (counts.deleted_nodes, counts.deleted_edges) == (4, 1)
         assert leftovers == 0
 
     def test_deleting_the_pair_leaves_both_addresses_standing(
@@ -533,7 +593,7 @@ class TestTheDeleteBatchSize:
 
         second = _rebuild(archived)
 
-        assert (second.deleted_nodes, second.deleted_edges) == (5, 3)
+        assert (second.deleted_nodes, second.deleted_edges) == (6, 3)
 
     def test_the_graph_is_the_same_whichever_batch_size_removed_it(
         self, archived: GraphConfig, monkeypatch: pytest.MonkeyPatch
@@ -599,14 +659,14 @@ class TestIdempotence:
     def test_the_second_run_deletes_exactly_what_the_first_one_wrote(
         self, archived: GraphConfig
     ) -> None:
-        """Two groups, one topic and two templates, and three pairs — which is
-        also the proof that the delete really reaches everything the write
-        produced."""
+        """Two groups, one topic, two templates and one circle, and three
+        pairs — which is also the proof that the delete really reaches
+        everything the write produced."""
         _rebuild(archived)
 
         second = _rebuild(archived)
 
-        assert (second.deleted_nodes, second.deleted_edges) == (5, 3)
+        assert (second.deleted_nodes, second.deleted_edges) == (6, 3)
 
     def test_every_node_id_edge_and_property_is_identical(
         self, archived: GraphConfig
@@ -666,9 +726,17 @@ class TestTheProgressHook:
             RebuildStage.DELETE,
             RebuildStage.READ,
             RebuildStage.CORRESPONDENTS,
+            RebuildStage.CENTRALITY,
+            RebuildStage.COMMUNITIES,
             RebuildStage.TOPICS,
+            RebuildStage.KEYWORDS,
             RebuildStage.TEMPLATES,
+            RebuildStage.IMPORTANCE,
+            RebuildStage.SUGGESTIONS,
         ]
+        assert [one.stage for one in seen] == list(RebuildStage), (
+            "the enum's declaration order is what a job row counts against"
+        )
 
     def test_each_stage_reports_what_it_produced(self, archived: GraphConfig) -> None:
         seen: list[RebuildProgress] = []
@@ -679,8 +747,13 @@ class TestTheProgressHook:
         done = {one.stage: one.done for one in seen}
         assert done[RebuildStage.READ] == 33
         assert done[RebuildStage.CORRESPONDENTS] == 2
+        assert done[RebuildStage.CENTRALITY] == 3
+        assert done[RebuildStage.COMMUNITIES] == 1
         assert done[RebuildStage.TOPICS] == 1
+        assert done[RebuildStage.KEYWORDS] == 1
         assert done[RebuildStage.TEMPLATES] == 2
+        assert done[RebuildStage.IMPORTANCE] == 33
+        assert done[RebuildStage.SUGGESTIONS] == 0
 
     def test_a_rebuild_without_a_hook_is_the_same_rebuild(
         self, archived: GraphConfig
@@ -696,7 +769,15 @@ class TestTheProgressHook:
 
 
 def test_an_empty_archive_rebuilds_to_nothing(config: GraphConfig) -> None:
-    """No messages, no findings, no failure — the state a fresh install is in."""
+    """No messages, no findings, no failure — the state a fresh install is in.
+
+    One number is not nought, and that is §5.1 working. FalkorDB's
+    ``algo.labelPropagation`` throws on a label the graph does not hold, and an
+    archive with no ``CO_ADDRESSED`` edge is exactly that graph, so the guard
+    steps over the call and counts it. "The graph has no circles" and "nothing
+    looked" are two different answers and a job row has to be able to tell them
+    apart.
+    """
     counts = _rebuild(config)
 
-    assert counts == DerivedCounts()
+    assert counts == DerivedCounts(algorithms_skipped=1)

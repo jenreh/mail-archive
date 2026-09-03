@@ -113,9 +113,15 @@ _STAGES: tuple[RebuildStage, ...] = tuple(RebuildStage)
 ``mail_sync_jobs`` counts messages, and a rebuild has none to count: it reads
 the whole archive once and then walks all of it again per analysis, so
 "messages done" would either sit at zero until the end or jump to the total
-after the first stage and stay there. How many of the five stages are behind it
+after the first stage and stay there. How many of the ten stages are behind it
 is the only number that moves forward exactly once per stage and never
 backwards, which is what a progress bar is asking for.
+
+Ten and not five since phase 2, and the constant needs no edit for it:
+``tuple(RebuildStage)`` is the enum's declaration order, which *is* the running
+order, so a stage added there moves this total and the row's denominator with
+it. ``tests/test_worker_analysis.py`` pins the number all the same, because a
+row whose total changed silently is a progress bar that jumps.
 """
 
 

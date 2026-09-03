@@ -17,12 +17,19 @@ façade that runs it.
     still what read a stored timestamp, count or score back.
 ``model``
     What a report answers with — frozen value objects, one per statement's
-    columns, plus the cross-check's verdict.
+    columns, plus the cross-check's verdict and the four the graph explorer
+    draws from.
 ``reports``
     :class:`~mailarc_analytics.queries.reports.AnalyticsReader`, the read
     façade a page asks. It takes numbers and never a statement.
+``graphs``
+    :class:`~mailarc_analytics.queries.graphs.GraphReader`, the same shape for
+    a *picture* rather than a listing: ids and numbers in, one
+    :class:`~mailarc_analytics.queries.model.Subgraph` out, with the degree
+    counted and every weight normalised inside the corner of the graph it
+    describes.
 
-The rule all four exist for: nothing outside ``catalog`` composes Cypher.
+The rule all five exist for: nothing outside ``catalog`` composes Cypher.
 Caller input arrives as a bound ``$parameter``, never as a formatted string, so
 no address, subject or label can change what a statement does. Phase 6's MCP
 server serves a model from here for exactly that reason, and
@@ -41,6 +48,7 @@ from mailarc_analytics.queries.catalog import (
     CATALOG,
     CO_RECIPIENTS,
     COUNT_CO_ADDRESSED,
+    COUNT_COMMUNITIES,
     COUNT_GROUPS,
     COUNT_MESSAGES,
     COUNT_NEEDING_EMBEDDING,
@@ -74,16 +82,30 @@ from mailarc_analytics.queries.catalog import (
     as_graph_datetime,
     parameters_of,
 )
+from mailarc_analytics.queries.graphs import (
+    GRAPH_LIMIT,
+    MAX_GRAPH_ROWS,
+    GraphReader,
+)
 from mailarc_analytics.queries.model import (
     ArchivedDay,
     ArchiveTotals,
     CoAddressedAgreement,
     CoAddressedRow,
+    CommunityRow,
     CoRecipientRow,
     ComparedPair,
+    GraphEdge,
+    GraphNode,
     GroupRow,
+    ImportantMessageRow,
+    NodeKind,
+    Subgraph,
+    TagSuggestionRow,
     TemplateRow,
+    TopicKeywordsRow,
     TopicRow,
+    Weight,
 )
 from mailarc_analytics.queries.reports import (
     AGREEMENT_LIMIT,
@@ -103,6 +125,7 @@ __all__ = [
     "AGREEMENT_LIMIT",
     "ARCHIVED_PER_DAY",
     "CATALOG",
+    "COUNT_COMMUNITIES",
     "COUNT_CO_ADDRESSED",
     "COUNT_GROUPS",
     "COUNT_MESSAGES",
@@ -116,6 +139,8 @@ __all__ = [
     "DELETE_TEMPLATES",
     "DELETE_TOPICS",
     "FULLTEXT_MESSAGES",
+    "GRAPH_LIMIT",
+    "MAX_GRAPH_ROWS",
     "MERGE_ABOUT",
     "MERGE_ADDRESSED_GROUP",
     "MERGE_CO_ADDRESSED",
@@ -142,10 +167,20 @@ __all__ = [
     "CoAddressedAgreement",
     "CoAddressedRow",
     "CoRecipientRow",
+    "CommunityRow",
     "ComparedPair",
+    "GraphEdge",
+    "GraphNode",
+    "GraphReader",
     "GroupRow",
+    "ImportantMessageRow",
+    "NodeKind",
+    "Subgraph",
+    "TagSuggestionRow",
     "TemplateRow",
+    "TopicKeywordsRow",
     "TopicRow",
+    "Weight",
     "as_datetime",
     "as_float",
     "as_graph_datetime",

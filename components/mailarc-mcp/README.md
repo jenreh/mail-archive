@@ -1,13 +1,13 @@
 # mailarc-mcp
 
-The archive as an MCP server: six read-only tools a language model can call.
+The archive as an MCP server: ten read-only tools a language model can call.
 
 §7.5's answer to "can I ask my archive questions", and §3.2's line drawn under
 it — the answer is a model *reading* the archive, never one writing to it.
 Every statement that reaches the store is a named constant in
 `mailarc_analytics.queries.catalog` or a query-builder statement compiled
 against the mapped models, and **no tool takes a query string that reaches the
-graph**. A model can ask the six questions the tools express and no other.
+graph**. A model can ask the ten questions the tools express and no other.
 
 ## Why it is a component of its own
 
@@ -25,10 +25,11 @@ server/
   model.py     what a tool answers with — the contract a model reads, kept
                apart from the component row types so an internal rename is
                not a published breaking change. No I/O.
-  reads.py     ArchiveAccess: where an answer comes from. Holds four
+  reads.py     ArchiveAccess: where an answer comes from. Holds five
                factories it was handed and builds none of them itself, plus
-               the one conversation read the query catalogue does not have.
-  server.py    the six tools, the failure translation, and the FastMCP
+               the two graph reads no reader above it hands out — one
+               conversation, and one topic's members.
+  server.py    the ten tools, the failure translation, and the FastMCP
                logging fix a stdio process needs.
 ```
 
@@ -42,9 +43,9 @@ below.
 - Depends on `mailarc-core` and `mailarc-analytics`, plus `fastmcp`. Never
   `mailarc-sync`, never `mailarc-google`: a tool answers questions about an
   archive that already exists and has no business knowing how mail got into it.
-- **No `app`.** `ArchiveAccess` is constructed with four factories — a graph
-  session, the analytics reader, the archive reader and the semantic search —
-  and asks each one on first use. `app/mcp_server.py` is the module that binds
+- **No `app`.** `ArchiveAccess` is constructed with five factories — a graph
+  session, the analytics reader, the archive reader, the semantic search and
+  the tag store — and asks each one on first use. `app/mcp_server.py` is the module that binds
   them to `app/composition.py`, which is the only place in the repository
   allowed to build a component from configuration. Before the split this
   package reached into the composition root directly, which made it un-movable.
@@ -78,3 +79,21 @@ who reads "no results" stops looking.
 **Every limit is clamped.** The caller is a model that cannot know this
 archive's size and will ask for 10 000 rows. Clamping answers the question it
 meant to ask instead of spending a round trip teaching it a bound.
+
+## The tools
+
+`search_messages`, `timeline` and `thread` read the ground truth; `topics`,
+`co_recipients`, `templates` and `important_messages` read what a rebuild
+derived from it; `topic_messages` reads one topic's mail so that a model can
+summarise it in its own answer, and `tags`/`tagged_messages` read the
+annotation layer a person builds by hand — the only grouping here that
+survives a rebuild.
+
+There is deliberately **no subgraph tool**. A dump of nodes and edges is a
+picture, and a picture costs a model tokens to reconstruct what the listings
+already say in sentences; the graph explorer in `mailarc-ui` is where a *person*
+looks at one.
+
+Nothing here writes a tag, promotes a cluster or stores a summary. §3.2:
+email already carries an exact graph in its headers, and a model's conclusion
+is not allowed to become part of it.

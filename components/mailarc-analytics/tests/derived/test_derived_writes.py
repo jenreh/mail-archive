@@ -16,11 +16,13 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import pytest
 from runic.ogm import QueryBuilder, Session
 
 from mailarc_analytics.derived.model import Group
-from mailarc_analytics.derived.writes import WRITE_BATCH, merge_rows
+from mailarc_analytics.derived.writes import WRITE_BATCH, merge_rows, set_rows
 from mailarc_analytics.queries import catalog
+from mailarc_core.archive.model import Address
 
 STATEMENT = catalog.MERGE_GROUPS
 """A real catalogue statement, because a string is not one any more.
@@ -201,3 +203,127 @@ def test_the_rows_are_consumed_as_they_arrive() -> None:
 
     assert produced == ["m00000", "m00001", "m00002"]
     assert fake.batches == [_rows(3)]
+
+
+class CountingSession(RecordingSession):
+    """A session that answers a ``SET`` statement's own ``written`` column.
+
+    The two property writes in this catalogue project ``count(…) AS written``
+    and :func:`~mailarc_analytics.derived.writes.set_rows` answers with it
+    rather than with the rows it sent, so the stand-in has to have an opinion
+    about what the store found.
+    """
+
+    def __init__(self, written: int) -> None:
+        super().__init__()
+        self._written = written
+
+    def all_rows(
+        self,
+        statement: QueryBuilder[Any] | str,
+        params: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        super().all_rows(statement, params)
+        return [{"written": self._written}]
+
+
+def _counting(written: int) -> tuple[CountingSession, Session]:
+    fake = CountingSession(written)
+    return fake, cast(Session, fake)
+
+
+def test_a_property_write_binds_its_run_wide_parameter_beside_the_rows() -> None:
+    """``$version`` is one value for the whole run, not a key on every row.
+
+    The same shape ``$model`` has on the embedding write, and the reason
+    ``set_rows`` exists beside ``merge_rows`` at all: a statement carrying a
+    second declared parameter cannot go through a loop that binds only
+    ``$rows``, because a binding that leaves a declared parameter out is
+    refused by the store rather than passed as null.
+    """
+    fake, session = _counting(2)
+
+    set_rows(
+        session,
+        catalog.WRITE_ADDRESS_RANKS,
+        [{"id": "a@x.example", "rank": 0.5}],
+        model=Address,
+        params={"version": "1"},
+    )
+
+    statement, params = fake.calls[0]
+    assert statement is catalog.WRITE_ADDRESS_RANKS
+    assert params["version"] == "1"
+    assert params["rows"] == [{"id": "a@x.example", "rank": 0.5}]
+
+
+def test_a_property_write_reports_what_the_store_found_and_not_what_it_sent() -> None:
+    """A ``MATCH`` that finds nothing writes nothing.
+
+    A row naming a message purged between the read and the write is a row that
+    did not land, and a stage reporting how many rows it built would be
+    reporting what it hoped for.
+    """
+    _, session = _counting(1)
+
+    written = set_rows(
+        session,
+        catalog.WRITE_ADDRESS_RANKS,
+        [{"id": "here", "rank": 0.5}, {"id": "gone", "rank": 0.5}],
+        model=Address,
+        params={"version": "1"},
+    )
+
+    assert written == 1
+
+
+def test_a_property_write_batches_the_same_way_a_merge_does() -> None:
+    """One loop's worth of behaviour, not two — the counts come from the store."""
+    fake, session = _counting(3)
+
+    written = set_rows(
+        session,
+        catalog.WRITE_ADDRESS_RANKS,
+        _rows(WRITE_BATCH + 5),
+        model=Address,
+        params={"version": "1"},
+    )
+
+    assert [len(batch) for batch in fake.batches] == [WRITE_BATCH, 5]
+    assert written == 6, "the store's own count, summed over the round trips"
+
+
+def test_a_property_write_with_nothing_to_say_does_not_talk_to_the_graph() -> None:
+    fake, session = _counting(9)
+
+    assert (
+        set_rows(
+            session,
+            catalog.WRITE_ADDRESS_RANKS,
+            [],
+            model=Address,
+            params={"version": "1"},
+        )
+        == 0
+    )
+    assert fake.calls == []
+
+
+def test_a_caller_may_not_bind_the_payload_itself() -> None:
+    """``rows`` is the loop's own parameter; a caller's would go unencoded.
+
+    An ``UNWIND`` payload never passes through runic's mapper on its own, so a
+    caller that supplied ``rows`` in *params* would reach the driver with a
+    ``datetime`` object in it and be refused by the store — one round trip
+    later, with a message about a parse failure.
+    """
+    _, session = _counting(0)
+
+    with pytest.raises(ValueError, match="binds"):
+        set_rows(
+            session,
+            catalog.WRITE_ADDRESS_RANKS,
+            [{"id": "a", "rank": 0.5}],
+            model=Address,
+            params={"version": "1", "rows": []},
+        )

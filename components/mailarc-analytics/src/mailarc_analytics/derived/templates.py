@@ -226,6 +226,37 @@ def write_templates(session: Session, clusters: Sequence[TemplateCluster]) -> No
     logger.info("Wrote %d templates", len(clusters))
 
 
+def automation_by_message(
+    clusters: Sequence[TemplateCluster],
+) -> dict[str, float]:
+    """Every template's score, keyed by the messages that are instances of it.
+
+    A3 answers in clusters and the importance scorer walks messages, so one of
+    the two has to turn into the other — and it is this one, because the shape
+    of a :class:`~mailarc_analytics.derived.model.TemplateCluster` belongs to
+    this module and the scorer should no more know it than it knows how a
+    fingerprint is banded.
+
+    A message no template claimed is simply **absent**, not present with a
+    zero. ``looks automated`` fires above a threshold, so the two would score
+    the same either way — but "this is not a template" and "this is a template
+    nobody could automate" are different findings, and a caller that wanted to
+    tell them apart could not if this defaulted.
+
+    A message that is somehow a member of two templates keeps the higher score,
+    which cannot happen from a rebuild — the grouping partitions its messages —
+    and is the reading that stays honest if a caller ever hands in two
+    overlapping findings.
+    """
+    found: dict[str, float] = {}
+    for template in clusters:
+        for member in template.members:
+            standing = found.get(member.message_id)
+            if standing is None or template.automation_score > standing:
+                found[member.message_id] = template.automation_score
+    return found
+
+
 def automation_score(
     sent_at: Sequence[datetime | None], body_words: int, config: AnalyticsConfig
 ) -> float:

@@ -86,7 +86,7 @@ tasks:
   embed:
     desc: |
       Compute the embedding for every message that has no vector under the
-      configured model (needs app.semantic.provider set to ollama or openai)
+      configured model (needs app.semantic.provider set to anything but none)
     env:
       PROFILES: local
     cmd: "{{.RUNNER}} python -m app.embedding"

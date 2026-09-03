@@ -62,6 +62,67 @@ class COLORS:
     """The coral-orange that owns primary buttons, active states and focus."""
 
 
+class Palette:
+    """The graph canvas' colours, as concrete hexes rather than token names.
+
+    Every other colour in this application reaches the screen as a class or a
+    ``var(--ma-…)``, and this is the one place that cannot: cytoscape paints
+    into a ``<canvas>`` element, so nothing it draws is a DOM node a stylesheet
+    can match and no custom property is resolvable from inside it. The colours
+    have to be handed to it as values, from Python.
+
+    Six kinds and four pieces of chrome, in both colour schemes. A kind's hue is
+    the same idea in both — coral is always a message — at the lightness the
+    ground it sits on needs.
+
+    The six kinds exist twice: here, and as ``--ma-graph-<kind>`` in
+    ``assets/css/mail-archive.css``, which is what the legend dot beside the
+    canvas wears. The three canvas-only colours — the edge, the label ink, the
+    selection ring — are here *only*: a ``--ma-*`` token nothing paints reads as
+    a design decision that was made and is not one, and
+    ``tests/test_stylesheets.py`` fails a run over it. ``surface`` is the fourth
+    and is not a colour of its own: every node is ringed in it so two touching
+    circles stay apart, which only works while it equals ``--ma-surface``, the
+    ground ``.ma-graph-canvas`` is painted with.
+
+    ``test_ui_graph_model.TestThePaletteHasTwoHomes`` parses the stylesheet and
+    holds both agreements.
+    """
+
+    LIGHT: dict[str, str] = {
+        "message": "#ED5A2D",  # the accent: the archive is made of these
+        "address": "#5F7A8C",  # slate
+        "thread": "#7A7871",  # graphite, as `--ma-meter-cool`
+        "topic": "#2E8B7A",  # teal
+        "tag": "#C08A2E",  # amber — the one thing a person named
+        "community": "#8B5E9C",  # plum
+        "edge": "#D5D4CF",
+        "text": "#1A1A18",
+        "selected": "#1A1A18",  # an ink ring, so it reads over any fill
+        "surface": "#FFFFFF",  # the halo, and so also `--ma-surface`
+    }
+    """On the warm-gray canvas."""
+
+    DARK: dict[str, str] = {
+        "message": "#F07144",
+        "address": "#8FA9BA",
+        "topic": "#4FB8A2",
+        "thread": "#9C998F",
+        "tag": "#DCA84A",
+        "community": "#B084C4",
+        "edge": "#4A4741",
+        "text": "#F2F1EF",
+        "selected": "#F2F1EF",
+        "surface": "#1F1E1C",
+    }
+    """On the near-black one — the same hues, lifted."""
+
+    @classmethod
+    def of(cls, *, dark: bool) -> dict[str, str]:
+        """The palette for the scheme the reader is in."""
+        return cls.DARK if dark else cls.LIGHT
+
+
 #: The accent ramp. Shade 5 is the primary; 6 is its hover.
 _CORAL_PALETTE: list[str] = [
     "#FEF1EB",  # 0 — the soft tint a relevance chip sits on

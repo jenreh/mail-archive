@@ -20,10 +20,16 @@ The corpus is deliberately tiny and every message is here for one assertion:
 ===== ========================================== ==============================
 key   what it is                                 proves
 ===== ========================================== ==============================
-p1-p3 one conversation, three people, one thread thread, topics, co_recipients
-s1-s3 the same text sent three times to one      templates (direction ``sent``)
-      partner
+p1-p3 one conversation, three people, one thread thread, topics, co_recipients,
+                                                 topic_messages
+s1-s3 the same text sent three times to one      templates (direction ``sent``),
+      partner                                    tags and tagged_messages
 ===== ========================================== ==============================
+
+The rebuild scores every message it sees, so ``important_messages`` needs no
+corpus of its own; the annotation layer does need one thing the import cannot
+write, and ``tagged`` puts one tag on two of the reports through the real
+:class:`~mailarc_core.archive.tags.TagStore`.
 """
 
 import socket
@@ -44,8 +50,9 @@ from mailarc_analytics import AnalyticsConfig, AnalyticsReader, rebuild_derived
 from mailarc_analytics.semantic import SemanticConfig, SemanticSearch
 from mailarc_core.archive.blobs import BlobStore
 from mailarc_core.archive.config import ArchiveConfig
-from mailarc_core.archive.model import ArchiveSource
+from mailarc_core.archive.model import ArchiveSource, TagOrigin, TagSource
 from mailarc_core.archive.reader import ArchiveReader
+from mailarc_core.archive.tags import TagStore
 from mailarc_core.archive.writer import MessageArchiver
 from mailarc_core.graph.client import session as graph_session
 from mailarc_core.graph.config import GraphConfig
@@ -242,10 +249,10 @@ class LocalAccess(ArchiveAccess):
     readers, the statements and the conversation read are the application's
     own, which is the whole point of coming this far for a test.
 
-    Four factories and no overridden accessor, deliberately: this is the one
+    Five factories and no overridden accessor, deliberately: this is the one
     place the base class's own storing-and-asking is exercised against a real
     graph, and a subclass that answered from its own methods would leave those
-    four lines untested against anything but a stub.
+    five lines untested against anything but a stub.
     """
 
     def __init__(self, config: GraphConfig, store: Path) -> None:
@@ -256,6 +263,7 @@ class LocalAccess(ArchiveAccess):
             analytics=self._analytics_reader,
             archive=self._archive_reader,
             search=self._semantic_search,
+            tags=self._tag_store,
         )
 
     def _open(self) -> AbstractContextManager[Session]:
@@ -269,6 +277,9 @@ class LocalAccess(ArchiveAccess):
             graph_session=self._open,
             blobs=BlobStore(ArchiveConfig(store_dir=self._store)),
         )
+
+    def _tag_store(self) -> TagStore:
+        return TagStore(graph_session=self._open)
 
     def _semantic_search(self) -> SemanticSearch:
         return SemanticSearch(
@@ -306,12 +317,15 @@ def archived(
 
     Both halves are needed and they are different halves: the import writes the
     ground truth every read here walks, and the rebuild writes the derived
-    nodes three of the six tools answer from. A test module that only imported
-    would find the derived tools raising "nothing has been derived yet", which
-    is a correct answer to the wrong question.
+    nodes half the tools answer from — topics, templates, correspondent pairs
+    and the importance score. A test module that only imported would find the
+    derived tools raising "nothing has been derived yet", which is a correct
+    answer to the wrong question.
 
-    Module-scoped because every test below is a read. One graph and one rebuild
-    for six tools instead of six.
+    Module-scoped because every test below is a read: one graph and one
+    rebuild for all ten tools rather than one apiece. The one thing written
+    afterwards is a tag, which ``tagged`` puts on through the real store —
+    nothing on this server can.
     """
     store = tmp_path_factory.mktemp("mcp-mailstore")
     archiver = MessageArchiver(ArchiveConfig(store_dir=store))
@@ -506,11 +520,24 @@ async def test_topics_report_the_signal_that_drew_them(client: Client) -> None:
 
     The same topic comes back once per signal that joined it, which is why
     ``joined_by`` is a column and not a footnote.
+
+    ``conversation`` is in the set since phase 2 gave A2 its seventh signal,
+    and it displaces ``thread`` here rather than joining it: the union-find
+    behind a conversation runs over the provider's thread id *and* the
+    ``In-Reply-To`` chain, so every pair a thread joins a conversation joins as
+    well — at a weight of 0.9 against the thread's 0.8, because "these messages
+    answer each other" is a stronger statement than "one provider filed them
+    together". A method is the strongest signal that joined the pair, so the
+    stronger one wins.
     """
     answer = await client.call_tool("topics", {})
 
     assert answer.data
-    assert {one.joined_by for one in answer.data} <= {"thread", "subject"}
+    assert {one.joined_by for one in answer.data} <= {
+        "conversation",
+        "thread",
+        "subject",
+    }
     assert all(one.is_suggestion is False for one in answer.data)
     assert max(one.messages for one in answer.data) == 3
 
@@ -536,3 +563,128 @@ async def test_templates_find_the_text_that_was_sent_three_times(
     )
     assert received.is_error is False
     assert received.data == []
+
+
+@pytest.fixture(scope="module")
+def tagged(archived: LocalAccess) -> str:
+    """One tag on two planted messages, written the way the pages write it.
+
+    Through the real :class:`~mailarc_core.archive.tags.TagStore` rather than a
+    hand-written ``MERGE``: the annotation layer is ground truth's neighbour
+    and the tool has to read what the application actually stores, edge
+    properties included.
+
+    Module-scoped like the corpus, because it is written once and only read
+    afterwards — no tool on this server can change it.
+    """
+    store = archived.tags()
+    summary = store.create("NORD-42", origin=TagOrigin.TOPIC)
+    members = [
+        one.id
+        for one in archived.archive().list_messages(limit=50)
+        if one.subject.startswith("Monatsbericht")
+    ]
+    store.tag_messages(summary.id, members[:2], source=TagSource.ACCEPTED)
+    return summary.id
+
+
+async def test_important_messages_scores_the_planted_corpus(client: Client) -> None:
+    """B2 over a real rebuild: every message is scored, best first, with the
+    reasons that produced the number — the archive's own arithmetic, not an
+    opinion, which is the only reason it may be shown to a user."""
+    answer = await client.call_tool("important_messages", {})
+
+    assert answer.is_error is False
+    assert len(answer.data) == 6
+    scores = [one.importance for one in answer.data]
+    assert scores == sorted(scores, reverse=True)
+    assert all(0.0 <= one <= 1.0 for one in scores)
+    assert any(one.reasons for one in answer.data), "a score with no term behind it"
+    assert all(one.subject for one in answer.data)
+
+
+async def test_topic_messages_reads_one_topics_members(client: Client) -> None:
+    """The §3.2 path: a model reads a topic's mail and summarises it itself.
+
+    The id comes from the ``topics`` tool in the same session, which is the
+    only place a caller can get one — and the reason the two are asserted
+    together rather than against a computed digest.
+    """
+    topics = (await client.call_tool("topics", {})).data
+    biggest = max(topics, key=lambda one: one.messages)
+
+    answer = await client.call_tool("topic_messages", {"topic_id": biggest.topic_id})
+
+    assert answer.data.topic_id == biggest.topic_id
+    assert answer.data.label
+    assert len(answer.data.messages) == 3, "one row per member, not per signal"
+    assert answer.data.truncated is False
+    scores = [one.importance for one in answer.data.messages]
+    assert scores == sorted(scores, reverse=True)
+    assert all(one.preview for one in answer.data.messages)
+    assert {one.sender for one in answer.data.messages} == {ANNA, OWN}
+
+
+async def test_a_cut_topic_says_it_was_cut(client: Client) -> None:
+    """Read off the topic's own count, so a member listed once by two signals
+    cannot make a whole topic look truncated or a cut one look complete."""
+    topics = (await client.call_tool("topics", {})).data
+    biggest = max(topics, key=lambda one: one.messages)
+
+    answer = await client.call_tool(
+        "topic_messages", {"topic_id": biggest.topic_id, "limit": 1}
+    )
+
+    assert len(answer.data.messages) == 1
+    assert answer.data.truncated is True
+
+
+async def test_a_topic_id_from_an_earlier_rebuild_is_explained(
+    client: Client,
+) -> None:
+    """R7 as a caller meets it: the id is a digest of the members, so one from
+    yesterday names nothing today and "no such topic" would be misleading."""
+    answer = await client.call_tool(
+        "topic_messages", {"topic_id": "topic:gone"}, raise_on_error=False
+    )
+
+    assert answer.is_error is True
+    assert "recomputed" in failure_text(answer)
+
+
+async def test_the_tags_a_person_made_and_the_mail_under_them(
+    client: Client, tagged: str
+) -> None:
+    """B1 end to end: the annotation layer written through the store, read back
+    through the two tools, and hydrated by the reader that shows a message."""
+    listed = (await client.call_tool("tags", {})).data
+
+    assert [one.tag_id for one in listed] == [tagged]
+    assert listed[0].name == "NORD-42"
+    assert listed[0].origin == "topic"
+    assert listed[0].messages == 2
+
+    answer = await client.call_tool("tagged_messages", {"tag": tagged})
+
+    assert len(answer.data) == 2
+    assert all(one.subject.startswith("Monatsbericht") for one in answer.data)
+    assert all(one.sender == OWN for one in answer.data)
+    assert all(one.preview for one in answer.data)
+    dates = [one.sent_at for one in answer.data]
+    assert dates == sorted(dates, reverse=True), "newest first"
+
+
+async def test_an_unknown_tag_id_is_refused(client: Client, tagged: str) -> None:
+    """A tag id is permanent, so an unknown one is a typo — and a name is the
+    typo a model makes, which is answered with the id it belongs to."""
+    unknown = await client.call_tool(
+        "tagged_messages", {"tag": "tag:nope"}, raise_on_error=False
+    )
+    assert unknown.is_error is True
+    assert "tag:<slug>" in failure_text(unknown)
+
+    by_name = await client.call_tool(
+        "tagged_messages", {"tag": "NORD-42"}, raise_on_error=False
+    )
+    assert by_name.is_error is True
+    assert tagged in failure_text(by_name)

@@ -27,17 +27,30 @@ The command prints nothing. What a rebuild found belongs in the log next to
 what the worker logs about the same work, not on a stdout only one of the two
 callers has.
 
-Two lines and every one of :class:`~mailarc_analytics.DerivedCounts`'s fourteen
-counts in them, each behind a phrase that names it. ``/insights`` enqueues
-a ``derive`` job and follows the row, but a row reports stages and not buckets —
-so these two lines stay the only place the fourteen counts are written down, and
-a run that read a tenth of the archive, or dropped a bucket, has to be
-distinguishable there from one that found nothing to say.
+Three lines and every one of :class:`~mailarc_analytics.DerivedCounts`'s
+twenty-two counts in them, each behind a phrase that names it. ``/insights``
+enqueues a ``derive`` job and follows the row, but a row reports stages and not
+buckets — so these three lines stay the only place the twenty-two counts are
+written down, and a run that read a tenth of the archive, or dropped a bucket,
+has to be distinguishable there from one that found nothing to say.
+
+**Auto-accept is the other thing only this module may do**, and it is the same
+rule as signal 6 seen from the annotation layer's side. ``TAGGED`` records what
+a *person* decided and belongs to :mod:`mailarc_core.archive.tags`;
+``mailarc-analytics`` may not write it, and a catalogue test pins that the
+analysis merges derived labels and nothing else. So a suggestion strong enough
+to act on is turned into a membership *here*, after the rebuild, where ``app``
+is allowed to name both layers — and stamped
+:attr:`~mailarc_core.archive.model.TagSource.AUTO`, so that what the analysis
+did stays visible in the graph rather than looking like somebody's click. See
+:func:`_auto_accept`.
 """
 
 import asyncio
 import logging
 from collections.abc import Sequence
+from contextlib import nullcontext
+from functools import partial
 
 from runic.ogm import Session
 
@@ -49,12 +62,29 @@ from app.composition import (
     semantic_embedder,
 )
 from app.configuration import configure
-from mailarc_analytics import DerivedCounts, ProgressHook, rebuild_derived
+from mailarc_analytics import (
+    AnalyticsReader,
+    DerivedCounts,
+    ProgressHook,
+    rebuild_derived,
+)
 from mailarc_analytics.derived.model import EMBEDDING_METHOD, SimilarityEdge
 from mailarc_analytics.semantic import similar_pairs
+from mailarc_core.archive.model import TagSource
+from mailarc_core.archive.tags import TagRepository
 from mailarc_core.graph.client import session as graph_session
 
 logger = logging.getLogger(__name__)
+
+AUTO_ACCEPT_LIMIT = 5_000
+"""Suggestions per tag :func:`_auto_accept` looks at.
+
+A ceiling and not a threshold. The listing is ordered by score descending, so
+what a cut removes is always the *weakest* arguments — the ones furthest from
+the bar — and a tag with more than five thousand suggestions above it is a
+calibration failure rather than a reading somebody wants acted on wholesale.
+It is the reader's own maximum, so nothing here asks for a page it would refuse.
+"""
 
 
 def rebuild(on_progress: ProgressHook | None = None) -> DerivedCounts:
@@ -75,6 +105,7 @@ def rebuild(on_progress: ProgressHook | None = None) -> DerivedCounts:
             on_progress=on_progress,
             extra_edges=_semantic_edges(session),
         )
+        _auto_accept(session, counts)
     logger.info(
         "Derived layer rebuilt from %d messages: %d groups, %d co-addressed pairs, "
         "%d topics, %d templates (%d nodes and %d edges removed first)",
@@ -98,7 +129,81 @@ def rebuild(on_progress: ProgressHook | None = None) -> DerivedCounts:
         counts.dropped_template_buckets,
         counts.dropped_weak_pairs,
     )
+    logger.info(
+        "Analysis: %d communities holding %d circled messages, "
+        "%d ranked addresses and %d ranked messages, %d keyworded topics, "
+        "%d scored messages, %d tag suggestions; "
+        "%d algorithm calls skipped",
+        counts.communities,
+        counts.circles,
+        counts.ranked_addresses,
+        counts.ranked_messages,
+        counts.keyworded_topics,
+        counts.scored_messages,
+        counts.suggestions,
+        counts.algorithms_skipped,
+    )
     return counts
+
+
+def _auto_accept(session: Session, counts: DerivedCounts) -> int:
+    """Turn the strongest suggestions into memberships, if the user asked for it.
+
+    The one function in this repository that names both the analysis and the
+    annotation layer, and it is here for the reason :func:`_semantic_edges` is:
+    ``mailarc-analytics`` may not write ``TAGGED`` — a membership is a person's
+    decision and ``mailarc-core`` owns it — while ``mailarc-core`` knows nothing
+    about a ``SUGGESTED`` edge. ``app`` is the layer allowed to see both.
+
+    **Off unless somebody switched it on**, and then only above
+    :attr:`~mailarc_analytics.AnalyticsConfig.tag_auto_accept_min_score`. That
+    threshold sits above what the weakest kind of group can produce, so however
+    much of a circle already wears a tag, a circle on its own never tags another
+    message; a thread or a topic can.
+
+    Every membership it writes is stamped
+    :attr:`~mailarc_core.archive.model.TagSource.AUTO`. ``accepted`` would say a
+    human clicked, and the whole argument for letting this run at all is that
+    what it did stays legible afterwards.
+
+    Reads through the **rebuild's own session** — ``nullcontext`` lends it to a
+    reader that expects to open one — so this costs no second driver against a
+    store the rebuild has just finished writing to. It also asks nothing at all
+    when the rebuild suggested nothing, which is the normal state of an archive
+    nobody has promoted a cluster in.
+
+    A suggestion naming a message that already wears the tag writes nothing:
+    :meth:`~mailarc_core.archive.tags.TagRepository.tag_messages` reads the
+    membership first and sends only the rest, so an earlier decision keeps its
+    own ``source`` and its own date.
+    """
+    config = analytics_config()
+    if not config.tag_auto_accept or not counts.suggestions:
+        return 0
+
+    reader = AnalyticsReader(partial(nullcontext, session))
+    tags = TagRepository(session)
+    written = 0
+    for tag_id, offered in sorted(reader.suggestion_counts().items()):
+        if not offered:
+            continue
+        taking = [
+            one.message_id
+            for one in reader.suggestions_for(tag_id, limit=AUTO_ACCEPT_LIMIT)
+            if one.score >= config.tag_auto_accept_min_score
+        ]
+        if not taking:
+            continue
+        added = tags.tag_messages(tag_id, taking, source=TagSource.AUTO)
+        written += added
+        logger.info(
+            "Auto-accepted %d of %d suggestions onto %s at or above %.2f",
+            added,
+            len(taking),
+            tag_id,
+            config.tag_auto_accept_min_score,
+        )
+    return written
 
 
 def _semantic_edges(session: Session) -> Sequence[SimilarityEdge]:

@@ -383,6 +383,216 @@ class TestWhatEachListingDecodes:
         assert found[0].sample_text == "Hallo"
 
 
+class TestWhatPhaseTwoAsksFor:
+    """The five listings the analysis stages made answerable.
+
+    Same two claims as the four above them — which statement, with what bound,
+    and what each column becomes — for the readings that did not exist before
+    there were circles, scores, keywords and suggestions to read.
+    """
+
+    def test_the_circles_bind_only_a_limit(self) -> None:
+        fake, reader = _reader()
+
+        reader.communities(limit=10)
+
+        assert fake.statements == [catalog.TOP_COMMUNITIES]
+        assert fake.parameters(catalog.TOP_COMMUNITIES) == {"limit": 10}
+
+    def test_a_circle_row_carries_its_label_its_size_and_its_span(self) -> None:
+        _fake, reader = _reader(
+            {
+                catalog.TOP_COMMUNITIES: Reply(
+                    columns=[
+                        "id",
+                        "label",
+                        "size",
+                        "message_count",
+                        "method",
+                        "first_seen",
+                        "last_seen",
+                    ],
+                    rows=[["community:1", "kunde.example", 4, 12, "lpa", WHEN, LATER]],
+                )
+            }
+        )
+
+        found = reader.communities()
+
+        assert found[0].id == "community:1"
+        assert found[0].label == "kunde.example"
+        assert (found[0].size, found[0].message_count) == (4, 12)
+        assert found[0].method == "lpa"
+        assert found[0].last_seen == datetime(2026, 2, 10, 16, 0, tzinfo=UTC)
+
+    def test_the_important_messages_bind_only_a_limit(self) -> None:
+        fake, reader = _reader()
+
+        reader.important_messages(limit=10)
+
+        assert fake.parameters(catalog.TOP_IMPORTANT) == {"limit": 10}
+
+    def test_an_important_message_keeps_its_score_and_every_reason(self) -> None:
+        """The reasons are the point: a ranking a user cannot argue with is a
+        ranking a user cannot correct."""
+        _fake, reader = _reader(
+            {
+                catalog.TOP_IMPORTANT: Reply(
+                    columns=[
+                        "id",
+                        "subject",
+                        "sent_at",
+                        "sender",
+                        "importance",
+                        "reasons",
+                    ],
+                    rows=[
+                        [
+                            "m1@nordlicht.example",
+                            "Angebot",
+                            WHEN,
+                            "anna@kunde.example",
+                            0.65,
+                            ["addressed directly", "replied by you"],
+                        ]
+                    ],
+                )
+            }
+        )
+
+        found = reader.important_messages()
+
+        assert found[0].id == "m1@nordlicht.example"
+        assert found[0].sender == "anna@kunde.example"
+        assert found[0].importance == 0.65
+        assert found[0].reasons == ("addressed directly", "replied by you")
+        assert found[0].sent_at == datetime(2026, 1, 12, 9, 0, tzinfo=UTC)
+
+    def test_a_message_whose_sender_never_arrived_still_ranks(self) -> None:
+        """The sender hop is optional, because a broken import should show the
+        score and the gap rather than hide both."""
+        _fake, reader = _reader(
+            {
+                catalog.TOP_IMPORTANT: Reply(
+                    columns=[
+                        "id",
+                        "subject",
+                        "sent_at",
+                        "sender",
+                        "importance",
+                        "reasons",
+                    ],
+                    rows=[["m1", None, None, None, 0.4, None]],
+                )
+            }
+        )
+
+        found = reader.important_messages()
+
+        assert (found[0].sender, found[0].subject) == ("", "")
+        assert found[0].reasons == ()
+        assert found[0].sent_at is None
+
+    def test_the_topic_keywords_bind_only_a_limit(self) -> None:
+        fake, reader = _reader()
+
+        reader.topic_keywords(limit=10)
+
+        assert fake.parameters(catalog.TOPIC_KEYWORDS) == {"limit": 10}
+
+    def test_a_keyword_row_keeps_the_words_in_the_order_they_were_ranked(
+        self,
+    ) -> None:
+        """TF-IDF put the most discriminating term first, and a set or a sorted
+        tuple here would throw that away."""
+        _fake, reader = _reader(
+            {
+                catalog.TOPIC_KEYWORDS: Reply(
+                    columns=["id", "label", "keywords", "message_count"],
+                    rows=[["topic:1", "angebot", ["migration", "angebot"], 5]],
+                )
+            }
+        )
+
+        found = reader.topic_keywords()
+
+        assert found[0].keywords == ("migration", "angebot")
+        assert found[0].message_count == 5
+
+    def test_the_suggestion_counts_bind_nothing_at_all(self) -> None:
+        """Every tag, unlimited: the population is the list of names a person
+        made, which is a list somebody is already looking at."""
+        fake, reader = _reader()
+
+        reader.suggestion_counts()
+
+        assert fake.parameters(catalog.SUGGESTION_COUNTS) == {}
+
+    def test_a_tag_with_nothing_to_accept_comes_back_as_a_zero(self) -> None:
+        """Not absent. A tag with no suggestions and a tag missing from a
+        listing look the same to a card, and only one of them is a state a user
+        should be shown."""
+        _fake, reader = _reader(
+            {
+                catalog.SUGGESTION_COUNTS: Reply(
+                    columns=["id", "name", "suggestions"],
+                    rows=[["tag:a", "Alpha", 3], ["tag:b", "Beta", 0]],
+                )
+            }
+        )
+
+        assert reader.suggestion_counts() == {"tag:a": 3, "tag:b": 0}
+
+    def test_one_tags_suggestions_bind_the_tag_and_a_limit(self) -> None:
+        fake, reader = _reader()
+
+        reader.suggestions_for("tag:nord-42", limit=10)
+
+        assert fake.parameters(catalog.TAG_SUGGESTIONS) == {
+            "tag": "tag:nord-42",
+            "limit": 10,
+        }
+
+    def test_a_suggestion_row_carries_the_case_that_was_made_for_it(self) -> None:
+        """``score`` and ``method`` both, because "these two share a thread" and
+        "these two are in the same circle" are not the same claim."""
+        _fake, reader = _reader(
+            {
+                catalog.TAG_SUGGESTIONS: Reply(
+                    columns=["id", "subject", "sent_at", "score", "method"],
+                    rows=[["m3", "Re: Angebot", WHEN, 0.36, "thread"]],
+                )
+            }
+        )
+
+        found = reader.suggestions_for("tag:nord-42")
+
+        assert found[0].message_id == "m3"
+        assert found[0].subject == "Re: Angebot"
+        assert (found[0].score, found[0].method) == (0.36, "thread")
+
+    def test_every_new_listing_is_capped_like_the_old_ones(self) -> None:
+        """``AnalyticsReader`` is exported and phase 6 serves a model from it,
+        so ``limit`` is an argument something outside this repository picks."""
+        fake, reader = _reader()
+
+        reader.communities(limit=0)
+        reader.important_messages(limit=10_000_000)
+        reader.suggestions_for("tag:a", limit=0)
+
+        assert fake.parameters(catalog.TOP_COMMUNITIES) == {"limit": 1}
+        assert fake.parameters(catalog.TOP_IMPORTANT) == {"limit": reports.MAX_ROWS}
+        assert fake.parameters(catalog.TAG_SUGGESTIONS)["limit"] == 1
+
+    def test_each_listing_opens_one_session(self) -> None:
+        """A read is complete in itself; five listings are five questions."""
+        fake, reader = _reader()
+
+        reader.communities()
+
+        assert fake.opened == 1
+
+
 class TestTheArchivingHistory:
     """One statement, and the two things the reader does to its answer.
 

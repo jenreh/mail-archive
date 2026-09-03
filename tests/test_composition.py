@@ -11,7 +11,7 @@ from appkit_commons.registry import service_registry
 
 from app import composition
 from app.configuration import configure
-from mailarc_analytics import AnalyticsConfig, AnalyticsReader
+from mailarc_analytics import AnalyticsConfig, AnalyticsReader, GraphReader
 from mailarc_analytics.semantic import SemanticConfig, SemanticProvider, SemanticSearch
 from mailarc_core import (
     ArchiveConfig,
@@ -19,6 +19,7 @@ from mailarc_core import (
     FalkorDBServer,
     GraphConfig,
     GraphServerMode,
+    TagStore,
 )
 from mailarc_core.graph.health import GraphHealth
 from mailarc_core.mail.config import MailConfig
@@ -304,6 +305,40 @@ def test_publishing_the_reader_twice_leaves_one(caplog) -> None:
     assert caplog.records == []
 
 
+def test_the_tag_store_is_built_on_the_configured_graph(monkeypatch) -> None:
+    """The same graph the archive reader reads. A tag names messages, so a store
+    pointed at a second graph would not read as a bug — it would read as an
+    archive whose tags name mail it does not hold."""
+    graph = _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+    store = composition.tag_store()
+
+    assert store is composition.tag_store()
+    assert isinstance(store._graph_session, functools.partial)
+    assert store._graph_session.args == (graph,)
+
+
+@pytest.mark.usefixtures("_published_registry")
+def test_the_ui_finds_the_tag_store_without_importing_the_app() -> None:
+    """Same hand-over as the archive reader, asserted through the registry the
+    UI will look in — ``mailarc-ui`` may not import ``app``."""
+    published = composition.publish_tag_store()
+
+    assert published is composition.tag_store()
+    assert service_registry().get(TagStore) is published
+
+
+@pytest.mark.usefixtures("_published_registry")
+def test_publishing_the_tag_store_twice_leaves_one(caplog) -> None:
+    first = composition.publish_tag_store()
+
+    with caplog.at_level(logging.WARNING, logger=REGISTRY_LOGGER):
+        assert composition.publish_tag_store() is first
+
+    assert service_registry().get(TagStore) is first
+    assert caplog.records == []
+
+
 def test_the_analytics_reader_is_built_on_the_configured_graph(monkeypatch) -> None:
     """The same graph the archive reader reads and the rebuild writes to.
 
@@ -347,6 +382,52 @@ def test_publishing_the_analytics_reader_twice_leaves_one(caplog) -> None:
         assert composition.publish_analytics_reader() is first
 
     assert service_registry().get(AnalyticsReader) is first
+    assert caplog.records == []
+
+
+def test_the_graph_reader_is_built_on_the_configured_graph(monkeypatch) -> None:
+    """The same graph the analytics reader reads and the rebuild writes to.
+
+    The explorer draws a derived edge against the messages it came from, so a
+    reader pointed at a second graph would not read as a bug — it would read as
+    an archive that disagrees with itself. Asserted off the reader's own session
+    factory, because that is the only part of it a wrong wire would show up in.
+    """
+    graph = _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+    reader = composition.graph_reader()
+
+    assert reader is composition.graph_reader()
+    assert isinstance(reader._graph_session, functools.partial)
+    assert reader._graph_session.args == (graph,)
+
+
+def test_the_graph_reader_is_not_the_analytics_reader(monkeypatch) -> None:
+    """Two readers over one graph, because they answer different shapes: rows
+    for a table, nodes and edges for a canvas."""
+    _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+    assert composition.graph_reader() is not composition.analytics_reader()
+
+
+@pytest.mark.usefixtures("_published_registry")
+def test_the_ui_finds_the_graph_reader_without_importing_the_app() -> None:
+    """Same hand-over as the analytics reader, asserted through the registry the
+    UI will look in — ``mailarc-ui`` may not import ``app``."""
+    published = composition.publish_graph_reader()
+
+    assert published is composition.graph_reader()
+    assert service_registry().get(GraphReader) is published
+
+
+@pytest.mark.usefixtures("_published_registry")
+def test_publishing_the_graph_reader_twice_leaves_one(caplog) -> None:
+    first = composition.publish_graph_reader()
+
+    with caplog.at_level(logging.WARNING, logger=REGISTRY_LOGGER):
+        assert composition.publish_graph_reader() is first
+
+    assert service_registry().get(GraphReader) is first
     assert caplog.records == []
 
 

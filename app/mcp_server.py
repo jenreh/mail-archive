@@ -1,9 +1,9 @@
 """``mail-archive-mcp``: the process the MCP server runs in, and nothing more.
 
 The composition root of its own process, the way ``app/worker.py`` is: it
-configures logging, configures the application, builds the four readers out of
+configures logging, configures the application, builds the five readers out of
 ``app/composition.py`` and hands them to :func:`mailarc_mcp.build_server`. The
-server itself — the six tools, their schemas, every sentence a failure puts on
+server itself — the ten tools, their schemas, every sentence a failure puts on
 the wire — is ``components/mailarc-mcp/``, which may not read a setting and so
 cannot build any of this for itself (§4.1).
 
@@ -33,6 +33,7 @@ from app.composition import (
     archive_reader,
     graph_config,
     semantic_search,
+    tag_store,
 )
 from app.configuration import configure
 from mailarc_core.graph.client import session as graph_session
@@ -73,14 +74,17 @@ claim this module cannot keep.
 
 
 def archive_access() -> ArchiveAccess:
-    """The four readers a tool answers from, bound to this installation.
+    """The five readers a tool answers from, bound to this installation.
 
     Factories rather than objects, so that nothing is built here: a client lists
     an MCP server's tools before it calls one, and this process has to answer
-    that against a machine whose graph is not running. Each of the four is a
+    that against a machine whose graph is not running. Each of the five is a
     cached builder in :mod:`app.composition`, which is what keeps the answer to
     "is semantic search available" the same in this process and in the Reflex
     one — they call the same builder rather than each reading the same setting.
+    The tag store is the same object the pages that tag write through, for the
+    same reason: two stores would be two answers to "where are the tags", and
+    this process only ever reads them.
     """
     from mailarc_mcp import ArchiveAccess
 
@@ -89,6 +93,7 @@ def archive_access() -> ArchiveAccess:
         analytics=analytics_reader,
         archive=archive_reader,
         search=semantic_search,
+        tags=tag_store,
     )
 
 

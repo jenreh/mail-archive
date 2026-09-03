@@ -13,9 +13,15 @@ The reader under it is the real :class:`AnalyticsReader`. Only the session is
 a fake, and it answers by the catalogue constant it was asked for — so a test
 that plants rows for ``TOP_CO_ADDRESSED`` also proves the reader ran that
 statement and not another.
+
+:class:`FakeTags` beside it is the other half of the tags card, and it *is* a
+stand-in rather than the real store over a fake session — ``Tag`` belongs to
+``mailarc-core`` and its statements are tested there. The split is the page's
+own: a tag is annotation on ground truth, and what is suggested for it is
+derived.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -24,6 +30,7 @@ from appkit_commons.registry import service_registry
 
 from mailarc_analytics import AnalyticsReader, TemplateDirection, TopicSignal
 from mailarc_analytics.queries import catalog
+from mailarc_core.archive import TagOrigin, TagSource, TagStore, TagSummary
 from mailarc_core.archive.reader import GraphSessionFactory
 
 MARCH = datetime(2026, 3, 12, 9, 0, tzinfo=UTC)
@@ -192,6 +199,47 @@ def graph() -> FakeGraph:
             ["topic:" + "d" * 32, "", "participants", 3],
         ],
     )
+    built.rows(
+        catalog.TOPIC_KEYWORDS,
+        ["id", "label", "keywords", "message_count"],
+        [["topic:" + "c" * 32, "rechnung swiftscan", ["rechnung", "swiftscan"], 6]],
+    )
+    built.rows(
+        catalog.TOP_COMMUNITIES,
+        ["id", "label", "size", "message_count", "method", "first_seen", "last_seen"],
+        [
+            [
+                "community:" + "e" * 32,
+                "kunde.example",
+                5,
+                41,
+                "lpa",
+                MARCH.isoformat(),
+                AUGUST.isoformat(),
+            ],
+            ["community:" + "f" * 32, "", 3, 4, "", None, None],
+        ],
+    )
+    built.rows(
+        catalog.TOP_IMPORTANT,
+        ["id", "subject", "sent_at", "sender", "importance", "reasons"],
+        [
+            [
+                "<nord-42@example.com>",
+                "Angebot NORD-42",
+                AUGUST.isoformat(),
+                "anna@example.com",
+                0.82,
+                ["replied by you", "addressed directly"],
+            ],
+            ["<quiet@example.com>", "", MARCH.isoformat(), "", 0.4, None],
+        ],
+    )
+    built.rows(
+        catalog.SUGGESTION_COUNTS,
+        ["id", "name", "suggestions"],
+        [["tag:nord-42", "nord-42", 4], ["tag:steuer", "steuer", 0]],
+    )
     built.template_rows(
         TemplateDirection.SENT,
         [
@@ -225,12 +273,82 @@ def fresh(graph: FakeGraph) -> FakeGraph:
     return graph
 
 
+class FakeTags:
+    """The annotation layer as this page uses it, and no more of it than that.
+
+    A stand-in rather than the real store over a fake session, unlike the
+    reader above: ``Tag`` is ``mailarc-core``'s and its statements have their
+    own tests there, while what the insights page needs is a listing and the
+    two writes its card offers. Scripting core's builders here would be
+    testing :class:`~mailarc_core.archive.tags.TagRepository` a second time.
+
+    Every verb is recorded, because the bug worth catching is a card that
+    accepts or deletes under the wrong tag id.
+    """
+
+    def __init__(self) -> None:
+        self.summaries: dict[str, TagSummary] = {}
+        self.calls: list[tuple[Any, ...]] = []
+        self.failing = False
+
+    def plant(self, name: str, *, message_count: int = 0) -> TagSummary:
+        summary = TagSummary(
+            id=f"tag:{name}",
+            name=name,
+            origin=TagOrigin.MANUAL,
+            created_at=MARCH,
+            message_count=message_count,
+        )
+        self.summaries[summary.id] = summary
+        return summary
+
+    def list_tags(self) -> tuple[TagSummary, ...]:
+        self.calls.append(("list_tags",))
+        if self.failing:
+            raise ConnectionError("graph is down")
+        return tuple(self.summaries.values())
+
+    def tag_messages(
+        self,
+        tag_id: str,
+        ids: Sequence[str],
+        *,
+        source: TagSource = TagSource.MANUAL,
+        at: datetime | None = None,
+    ) -> int:
+        self.calls.append(("tag_messages", tag_id, tuple(ids), source, at))
+        return len(ids)
+
+    def delete(self, tag_id: str) -> bool:
+        self.calls.append(("delete", tag_id))
+        return self.summaries.pop(tag_id, None) is not None
+
+    @property
+    def verbs(self) -> list[str]:
+        return [call[0] for call in self.calls]
+
+
 @pytest.fixture
-def published(graph: FakeGraph) -> Iterator[AnalyticsReader]:
-    """The reader, left where the composition root would leave it."""
+def tags() -> FakeTags:
+    """Two tags: one an analysis has something to offer, one it has not."""
+    made = FakeTags()
+    made.plant("nord-42", message_count=7)
+    made.plant("steuer", message_count=2)
+    return made
+
+
+@pytest.fixture
+def published(graph: FakeGraph, tags: FakeTags) -> Iterator[AnalyticsReader]:
+    """Both layers, left where the composition root would leave them.
+
+    The annotation layer is beside the reader because the page reads both: a
+    tag belongs to ``mailarc-core`` and what is *suggested* for it is derived,
+    which is the split that makes the tags card two reads rather than one.
+    """
     registry = service_registry()
     saved = registry.snapshot()
     reader = AnalyticsReader(cast(GraphSessionFactory, lambda: graph))
     registry.register_as(AnalyticsReader, reader)
+    registry.register_as(TagStore, cast(TagStore, tags))
     yield reader
     registry.restore(saved)

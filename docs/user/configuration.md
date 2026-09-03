@@ -68,6 +68,8 @@ its own:
 | `APP_GOOGLE_` | `GmailConfig` | Gmail endpoints and paging |
 | `APP_IMAP_` | `ImapConfig` | IMAP timeouts, paging and certificate authority |
 | `APP_M365_` | `M365Config` | The Entra application, Graph endpoints and paging |
+| `APP_ANALYTICS_` | `AnalyticsConfig` | The derived layer: thresholds, ceilings and the tag flags |
+| `APP_SEMANTIC_` | `SemanticConfig` | The embedder and the vector search |
 
 ## Where the data lives
 
@@ -247,6 +249,84 @@ the placeholders), then uncomment the block.
 it is not one: it names a folder *inside every* mailbox, the same one for all of
 them.
 
+### Analytics — `app.analytics` / `APP_ANALYTICS_`
+
+How strict the derived layer is, and how much it may read. Every setting here
+is a limit, and every limit trades what is found against what is noise. See
+[Insights](./insights.md) for what the findings look like.
+
+Nothing here is state. When the last rebuild ran and what it found lives in the
+graph and in SQLite; this block only decides how strict to be.
+
+**Tags and suggestions.** The two flags come first because they are the only
+settings in this block that decide whether something is written to the
+annotation layer rather than how a number is computed.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `tag_auto_accept` | `false` | Whether a strong suggestion may tag its message without being asked. Off, because a tag is a person's word for a set of messages |
+| `tag_auto_accept_min_score` | `0.6` | The score auto-accept acts at. Above what a circle alone can produce, so a circle never tags a message on its own; a thread or a topic can |
+| `tag_suggest_min_tagged` | `2` | Tagged members a group needs before it may suggest its untagged ones. One is a coincidence |
+| `tag_suggest_min_share` | `0.3` | Share of the group that must already wear the tag. Two out of five is a project, two out of two hundred is a mailing list filed twice |
+
+Every membership auto-accept writes is marked `auto` rather than `accepted`, so
+what the analysis did stays visible in the graph.
+
+**Circles and centrality.**
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `community_min_size` | `3` | Addresses a circle needs before it is worth a node. Two people are a correspondence |
+| `community_max_iterations` | `20` | Passes label propagation may take. Pinned rather than left to the procedure, because it has no seed and an unconverged run is where two rebuilds disagree |
+| `circle_min_share` | `0.5` | Share of a message's participants that must be in a circle before the message counts as circulating in it |
+| `centrality_max_edges` | `2000000` | Co-addressing pairs the address ranking will walk in one rebuild. Beyond that the stage reports what it stepped over |
+| `betweenness_sampling` | `0` | Nodes the betweenness procedure samples. Zero skips the call, which is the default because nothing renders the number yet |
+
+**Topic keywords.** The three together are the cost ceiling of the keyword
+stage, so a topic of five hundred messages costs what a topic of twenty does.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `topic_keyword_count` | `8` | Keywords a topic keeps |
+| `topic_keyword_members` | `20` | Messages per topic whose text is read |
+| `topic_keyword_chars` | `2000` | Characters of each of those bodies. The cut happens in the store, not after the read |
+
+**Groups and co-addressing.**
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `min_group_size` | `3` | Addresses a recurring group needs. Two is a pair, and the co-addressed edges answer that better |
+| `min_group_messages` | `2` | Messages a group needs. Two is the lowest number that means "again" |
+| `co_addressed_max_recipients` | `25` | Addressed recipients above which a message contributes no pair at all. A mail to five hundred people would be 125 000 edges on its own |
+
+**Topics.**
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `topic_min_score` | `0.5` | Accumulated signal weight at which two messages join one topic. A shared ticket, thread or subject clears it alone |
+| `topic_bucket_cap` | `200` | Members an index bucket may have before its signal is dropped. A subject shared by five thousand messages is boilerplate |
+| `topic_max_weak_pairs` | `2000000` | Ceiling on the weak-pair table for one rebuild. Only the signals that have to be added up degrade when it runs out |
+| `max_messages` | `0` | Messages one rebuild may read; zero means all of them. Any capped read orders by id first, so two capped rebuilds read the same messages |
+
+**Templates.**
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `simhash_max_distance` | `5` | Differing bits two bodies may have and still be one template. Measured against real business mail; at 3 a monthly report splits into four |
+| `lsh_band_bits` | `16` | Bits per band, so four bands over 64. The one knob not to turn down to buy recall |
+| `template_min_occurrences` | `3` | Copies a text needs before it is a template. Twice is a coincidence |
+| `template_max_comparisons` | `10000000` | Distance comparisons one direction's clustering may take. What the budget cannot afford is counted and reported |
+| `template_sample_length` | `500` | Characters of the sample text a template node keeps |
+| `template_ideal_words` | `200` | Body length at which brevity has fallen to half |
+| `template_min_words` | `25` | Body length below which brevity is scaled down again, so a pile of one-word replies is not the top automation candidate |
+| `frequency_saturation` | `12` | Occurrences at which the frequency factor is full. A year of monthly mail is as often as anything needs to recur |
+
+The importance weights are deliberately **not** settings. The eight terms only
+mean anything relative to each other and to the clamp at 1, and eight knobs
+would let one edit make two archives incomparable while both report a property
+called `importance`. Changing one is a code change and a bump of
+`IMPORTANCE_VERSION`.
+
 ### Semantic — `app.semantic` / `APP_SEMANTIC_`
 
 Off by default, and off is a complete state: without an embedder A1–A3 run in
@@ -256,11 +336,11 @@ an assistant reading the archive can see.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `provider` | `none` | `none`, `ollama` (local, no account) or `openai` (uploads every body it embeds) |
-| `model` | `""` | Empty means the provider's own default — `nomic-embed-text` or `text-embedding-3-small` |
+| `provider` | `none` | `none`, `ollama` (local, no account), `openai` or `azure_openai` (both upload every body they embed) |
+| `model` | `""` | Empty means the provider's own default — `nomic-embed-text` or `text-embedding-3-small`. On Azure it is the deployment name and is **required** |
 | `dimension` | `768` | **Must equal the vector migration's `DIMENSION`.** The only length both providers can produce |
-| `base_url` | `""` | Empty means the provider's own default; a setting so tests can point at a local server |
-| `api_key` | unset | OpenAI needs one; Ollama ignores it. A `SecretStr` |
+| `base_url` | `""` | Empty means the provider's own default; a setting so tests can point at a local server. **Required** on Azure, which has no shared endpoint |
+| `api_key` | unset | Both paid providers need one; Ollama ignores it. A `SecretStr`, sent as Azure's `api-key` header rather than a bearer token under `azure_openai` |
 | `batch_size` | `32` | Texts per HTTP call. Tuned for the local model, which chokes where a paid API does not |
 | `page_size` | `500` | Messages per graph round trip — the job's unit of memory and of progress |
 | `request_timeout` | `120.0` | A cold local model really is that slow |

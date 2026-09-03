@@ -116,7 +116,30 @@
   --ma-chip-bg: #f1f1ee;      /* the untinted chip, and every small pill */
   --ma-chip-fg: var(--ma-text);
 
+  /* what a node on the graph canvas is, by kind.
+   *
+   * These six are the only graph colours that reach ordinary DOM — the legend
+   * dot the kind toggles wear (`.ma-graph-dot`). Cytoscape paints into a
+   * `<canvas>`, so nothing it draws is an element a selector reaches and no
+   * custom property is resolvable from inside it; `mailarc_ui/theme.py::Palette`
+   * states the same six as Python literals and hands them over as values,
+   * along with three the canvas needs and the DOM has no use for (the edge, the
+   * label ink and the selection ring). Those three are *not* tokens here, for
+   * the reason `test_every_declared_token_is_one_the_interface_paints` gives:
+   * a token nobody paints reads as done and is not.
+   *
+   * `test_ui_graph_model.TestThePaletteHasTwoHomes` parses this block and the
+   * dark one below and fails when either drifts from `Palette`.
+   */
+  --ma-graph-message: #ed5a2d;   /* the accent: the archive is made of these */
+  --ma-graph-address: #5f7a8c;   /* slate */
+  --ma-graph-thread: #7a7871;    /* graphite, as `--ma-meter-cool` */
+  --ma-graph-topic: #2e8b7a;     /* teal */
+  --ma-graph-tag: #c08a2e;       /* amber — the one thing a person named */
+  --ma-graph-community: #8b5e9c; /* plum */
+
   /* geometry */
+  --ma-graph-height: 560px;      /* what the canvas is worth on a 900px page */
   --ma-radius-card: 14px;
   --ma-radius-panel: 12px;
   --ma-radius-chip: 8px;
@@ -193,6 +216,16 @@
   --ma-chip-cool-bg: #35322d;
   --ma-chip-cool-fg: #b7b3ab;
   --ma-chip-bg: #2a2926;
+
+  /* The graph's six hues, lifted off the near-black ground. Same idea in both
+   * schemes — coral is always a message — at the lightness this ground needs.
+   * `--ma-graph-height` is geometry and is not restated. */
+  --ma-graph-message: #f07144;
+  --ma-graph-address: #8fa9ba;
+  --ma-graph-thread: #9c998f;
+  --ma-graph-topic: #4fb8a2;
+  --ma-graph-tag: #dca84a;
+  --ma-graph-community: #b084c4;
 }
 
 /* ── The page frame ──────────────────────────────────────────────────────── */
@@ -752,33 +785,13 @@ html body,
   color: var(--ma-text);
 }
 
-.ma-rail-item.ma-rail-item[data-active]:not([data-active="false"]),
-.ma-rail-flag[data-active]:not([data-active="false"]) ~ .ma-rail-item.ma-rail-item {
+.ma-rail-item.ma-rail-item[data-active]:not([data-active="false"]) {
   background: var(--ma-surface);
   border-color: var(--ma-border);
   box-shadow: var(--ma-shadow-pill);
   color: var(--ma-accent);
 }
 
-/* The administration trigger wears its active state at arm's length.
- *
- * It cannot carry `data-active` itself. Mantine's `Menu.Target` opens the
- * dropdown by cloning its child with an `onClick` and a `ref`, and Reflex
- * compiles any element holding a state-dependent attribute into a
- * `memo(({children}) => …)` wrapper that accepts children and nothing else —
- * so the clone's handler and ref both land on a component that discards them,
- * and the menu could not be opened at all. Measured in the browser: with the
- * attribute the button rendered without even an `aria-haspopup`.
- *
- * So the Var goes on a zero-sized marker rendered just before the button, and
- * the button — now static, and compiled as the real Mantine component — is
- * reached from it by the sibling combinator above. A combinator rather than
- * `:has()` because this ships in a WKWebView down to macOS 10.15, which
- * predates it.
- */
-.ma-rail-flag {
-  display: none;
-}
 
 /* ── Form fields ─────────────────────────────────────────────────────────── */
 
@@ -940,6 +953,42 @@ html body,
   background: var(--ma-canvas);
 }
 
+/* ── Conversations ───────────────────────────────────────────────────────── */
+
+/* A grouped list has two kinds of line and only one of them is new. A member
+ * row is the row above, moved right so its text lines up under the heading's
+ * subject rather than under the heading's avatar; a heading is that same row
+ * with a chevron in front of it. Nothing here recolours a row: a conversation
+ * is a shape, not a state, and tinting one would compete with selection.
+ */
+.ma-list-row.ma-list-row[data-child="true"] {
+  padding-left: 46px;
+}
+
+.ma-group-chevron.ma-group-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border-radius: var(--ma-radius-chip);
+  color: var(--ma-text-mute);
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.ma-group-chevron.ma-group-chevron:hover {
+  background: var(--ma-chip-bg);
+  color: var(--ma-text-dim);
+}
+
+/* Closed points right, which is the only direction a reader has to learn. */
+.ma-group-chevron.ma-group-chevron[data-expanded="false"] {
+  transform: rotate(-90deg);
+}
+
 /* ── Row chips ───────────────────────────────────────────────────────────── */
 
 /* The small pill under a row's preview line. One base class, and variants
@@ -975,6 +1024,38 @@ html body,
   height: 7px;
   flex-shrink: 0;
   border-radius: 50%;
+}
+
+/* The × that takes a tag off a message, and the bin that deletes one.
+ *
+ * Not a button in the design's vocabulary — the three buttons are for actions
+ * that stand on their own, and this one only exists beside the chip it acts
+ * on. It is invisible until the pointer is over it for the same reason: a row
+ * of tags is something to read, and a row of tags each wearing a live delete
+ * control is something to be careful around.
+ */
+.ma-chip-remove.ma-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: var(--ma-radius-chip);
+  color: var(--ma-text-mute);
+  opacity: 0.55;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.ma-chip-remove.ma-chip-remove:hover {
+  opacity: 1;
+  color: var(--ma-text);
+  background: var(--ma-surface-hover);
+}
+
+/* A kind toggled off on the graph canvas: the pill stays legible and stops
+ * claiming that its colour is on screen. */
+.ma-pill-action[data-hidden="true"] {
+  opacity: 0.45;
+  text-decoration: line-through;
 }
 
 /* ── The attachment card ─────────────────────────────────────────────────── */
@@ -1098,4 +1179,50 @@ html body,
 .ma-table-scroll thead tr th {
   background: var(--ma-surface);
   border-bottom: 1px solid var(--ma-border);
+}
+
+/* ── The graph explorer's canvas ─────────────────────────────────────────── */
+
+/* The box `kit.graph_canvas` puts around the wrapped cytoscape component.
+ *
+ * A fixed height and not a flexible one: cytoscape measures its container once
+ * on mount and again on resize, and a container that is still nought pixels
+ * tall when the component mounts draws an empty canvas without reporting
+ * anything. `overflow: hidden` is what keeps a node dragged past the edge from
+ * growing the page instead of leaving the picture.
+ */
+.ma-graph-canvas.ma-graph-canvas {
+  height: var(--ma-graph-height);
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--ma-border);
+  border-radius: var(--ma-radius-panel);
+  background-color: var(--ma-surface);
+}
+
+/* The legend dot: what colour a kind is, beside the toggle that hides it.
+ *
+ * `--ma-surface` and not a colour of its own is deliberate — every node on the
+ * canvas is drawn with a hairline halo in `Palette[...]["surface"]`, and the
+ * two are the same value because the halo only reads as a gap if it matches
+ * the ground behind it.
+ *
+ * Keyed on `data-kind` rather than six classes so a component writes the kind
+ * it is already holding, the way `.ma-list-row` keys on `data-selected`.
+ */
+.ma-graph-dot.ma-graph-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background-color: var(--ma-text-mute);
+}
+
+.ma-graph-dot[data-kind="message"] { background-color: var(--ma-graph-message); }
+.ma-graph-dot[data-kind="address"] { background-color: var(--ma-graph-address); }
+.ma-graph-dot[data-kind="thread"] { background-color: var(--ma-graph-thread); }
+.ma-graph-dot[data-kind="topic"] { background-color: var(--ma-graph-topic); }
+.ma-graph-dot[data-kind="tag"] { background-color: var(--ma-graph-tag); }
+.ma-graph-dot[data-kind="community"] {
+  background-color: var(--ma-graph-community);
 }

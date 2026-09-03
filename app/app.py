@@ -20,10 +20,12 @@ from app.composition import (
     publish_analytics_reader,
     publish_archive_reader,
     publish_graph_health,
+    publish_graph_reader,
     publish_provider_registry,
     publish_semantic_control,
     publish_semantic_search,
     publish_storage_reader,
+    publish_tag_store,
     semantic_settings_lifespan,
     sync_worker_lifespan,
 )
@@ -31,6 +33,7 @@ from mailarc_ui.pages import (  # noqa: F401  # imported for their route registr
     accounts,
     dashboard,
     embedder,
+    graph,
     insights,
     search,
     status,
@@ -88,7 +91,9 @@ def add_https_middleware(asgi_app: ASGIApp) -> ASGIApp:
 publish_provider_registry()
 publish_account_eraser()
 publish_archive_reader()
+publish_tag_store()
 publish_analytics_reader()
+publish_graph_reader()
 publish_semantic_search()
 publish_semantic_control()
 publish_graph_health()

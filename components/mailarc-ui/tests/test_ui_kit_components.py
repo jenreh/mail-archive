@@ -24,6 +24,7 @@ from mailarc_ui.kit import (
     empty_panel,
     field_label,
     field_note,
+    graph_canvas,
     input_field,
     job_progress,
     label_chip,
@@ -488,3 +489,98 @@ class TestWhileAReadIsOut:
 
         assert "Skeleton" in drawn
         assert "h:96" in drawn
+
+
+class TestGraphCanvas:
+    """The one wrapped React component in the archive, and its prop contract.
+
+    Nothing here renders cytoscape — the JSX is the browser's business. What a
+    test can hold is the contract between the two halves: the box the canvas is
+    sized by, the local asset the component is loaded from, and the names the
+    props arrive under. Reflex camel-cases every prop on its way out, so
+    ``fit_token`` reaches the JSX as ``fitToken``; a wrapper written against the
+    Python spelling would silently receive nothing.
+    """
+
+    def _canvas(self, **props: Any) -> Any:
+        """The wrapped component inside the sized box the builder returns."""
+        return graph_canvas(**props).children[0]
+
+    def test_the_builder_is_a_sized_box_wearing_its_class(self) -> None:
+        """Cytoscape measures its container, so a box with no height draws a
+        canvas nought pixels tall and reports nothing wrong."""
+        box = graph_canvas()
+
+        assert "ma-graph-canvas" in _class_of(box)
+        assert "height" in json.dumps(box.render()["props"], default=str)
+
+    def test_it_draws_the_wrapped_component(self) -> None:
+        assert "GraphCanvas" in _rendered(graph_canvas())
+
+    def test_it_is_loaded_from_the_local_jsx_asset(self) -> None:
+        """A shared asset, so the file ships with the package rather than with
+        whichever application happens to import it."""
+        library = self._canvas().library
+
+        assert library.startswith("$/public/")
+        assert library.endswith("graph_canvas.jsx")
+
+    def test_it_declares_the_lazy_loading_imports(self) -> None:
+        """A ``NoSSRComponent`` is compiled into a dynamic import written
+        against ``ClientSide``; without these two the page references a name
+        nothing defines, and only the browser says so."""
+        found = self._canvas().add_imports()
+
+        assert "lazy" in found["react"]
+        assert any(name.endswith("/context") for name in found)
+
+    def test_cytoscape_arrives_as_a_pinned_dependency(self) -> None:
+        assert "cytoscape@3.34.2" in self._canvas().lib_dependencies
+
+    def test_every_prop_reaches_the_jsx_camel_cased(self) -> None:
+        drawn = _rendered(
+            graph_canvas(
+                elements=[{"group": "nodes", "data": {"id": "a"}}],
+                stylesheet=[{"selector": "node", "style": {"label": "data(label)"}}],
+                layout={"name": "cose"},
+                selected="a",
+                fit_token=3,
+            )
+        )
+
+        assert "fitToken:3" in drawn
+        assert "elements" in drawn
+        assert "stylesheet" in drawn
+        assert "layout" in drawn
+        assert "selected" in drawn
+
+    def test_the_three_callbacks_are_event_triggers(self) -> None:
+        triggers = self._canvas().get_event_triggers()
+
+        assert {"on_select", "on_expand", "on_background"} <= set(triggers)
+
+    def test_a_tap_and_a_double_tap_both_carry_the_node_id(self) -> None:
+        drawn = _rendered(
+            graph_canvas(
+                on_select=rx.console_log("picked"),
+                on_expand=rx.console_log("expanded"),
+            )
+        )
+
+        assert "onSelect" in drawn
+        assert "onExpand" in drawn
+
+    def test_a_background_tap_carries_nothing_and_still_builds(self) -> None:
+        """The guard on a simplification that looks free and is not.
+
+        ``on_background`` takes no argument, and the obvious spellings of that
+        are ``EventHandler[lambda: []]`` — which ``ruff``'s PIE807 rewrites —
+        and ``EventHandler[list]``, which is what it rewrites it *to*. The
+        second one is broken: Reflex reads the spec's signature to name the
+        event's arguments, ``list`` has an unannotated ``iterable``, and the
+        component raises ``MissingAnnotationError`` the moment a page hands it
+        a handler. Every other test in this file passes with the rewrite in.
+        """
+        assert "onBackground" in _rendered(
+            graph_canvas(on_background=rx.console_log("cleared"))
+        )

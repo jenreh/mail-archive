@@ -6,9 +6,14 @@ a box moved here land in the same places.
 
 Keep a diagram to one idea. Where a picture would need a legend to be read, it
 is two pictures.
+
+Five of the seven are declared here and the two about what the archive *stores*
+in :mod:`schema_diagrams`, which is a file-length split (AGENTS §5) and not a
+second list: :data:`ALL` below is what a build reads and it names all seven.
 """
 
 from render import Box, Diagram, Link
+from schema_diagrams import GRAPH_MODEL, RELATIONAL
 
 # --------------------------------------------------------------------------- #
 # 1. Component layering
@@ -407,144 +412,7 @@ PIPELINE = Diagram(
 )
 
 # --------------------------------------------------------------------------- #
-# 3. Graph ground truth
-# --------------------------------------------------------------------------- #
-
-GRAPH_MODEL = Diagram(
-    name="graph-model",
-    title="Graph ground truth",
-    caption=(
-        "Everything the provider actually sent. An analysis may add nodes beside "
-        "these; it never edits them."
-    ),
-    boxes=(
-        Box(
-            id="message",
-            label="Message",
-            sub="id = canonical id",
-            x=380,
-            y=280,
-            w=200,
-            h=70,
-            kind="core",
-        ),
-        Box(
-            id="address",
-            label="Address",
-            sub="id = normalised address",
-            x=380,
-            y=40,
-            w=200,
-            h=62,
-            kind="core",
-        ),
-        Box(
-            id="thread",
-            label="Thread",
-            sub="id = account:thread",
-            x=60,
-            y=160,
-            w=190,
-            h=62,
-            kind="core",
-        ),
-        Box(
-            id="parent",
-            label="Message",
-            sub="the one replied to",
-            x=60,
-            y=280,
-            w=190,
-            h=62,
-            kind="core",
-        ),
-        Box(
-            id="label",
-            label="Label",
-            sub="id = account:name",
-            x=60,
-            y=400,
-            w=190,
-            h=62,
-            kind="core",
-        ),
-        Box(
-            id="attachment",
-            label="Attachment",
-            sub="id = sha256 of the file",
-            x=700,
-            y=280,
-            w=200,
-            h=62,
-            kind="core",
-        ),
-        Box(
-            id="account",
-            label="Account",
-            sub="id = SQLite row id",
-            x=700,
-            y=430,
-            w=200,
-            h=62,
-            kind="core",
-        ),
-        Box(
-            id="note",
-            label="Properties on Message",
-            sub=(
-                "subject · subject_norm · sent_at · body_text · body_clean · "
-                "simhash · participant_key · refs · eml_sha256 · embedding"
-            ),
-            x=280,
-            y=560,
-            w=560,
-            h=62,
-            kind="note",
-            bold=False,
-        ),
-    ),
-    links=(
-        Link(src="message", dst="address", exit="nw", entry="sw", label="SENT_FROM"),
-        Link(src="message", dst="address", exit="n", entry="s", label="SENT_TO"),
-        Link(
-            src="message",
-            dst="address",
-            exit="ne",
-            entry="se",
-            label="COPIED_TO / BLIND_COPIED_TO",
-            label_dx=90,
-        ),
-        Link(src="message", dst="thread", exit="wn", entry="e", label="IN_THREAD"),
-        Link(
-            src="message",
-            dst="parent",
-            exit="w",
-            entry="e",
-            label="REPLIES_TO",
-            label_dx=-14,
-        ),
-        Link(src="message", dst="label", exit="ws", entry="e", label="LABELED"),
-        Link(
-            src="message",
-            dst="attachment",
-            exit="e",
-            entry="w",
-            label="HAS_ATTACHMENT",
-            label_dx=14,
-        ),
-        Link(
-            src="message",
-            dst="account",
-            exit="es",
-            entry="w",
-            label="ARCHIVED_FROM",
-        ),
-        Link(src="message", dst="note", exit="s", entry="n", dashed=True, arrow=False),
-    ),
-)
-
-# --------------------------------------------------------------------------- #
-# 4. Job lifecycle
+# 3. Job lifecycle
 # --------------------------------------------------------------------------- #
 
 JOB_LIFECYCLE = Diagram(
@@ -664,108 +532,7 @@ JOB_LIFECYCLE = Diagram(
 )
 
 # --------------------------------------------------------------------------- #
-# 5. Relational schema
-# --------------------------------------------------------------------------- #
-
-RELATIONAL = Diagram(
-    name="relational-schema",
-    title="What the relational store holds",
-    caption=(
-        "The graph holds what a message is. These six tables hold what we have "
-        "done about it."
-    ),
-    boxes=(
-        Box(
-            id="accounts",
-            label="mail_accounts",
-            sub="provider · address · enabled · status",
-            x=400,
-            y=240,
-            w=280,
-            h=72,
-            kind="core",
-        ),
-        Box(
-            id="credentials",
-            label="mail_credentials",
-            sub="kind · secret (encrypted, opaque)",
-            x=60,
-            y=60,
-            w=250,
-            h=64,
-            kind="store",
-        ),
-        Box(
-            id="jobs",
-            label="mail_sync_jobs",
-            sub="kind · state · lease · counters",
-            x=770,
-            y=60,
-            w=250,
-            h=64,
-            kind="sync",
-        ),
-        Box(
-            id="checkpoints",
-            label="mail_sync_checkpoints",
-            sub="scope · cursor · messages_seen",
-            x=60,
-            y=430,
-            w=250,
-            h=64,
-            kind="sync",
-        ),
-        Box(
-            id="archived",
-            label="mail_archived_messages",
-            sub="provider id → canonical id",
-            x=770,
-            y=430,
-            w=250,
-            h=64,
-            kind="accent",
-        ),
-        Box(
-            id="failed",
-            label="mail_failed_messages",
-            sub="provider id · reason · detail",
-            x=400,
-            y=560,
-            w=280,
-            h=64,
-            kind="external",
-        ),
-        Box(
-            id="note",
-            label="Rebuildable, not authoritative",
-            sub=(
-                "mail_archived_messages is a read model over the graph — the "
-                "batch IN (…) the graph cannot answer cheaply."
-            ),
-            x=180,
-            y=670,
-            w=620,
-            h=62,
-            kind="note",
-            bold=False,
-        ),
-    ),
-    links=(
-        Link(
-            src="credentials", dst="accounts", exit="e", entry="wn", label="account_id"
-        ),
-        Link(src="jobs", dst="accounts", exit="w", entry="en", label="account_id"),
-        Link(
-            src="checkpoints", dst="accounts", exit="e", entry="ws", label="account_id"
-        ),
-        Link(src="archived", dst="accounts", exit="w", entry="es", label="account_id"),
-        Link(src="failed", dst="accounts", exit="n", entry="s", label="account_id"),
-        Link(src="archived", dst="note", exit="s", entry="e", dashed=True, arrow=False),
-    ),
-)
-
-# --------------------------------------------------------------------------- #
-# 6. Adding an account
+# 4. Adding an account
 # --------------------------------------------------------------------------- #
 
 ACCOUNT_SETUP = Diagram(
@@ -866,7 +633,7 @@ ACCOUNT_SETUP = Diagram(
 )
 
 # --------------------------------------------------------------------------- #
-# 7. Deployment
+# 5. Deployment
 # --------------------------------------------------------------------------- #
 
 DEPLOYMENT = Diagram(

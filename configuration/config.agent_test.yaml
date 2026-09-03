@@ -51,7 +51,7 @@ app:
     # credential would have failed the same way. This is that same string, put
     # through `base64.urlsafe_b64encode` so it stays obviously fake and is
     # still readable as what it is.
-    encryption_key: YWdlbnQtdGVzdC1rZXktbm90LWEtc2VjcmV0LTAwMDA=
+    encryption_key: secret:mn-agent-encryption-key
     echo: False
 
   graph:

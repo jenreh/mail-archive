@@ -1,4 +1,4 @@
-"""The archive as an MCP server: six read-only tools over the query catalogue.
+"""The archive as an MCP server: ten read-only tools over the query catalogue.
 
 §7.5's answer to "can I ask my archive questions" — and the answer is a *model
 reading it*, never a model writing it. §3.2 draws that line: email already
@@ -7,7 +7,7 @@ allowed to become ground truth. This server is where that rule is cashed in.
 Everything here reads; nothing writes; every statement that reaches the store
 is a named constant in ``mailarc_analytics.queries.catalog`` or a query-builder
 statement compiled against the mapped models, and **no tool takes a query
-string that reaches the graph**. A model can ask any question the six tools
+string that reaches the graph**. A model can ask any question the ten tools
 express and no other.
 
 It is a component and not a package under ``app/``, for the reason its README
@@ -70,6 +70,7 @@ from mailarc_analytics import TemplateDirection
 from mailarc_analytics.derived.model import EMBEDDING_METHOD
 from mailarc_analytics.queries.model import (
     CoAddressedRow,
+    ImportantMessageRow,
     TemplateRow,
     TopicRow,
 )
@@ -82,16 +83,21 @@ from mailarc_analytics.semantic import (
     SearchResult,
     SemanticError,
 )
-from mailarc_core.archive.model import MessageSummary
+from mailarc_core.archive.model import MessageSummary, TagSummary
+from mailarc_core.archive.tags import TagStore
 from mailarc_core.mail.errors import MailError
 from mailarc_mcp.server.model import (
+    ArchivedMessage,
+    ArchiveTag,
     Conversation,
     CorrespondentPair,
+    ImportantMessage,
     MessageHit,
     MessageTemplate,
     SearchAnswer,
     TimelineEntry,
     TopicCluster,
+    TopicMessages,
 )
 from mailarc_mcp.server.reads import ArchiveAccess
 
@@ -101,18 +107,27 @@ SERVER_NAME = "mail-archive"
 
 INSTRUCTIONS = """\
 Read-only access to one person's email archive: the messages they imported from
-their own mailboxes, and what three analyses derived from them.
+their own mailboxes, and what a rebuild job derived from them.
 
 The archive is ground truth taken from the message headers — senders,
 recipients, conversations, labels, attachments — so who wrote to whom is a
-fact here, not an inference. On top of that sits a *derived* layer that a
-rebuild job recomputes and throws away at will: groups of people who are
-written to together, topics, and recurring templates. Anything in the derived
-layer can be stale if the job has not run since the last import.
+fact here, not an inference. On top of that sits a *derived* layer that the
+rebuild recomputes and throws away at will: groups of people who are written to
+together, topics, recurring templates, and a score saying which mail probably
+matters. Anything in the derived layer can be stale if the job has not run
+since the last import.
 
 Start with search_messages or timeline to find a message, then thread to read
 the exchange around it. co_recipients, topics and templates answer questions
-about the archive as a whole rather than about one message.
+about the archive as a whole rather than about one message, and
+important_messages ranks mail by an arithmetic over the headers that always
+says which terms produced the number.
+
+Two groupings and they are not the same kind of thing. A *topic* is derived and
+disposable — topic_messages reads one so it can be summarised, and its id is a
+different string after the next rebuild. A *tag* is what the archive's owner
+decided: tags and tagged_messages read those, they outlive every rebuild, and
+nothing here can create or change one.
 
 Nothing here can change the archive, and nothing an assistant concludes is
 written back to it.
@@ -157,11 +172,32 @@ NO_MESSAGES = (
 
 NOT_DERIVED = (
     "Nothing has been derived from this archive yet. Correspondent pairs, "
-    "topics and templates are computed by the derive job, not by the import: "
+    "topics, templates and importance scores are computed by the derive job, "
+    "not by the import: "
     "run it (`task graph:rebuild-derived`, or Rebuild on the /insights "
     "page) and ask again. Searching messages and reading threads works without "
     "it."
 )
+
+STALE_TOPIC = (
+    "Topic ids are recomputed by every rebuild of the derived layer — a topic "
+    "is a hash of the messages in it, so an id from an earlier answer is stale "
+    "rather than wrong. Call topics again and use one of the ids it returns. "
+    "A tag is the grouping that survives a rebuild; tags lists those."
+)
+"""Why a topic id a caller had a minute ago answers with nothing (R7).
+
+Said in full rather than as "no such topic", which reads as "that piece of work
+does not exist" — and would send a model looking for the mail somewhere else
+instead of asking for the current ids.
+"""
+
+WHERE_TAGS_COME_FROM = (
+    "Tag ids come from the tags tool and look like `tag:<slug>`. Unlike a "
+    "topic id a tag id is permanent, so this one is a typo rather than a stale "
+    "reference."
+)
+"""Why an unknown tag id is a different failure from an unknown topic id."""
 
 UPSTREAM_REFUSED = (
     "An upstream service the archive depends on refused the request. If this "
@@ -174,7 +210,7 @@ UPSTREAM_REFUSED = (
 """What a caller is told when a ``MailError`` reaches a tool.
 
 Two things this sentence deliberately does not do. It does not *assert* that the
-embedder is at fault: the ``except`` clause wraps all six tools and
+embedder is at fault: the ``except`` clause wraps every tool and
 ``mailarc_core.mail.errors`` is a taxonomy the archive readers can raise too, so
 naming the embedder outright told some callers to check a service they had never
 configured. And it does not carry the exception's own text, which for the
@@ -198,7 +234,7 @@ thing here that a language model reads verbatim.
 
 
 def build_server(access: ArchiveAccess, *, version: str) -> FastMCP:
-    """The server, with its six tools bound to one way of reading the archive.
+    """The server, with its ten tools bound to one way of reading the archive.
 
     Constructing it touches no configuration and opens no connection, so a
     client can list the tools against a machine whose archive is not running —
@@ -207,7 +243,7 @@ def build_server(access: ArchiveAccess, *, version: str) -> FastMCP:
 
     Both arguments are required and neither has a default, because a default
     for either would be this component reading its installation. ``access``
-    carries the four factories a tool reads through; ``version`` is what a
+    carries the five factories a tool reads through; ``version`` is what a
     client shows in ``serverInfo``, and it is the *application's* version
     rather than this package's — a bug report has to name the software a person
     installed. Left to itself FastMCP reports its own version, so a client would
@@ -404,7 +440,140 @@ def build_server(access: ArchiveAccess, *, version: str) -> FastMCP:
             )
             return [_entry(row) for row in rows]
 
+    _analysis_tools(mcp, access)
+
     return mcp
+
+
+def _analysis_tools(mcp: FastMCP, access: ArchiveAccess) -> None:
+    """Register the four tools the analysis phase added, on one access object.
+
+    A second function and not four more bodies inside :func:`build_server`,
+    which was already the longest thing in this module: the tools that answer
+    for the importance score and the annotation layer are one group with one
+    thing to say — what matters, and what a person filed it under — and reading
+    them beside §7.5's six proved nothing that reading them here does not.
+
+    Registration and nothing else. Every decision that makes the server what it
+    is stays in :func:`build_server`; this takes the server it built.
+    """
+
+    @mcp.tool(annotations=READ_ONLY)
+    def important_messages(limit: int = 20) -> list[ImportantMessage]:
+        """The mail that probably matters, best first, with the reasons why.
+
+        The score is arithmetic over the headers and nothing else: who
+        answered, whether the archive's owner was written to directly rather
+        than copied, how central the sender is among their correspondents, how
+        few recipients there were, whether the text looks automated. Every term
+        that fired is named in ``reasons``, and showing them is the point —
+        this is a ranking a reader is meant to be able to argue with, not a
+        judgement about their mail.
+
+        It is a *ranking aid*. A message nobody answered can still be the one
+        that mattered, and nothing here has read a single word of the body.
+
+        The whole archive is scored by one rebuild, so unlike a search score
+        these numbers are comparable with each other. An archive nobody has run
+        the derive job over has no scores at all, and this call says so rather
+        than answering with nothing.
+
+        Args:
+            limit: how many messages to return, highest score first. Clamped to
+                1..100.
+        """
+        with _translated("important_messages"):
+            rows = access.analytics().important_messages(limit=_rows(limit))
+            if not rows:
+                _explain_unscored(access)
+            return [_important(row) for row in rows]
+
+    @mcp.tool(annotations=READ_ONLY)
+    def topic_messages(topic_id: str, limit: int = 20) -> TopicMessages:
+        """Read the mail one topic is made of, so it can be summarised.
+
+        The messages come back most important first, each with its subject,
+        sender, date and a preview — enough to say what the topic is about
+        without pulling forty full bodies into a context window. Use ``thread``
+        on any one of them to read the exchange around it.
+
+        Whatever is concluded from this stays in the answer. Nothing an
+        assistant writes is stored on the topic or anywhere else in the
+        archive: the groupings here are computed from the headers, and a
+        summary that became part of the graph would turn a guess into a
+        recorded fact.
+
+        Check ``truncated`` — when it is true the topic holds more messages
+        than were returned. A message joined to the topic by two signals is
+        listed once.
+
+        Args:
+            topic_id: an id from the topics tool. Recomputed by every rebuild
+                of the derived layer, so use one from a recent answer rather
+                than one written down earlier; the call fails with an
+                explanation if it has gone.
+            limit: how many members to return, most important first. Clamped to
+                1..100.
+        """
+        with _translated("topic_messages"):
+            found = access.topic(topic_id, _rows(limit))
+        if found is None:
+            raise ToolError(
+                f"The archive holds no topic with id {topic_id!r}. {STALE_TOPIC}",
+                log_level=logging.DEBUG,
+            )
+        return found
+
+    @mcp.tool(annotations=READ_ONLY)
+    def tags() -> list[ArchiveTag]:
+        """The labels the archive's owner put on their own mail.
+
+        The one grouping here that is a decision rather than a finding: topics
+        and correspondent circles are recomputed and thrown away by every
+        rebuild, a tag is what a person meant and it outlives them — and
+        outlives deleting the account the mail arrived on, which leaves the tag
+        standing with a count of zero.
+
+        Nothing on this server can create, rename or apply one. A tag is put on
+        by hand, or by accepting a suggestion, in the archive's own interface.
+
+        An empty list is an answer and not a failure: it means nobody has made
+        a tag yet.
+
+        The one listing here with no limit to clamp, because the population is
+        not the archive: it is the handful of names one person typed.
+        """
+        with _translated("tags"):
+            return [_tag(one) for one in access.tags().list_tags()]
+
+    @mcp.tool(annotations=READ_ONLY)
+    def tagged_messages(tag: str, limit: int = 20) -> list[ArchivedMessage]:
+        """The mail wearing one tag, newest first.
+
+        The durable way to ask "what belongs to this piece of work": unlike a
+        topic, a tag is what somebody filed by hand, so this answer means the
+        same thing tomorrow.
+
+        An empty list means the tag holds no mail — a tag somebody made and has
+        not used, or one whose messages went with the account they were
+        imported from. An id no tag has is an error instead.
+
+        Args:
+            tag: a tag id from the tags tool, of the form `tag:<slug>`. The
+                tag's *name* is not an id; passing one fails with the id it
+                belongs to.
+            limit: how many messages to return, newest first. Clamped to
+                1..100.
+        """
+        with _translated("tagged_messages"):
+            store = access.tags()
+            ids = store.members(tag, limit=_rows(limit))
+            if not ids:
+                _explain_untagged(store, tag)
+                return []
+            return [
+                _archived(one) for one in access.archive().messages_by_ids(list(ids))
+            ]
 
 
 def route_fastmcp_logging() -> None:
@@ -480,7 +649,7 @@ def _explain_empty(archive: ArchiveAccess, kind: str) -> None:
     the true answer — an archive with topics but no *received* template really
     has none.
 
-    The six counts are paid only here, on the path where the answer would
+    The counts are paid only here, on the path where the answer would
     otherwise be ambiguous.
     """
     totals = archive.analytics().totals()
@@ -494,6 +663,50 @@ def _explain_empty(archive: ArchiveAccess, kind: str) -> None:
     if not derived:
         raise ToolError(NOT_DERIVED, log_level=logging.DEBUG)
     logger.debug("Nothing matched in %d derived %s rows", derived, kind)
+
+
+def _explain_unscored(archive: ArchiveAccess) -> None:
+    """Say why nothing is scored — an empty importance listing has no honest
+    reading as an answer.
+
+    Every message a rebuild sees gets a score, including the ones nothing can
+    be said about, so "no scored messages" cannot mean "none of them matter":
+    it means either that nothing has been imported or that the derive job has
+    not run over what was. Both are states with a remedy, and both are worse
+    to leave a reader guessing at — an empty list here reads as an archive in
+    which nothing is worth their attention, which is a claim no analysis made.
+    """
+    if not archive.analytics().totals().messages:
+        raise ToolError(NO_MESSAGES, log_level=logging.DEBUG)
+    raise ToolError(NOT_DERIVED, log_level=logging.DEBUG)
+
+
+def _explain_untagged(store: TagStore, tag: str) -> None:
+    """Raise unless the tag exists and simply holds nothing.
+
+    The listing is paid for only on the empty path, and only to tell two very
+    different answers apart: a tag with no mail on it is a state a person is
+    legitimately in, and an id no tag has is a mistake the caller can fix.
+
+    A *name* where an id was expected is the mistake a model actually makes, so
+    it is answered with the id rather than with the same refusal. Resolving it
+    silently would be worse than refusing: two names can slug to one id, and a
+    tool that picks one of them has answered a question nobody asked.
+    """
+    known = store.list_tags()
+    if any(one.id == tag for one in known):
+        return
+    named = next((one for one in known if one.name.casefold() == tag.casefold()), None)
+    if named is not None:
+        raise ToolError(
+            f"{tag!r} is the name of the tag {named.id!r}, not its id. Ask "
+            f"again with {named.id!r}.",
+            log_level=logging.DEBUG,
+        )
+    raise ToolError(
+        f"The archive holds no tag with id {tag!r}. {WHERE_TAGS_COME_FROM}",
+        log_level=logging.DEBUG,
+    )
 
 
 def _rows(limit: int) -> int:
@@ -581,4 +794,37 @@ def _entry(row: MessageSummary) -> TimelineEntry:
         preview=row.preview,
         labels=tuple(one.name for one in row.labels),
         has_attachments=row.has_attachments,
+    )
+
+
+def _important(row: ImportantMessageRow) -> ImportantMessage:
+    return ImportantMessage(
+        message_id=row.id,
+        subject=row.subject,
+        sender=row.sender,
+        sent_at=row.sent_at,
+        importance=row.importance,
+        reasons=row.reasons,
+    )
+
+
+def _tag(summary: TagSummary) -> ArchiveTag:
+    return ArchiveTag(
+        tag_id=summary.id,
+        name=summary.name,
+        origin=summary.origin.value,
+        messages=summary.message_count,
+    )
+
+
+def _archived(row: MessageSummary) -> ArchivedMessage:
+    """One message as a listing shows it. The sender is the address and not the
+    display name: the same person signs differently in every message, and the
+    address is the key ``co_recipients`` and ``search_messages`` speak in."""
+    return ArchivedMessage(
+        message_id=row.id,
+        subject=row.subject,
+        sender=row.sender_address,
+        sent_at=row.sent_at,
+        preview=row.preview,
     )

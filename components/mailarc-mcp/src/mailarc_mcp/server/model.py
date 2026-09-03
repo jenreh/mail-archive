@@ -255,3 +255,124 @@ class TimelineEntry(BaseModel):
     provider's housekeeping (``INBOX``, ``UNREAD``) last."""
 
     has_attachments: bool = False
+
+
+class ImportantMessage(BaseModel):
+    """A message the archive's own arithmetic put near the top, and why.
+
+    The score is deterministic and every term behind it has a name: it is
+    counted off the headers — who answered, who was written to directly, how
+    central the sender is — and never produced by a model. That is what makes
+    :attr:`reasons` the point of this row rather than a decoration on it.
+    """
+
+    model_config = CONTRACT
+
+    message_id: str
+    """The archive's own id. Pass it to ``thread`` to read the exchange around
+    it."""
+
+    subject: str = ""
+    sender: str = ""
+    sent_at: datetime | None = None
+
+    importance: float = 0.0
+    """How much this message probably matters, from 0 to 1, higher first.
+
+    Comparable across the whole archive, unlike a search score: one rebuild
+    computed every one of these with the same arithmetic. It is a *ranking
+    aid* and not a verdict — a message nobody answered can still be the one
+    that mattered.
+    """
+
+    reasons: tuple[str, ...] = ()
+    """The terms that produced the score, from a fixed vocabulary — "replied
+    by you", "addressed directly", "looks automated". Show them: a ranking a
+    reader cannot argue with is the thing this archive refuses to hand out."""
+
+
+class ArchivedMessage(BaseModel):
+    """One message as a listing shows it — enough to decide whether to read it.
+
+    Deliberately not the whole body. A listing of forty messages with their
+    full text is a megabyte of quoted history, most of it repeated; the
+    preview says what the message is, and ``thread`` reads the rest.
+    """
+
+    model_config = CONTRACT
+
+    message_id: str
+    subject: str = ""
+    sender: str = ""
+    """The address it was sent from, empty where the archive could not parse
+    one."""
+
+    sent_at: datetime | None = None
+    preview: str = ""
+    """The opening of the body with quoted history and signature removed,
+    folded onto one line."""
+
+
+class TopicMessage(ArchivedMessage):
+    """One message inside a topic, with the score that ordered it."""
+
+    importance: float = 0.0
+    """The same 0..1 score :class:`ImportantMessage` carries. Zero on an
+    archive no rebuild has scored yet, in which case the order is by id and
+    means nothing."""
+
+
+class TopicMessages(BaseModel):
+    """What one topic is made of, the most important message first.
+
+    The answer to "summarise this piece of work": the members are handed over
+    with their subjects, senders, dates and previews, and whatever a model
+    concludes stays in its own answer. Nothing it writes comes back into the
+    archive — the topics themselves are arithmetic over headers, and §3.2
+    keeps it that way.
+    """
+
+    model_config = CONTRACT
+
+    topic_id: str
+    """The id this answer was asked for. Recomputed by every rebuild, so it is
+    a handle for the next call and never a reference to keep."""
+
+    label: str = ""
+    """A human-readable name taken from the members, usually a subject line."""
+
+    messages: tuple[TopicMessage, ...] = ()
+    """Most important first, then by id — so a cut listing keeps the messages
+    a reader would have looked at."""
+
+    truncated: bool = False
+    """``true`` when the topic holds more messages than were returned. Ask
+    again with a larger ``limit`` if the tail matters."""
+
+
+class ArchiveTag(BaseModel):
+    """A label a person put on their own mail, and the one thing here a
+    rebuild cannot invent.
+
+    Tags are the archive's durable grouping: topics and circles are recomputed
+    and thrown away with every rebuild, a tag survives them and survives
+    deleting the account the mail came from. Only a person creates one — no
+    tool on this server can — so a tag is a decision, not a finding.
+    """
+
+    model_config = CONTRACT
+
+    tag_id: str
+    """The key to pass to ``tagged_messages``. Permanent, unlike a topic id."""
+
+    name: str = ""
+    """What the person called it."""
+
+    origin: str = "manual"
+    """How the tag came about: ``manual``, or ``topic``/``community`` where
+    somebody promoted a cluster the analysis proposed. It says how the *tag*
+    started and never which cluster — that id is gone by the next rebuild."""
+
+    messages: int = 0
+    """How many archived messages wear it. Zero is a real state: a tag whose
+    mail was deleted with its account keeps existing."""

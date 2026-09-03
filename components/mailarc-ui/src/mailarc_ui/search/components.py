@@ -27,6 +27,7 @@ from mailarc_ui.kit import (
     empty_panel,
     label_chip,
     list_row,
+    pill_action,
     quiet_button,
     relevance_chip,
     spinner,
@@ -35,6 +36,7 @@ from mailarc_ui.message_detail import COLUMN, ROW_BORDER, LabelChip, message_tab
 from mailarc_ui.search.form import FORM_WIDTH, search_form
 from mailarc_ui.search.model import ResultRow
 from mailarc_ui.search.state import MailSearchState
+from mailarc_ui.shell import routes
 
 PAPERCLIP = "paperclip"
 """What a row wears when it carries files."""
@@ -46,6 +48,18 @@ LIST_MAX_WIDTH = 620
 """Past this the list is a page of its own and the message is a column."""
 
 CHIP_GAP = 6
+
+GRAPH_LINK = f"{routes.GRAPH}?view=message&id="
+"""The explorer, rooted at one message.
+
+Built by concatenation rather than by a helper that both this page and the
+insights page would import: the string is a route and a query, the route is a
+constant, and a module in ``mailarc_ui`` that existed only to join the two
+would be a layer over ``+``.
+
+A message id is a *canonical* id and not a digest of anything derived, so this
+link — unlike a topic's (R7) — stays good across every rebuild.
+"""
 
 
 def _label_pill(chip: LabelChip) -> rx.Component:
@@ -110,6 +124,20 @@ def _sender_line(row: ResultRow) -> rx.Component:
     )
 
 
+def _graph_pill(row: ResultRow) -> rx.Component:
+    """Take this message to the explorer, rooted at itself.
+
+    ``rx.redirect`` from a button rather than an ``rx.link`` around one: the
+    row is already clickable, and an anchor inside it is the nested-anchor
+    hydration error the rail exists to keep out of this application.
+    """
+    return pill_action(
+        "Show in graph",
+        icon="waypoints",
+        on_click=rx.redirect(GRAPH_LINK + row.id),
+    )
+
+
 def _result_row(row: ResultRow) -> rx.Component:
     """One hit: the sender's initials, and everything the row says about it."""
     return list_row(
@@ -122,6 +150,7 @@ def _result_row(row: ResultRow) -> rx.Component:
             gap=2,
             style={"minWidth": 0, "flex": "1 1 auto"},
         ),
+        _graph_pill(row),
         selected=MailSearchState.selected_id == row.id,
         on_click=lambda: MailSearchState.select(row.id),
         w="100%",

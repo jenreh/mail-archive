@@ -29,6 +29,18 @@ for a hundred thousand messages would put hundreds of megabytes of Python
 strings beside a FalkorDB that runs in the same process tree — for the sake of
 a few hundred texts that end up in a template.
 
+Four more reads follow the same rule for the same reason. :func:`read_replies`
+and :func:`read_signals` are each a **separate paged read** rather than more
+columns on the two the facts come from: ``MESSAGE_RELATIONS`` already carries
+five optional expansions that cross-multiply per message, and the reply chain
+and the label set would multiply into the same product.
+:func:`read_texts` is the keyword stage's late read — :func:`read_bodies` with
+a ceiling, because counting terms needs the first two thousand characters and
+not the whole letter. :func:`read_tagged` reads the **annotation layer**, the
+one thing in this file that no rebuild may write: a suggestion is only allowed
+to name a message that is not tagged yet, and the score is a share of the
+members that are.
+
 Every statement comes from :mod:`mailarc_analytics.queries.catalog` and every
 one of them is now a query-builder statement, run through
 :func:`~mailarc_analytics.queries.rows.rows_of` — which is
@@ -52,6 +64,7 @@ from typing import Any
 from runic.ogm import Session
 
 from mailarc_analytics.derived.config import AnalyticsConfig
+from mailarc_analytics.derived.findings import MessageSignals
 from mailarc_analytics.derived.model import MessageFacts
 from mailarc_analytics.queries import catalog
 from mailarc_analytics.queries.catalog import Statement
@@ -179,6 +192,146 @@ def read_bodies(session: Session, ids: Sequence[str]) -> dict[str, str]:
                 found[str(row["id"])] = str(body)
     logger.debug("Read %d bodies for %d requested messages", len(found), len(ids))
     return found
+
+
+def read_replies(session: Session, config: AnalyticsConfig) -> dict[str, str]:
+    """Which message each reply answers — ``{reply id: parent id}``.
+
+    Half of what makes a *conversation*, and the half a provider cannot give.
+    ``Thread`` groups the copies one account holds, so the same exchange
+    imported from two mailboxes is two threads; ``In-Reply-To`` is the sender's
+    own statement that this message answers that one and crosses accounts.
+    Union-find over both is signal 7,
+    :attr:`~mailarc_analytics.derived.model.TopicSignal.CONVERSATION`.
+
+    Takes the configuration for the ceiling, not for a threshold — and the
+    ceiling counts **replies** here where it counts messages in
+    :func:`read_facts`, because this statement's rows are the reply table
+    rather than the archive. So a capped rebuild reads the first *n* replies in
+    canonical id order, which is a different prefix from the first *n*
+    messages: some of the parents it names are outside what the facts read saw.
+    That is safe and is where it has to be resolved —
+    :func:`~mailarc_analytics.derived.conversations.conversation_edges` takes
+    the facts as well as this mapping and joins against the ids it actually
+    holds, so a parent nobody read joins nothing. What the ceiling buys is the
+    same thing it buys everywhere else: a bounded read on a large archive.
+
+    A message with no parent is simply absent: the statement's match is an
+    inner one, so the read is the size of the reply table and not of the
+    archive.
+    """
+    ceiling = max(0, config.max_messages)
+    found = {
+        str(row["id"]): str(row["parent"])
+        for row in _paged(session, catalog.MESSAGE_REPLIES, ceiling)
+        if row.get("parent")
+    }
+    logger.debug("Read %d replies", len(found))
+    return found
+
+
+def read_signals(
+    session: Session, config: AnalyticsConfig
+) -> dict[str, MessageSignals]:
+    """What each message says about its own importance, keyed by id.
+
+    A read of its own rather than four more columns on ``MESSAGE_RELATIONS``,
+    for the reason that statement's docstring gives: five optional expansions
+    already cross-multiply per message, and these four would multiply into the
+    same product. It also asks a different question — ``MessageFacts.addressed``
+    is To *and* Cc folded together, which is what co-addressing is defined
+    over, while "addressed directly" is a claim about the To line alone.
+
+    Keyed by id and not returned as a tuple, because the scorer walks the facts
+    and asks this for each of them. A message no row came back for is scored on
+    its own properties: every field of
+    :class:`~mailarc_analytics.derived.findings.MessageSignals` defaults to the
+    absence of the signal, so a caller may use ``found.get(id)`` and a missing
+    row costs a message its reasons rather than the run.
+    """
+    ceiling = max(0, config.max_messages)
+    found = {
+        str(row["id"]): _signals(row)
+        for row in _paged(session, catalog.MESSAGE_SIGNALS, ceiling)
+    }
+    logger.debug("Read signals for %d messages", len(found))
+    return found
+
+
+def read_texts(session: Session, ids: Sequence[str], max_chars: int) -> dict[str, str]:
+    """The subject and a capped body of exactly these messages, joined.
+
+    The keyword stage's read, and :func:`read_bodies` with a ceiling. A3 needs
+    a template member's *whole* cleaned body — for the sample a human
+    recognises it by and the word count the brevity factor divides — while
+    counting terms needs enough text to count in and no more. ``$max_chars``
+    cuts it in the store, so a page carries what it needs rather than the whole
+    letter.
+
+    Subject and body come back as one string because a piece of work is
+    usually *named* in the subject and described in the body — "Angebot
+    Datenmigration" is the keyword and the body says "anbei unser Angebot" —
+    and the tokeniser should see both. Nothing here decides how they are
+    weighed; a term is a term wherever it was written.
+
+    A message with neither a subject nor a body is absent from the answer
+    rather than present as an empty string, so a caller counting documents
+    counts the ones that had something to say.
+    """
+    found: dict[str, str] = {}
+    for batch in _batched(ids, BODY_BATCH):
+        for row in rows_of(
+            session,
+            catalog.MESSAGE_TEXTS,
+            {"ids": list(batch), "max_chars": max_chars},
+        ):
+            text = " ".join(
+                part for part in (row.get("subject"), row.get("body")) if part
+            ).strip()
+            if text:
+                found[str(row["id"])] = text
+    logger.debug("Read %d texts for %d requested messages", len(found), len(ids))
+    return found
+
+
+def read_tagged(session: Session) -> dict[str, frozenset[str]]:
+    """Which messages wear which tag, right now — ``{tag id: message ids}``.
+
+    The one read in this file that touches the **annotation layer**, and it is
+    a read and never anything else: ``TAGGED`` records what a human decided and
+    is written by :mod:`mailarc_core.archive.tags` alone. The suggestion pass
+    needs it for both halves of its own rule — a message that already wears the
+    tag is not suggested again, and the share of a group that does is the
+    score.
+
+    Not paged, and bounded by what it reads: a membership row is two ids, and
+    the population is the mail somebody tagged by hand. A tag whose messages
+    were all purged with an account comes back absent rather than empty, which
+    is the same thing to a caller counting members.
+    """
+    found: dict[str, set[str]] = {}
+    for row in rows_of(session, catalog.TAGGED_MEMBERSHIP):
+        tag = str(row["tag_id"])
+        found.setdefault(tag, set()).add(str(row["message_id"]))
+    logger.debug("Read %d tags with memberships", len(found))
+    return {tag: frozenset(members) for tag, members in found.items()}
+
+
+def _signals(row: Mapping[str, Any]) -> MessageSignals:
+    """One ``MESSAGE_SIGNALS`` row as the value the scorer reads.
+
+    ``reply_count`` comes back as a number the driver may hand over as a float,
+    the way every aggregate in this package does, so it goes through ``int``
+    here rather than at each of the scorer's comparisons.
+    """
+    return MessageSignals(
+        id=str(row["id"]),
+        sent_to=_address_set(row.get("to")),
+        reply_count=int(row.get("reply_count") or 0),
+        replied_by=_address_set(row.get("replied_by")),
+        label_names=_text_set(row.get("label_names")),
+        has_attachments=bool(row.get("has_attachments")),
+    )
 
 
 def _facts(

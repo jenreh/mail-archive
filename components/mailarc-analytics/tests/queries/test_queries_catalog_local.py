@@ -39,6 +39,17 @@ pytestmark = pytest.mark.graph_local
 GROUP_ID = "circle-under-test"
 TOPIC_ID = "topic:0000000000000000000000000000test"
 TEMPLATE_ID = "template:0000000000000001:sent"
+COMMUNITY_ID = "community:0000000000000000000000000test"
+TAG_ID = "tag:under-test"
+"""The annotation-layer node the suggestion statements point at.
+
+Planted with raw Cypher rather than through a catalogue statement, because
+there is deliberately no statement in this package that writes a ``Tag`` —
+``test_queries_catalog.py`` asserts exactly that by putting the label in the
+ground-truth set. The fixture supplies it the way it supplies the two indexes:
+without it, ``MERGE_SUGGESTED`` would match nothing and pass by writing
+nothing.
+"""
 
 DIMENSION = 4
 """Floats per vector in this file — not the shipped 768.
@@ -63,10 +74,40 @@ SCALARS: dict[str, Any] = {
     "max_distance": 0.18,
     "vector": [1.0, 0.0, 0.0, 0.0],
     "text": "rechnung",
+    "max_iterations": 20,
+    "sampling_size": 2,
+    "sampling_seed": 7,
+    "left": corpus.ANNA,
+    "right": corpus.THOMAS,
+    "max_len": 4,
+    "path_count": 3,
+    "id": corpus.canonical("p1"),
+    "depth": 2,
+    "tag": TAG_ID,
+    "topic": TOPIC_ID,
+    "community": COMMUNITY_ID,
+    "address": corpus.ANNA,
+    "version": "1",
 }
 """What every non-row parameter is bound to. Types matter: an ``$ids`` bound to
 a string rather than a list compiles and then matches nothing, and a ``$vector``
-whose length disagrees with the index is refused by the KNN outright."""
+whose length disagrees with the index is refused by the KNN outright.
+
+The procedure parameters matter for a second reason. ``$sampling_size`` is 2
+and not 0 because ``algo.betweenness`` refuses a size of zero outright
+(``'samplingSize' should be a positive integer``) — which is measured here and
+is why
+:attr:`~mailarc_analytics.derived.config.AnalyticsConfig.betweenness_sampling`
+means "skip the call" at its default rather than "sample nothing". ``$left``
+and ``$right`` are the one pair the fixture gives a ``CO_ADDRESSED`` edge, so
+the path search has a path to find rather than an empty answer that would
+prove only that it parsed.
+
+The explorer's reads take a seed named after what it is — ``$topic``,
+``$community``, ``$address``, ``$tag`` — rather than one shared ``$id``, and
+each is bound to the node ``_prepare`` plants. That is what lets every one of
+them appear in the column test below: a statement bound to a seed of the wrong
+kind runs, returns nothing, and proves only that it parsed."""
 
 ROWS: dict[str, list[dict[str, Any]]] = {
     "MERGE_GROUPS": [
@@ -130,6 +171,47 @@ ROWS: dict[str, list[dict[str, Any]]] = {
             "distance": 0,
         }
     ],
+    "MERGE_COMMUNITIES": [
+        {
+            "id": COMMUNITY_ID,
+            "size": 2,
+            "message_count": 1,
+            "label": "kunde.example",
+            "method": "lpa",
+            "first_seen": "2026-01-12T09:00:00+00:00",
+            "last_seen": "2026-02-10T16:00:00+00:00",
+        }
+    ],
+    "MERGE_MEMBER_OF": [
+        {"address_id": corpus.ANNA, "community_id": COMMUNITY_ID, "rank": 0.42}
+    ],
+    "MERGE_IN_CIRCLE": [
+        {
+            "message_id": corpus.canonical("p1"),
+            "community_id": COMMUNITY_ID,
+            "score": 0.66,
+            "method": "participants",
+        }
+    ],
+    "MERGE_SUGGESTED": [
+        {
+            "message_id": corpus.canonical("p2"),
+            "tag_id": TAG_ID,
+            "score": 0.6,
+            "method": "thread",
+        }
+    ],
+    "MERGE_TOPIC_KEYWORDS": [
+        {"topic_id": TOPIC_ID, "keywords": ["angebot", "datenmigration"]}
+    ],
+    "WRITE_IMPORTANCE": [
+        {
+            "id": corpus.canonical("p1"),
+            "importance": 0.8,
+            "reasons": ["addressed directly", "replied by you"],
+        }
+    ],
+    "WRITE_ADDRESS_RANKS": [{"id": corpus.ANNA, "rank": 0.42}],
 }
 """One representative row per upsert, with exactly the keys its docstring names.
 
@@ -173,6 +255,22 @@ no rows at all rather than raising, which is exactly what a full-text statement
 that had stopped working would look like."""
 
 
+def _plant_tag(session: Session) -> None:
+    """One ``Tag`` and one ``TAGGED`` edge, written by hand.
+
+    The annotation layer belongs to ``mailarc_core.archive.tags`` and this
+    package may only match it, so there is no statement here that could plant
+    one. Without it ``MERGE_SUGGESTED`` matches no tag and writes nothing,
+    ``TAGGED_MEMBERSHIP`` returns no rows, and both would pass while broken —
+    the same trap ``_prepare``'s docstring names for the derived nodes.
+    """
+    session.execute(
+        "MERGE (t:Tag {id: $tag}) SET t.name = $name, t.origin = 'manual' "
+        "WITH t MATCH (m:Message {id: $message}) MERGE (m)-[:TAGGED]->(t)",
+        {"tag": TAG_ID, "name": "Under test", "message": corpus.canonical("p1")},
+    )
+
+
 def _prepare(session: Session) -> None:
     """Everything a statement needs to find something: the derived nodes the
     edge upserts have to match, the two indexes the search procedures read, and
@@ -187,12 +285,18 @@ def _prepare(session: Session) -> None:
     """
     session.execute(VECTOR_INDEX, {})
     session.execute(FULLTEXT_INDEX, {})
+    _plant_tag(session)
     for name in ("MERGE_GROUPS", "MERGE_TOPICS", "MERGE_TEMPLATES"):
         rows_of(session, CATALOG[name], _bind(name))
     for name in ("MERGE_ADDRESSED_GROUP", "MERGE_ABOUT", "MERGE_INSTANCE_OF"):
         rows_of(session, CATALOG[name], _bind(name))
     rows_of(session, CATALOG["MERGE_CO_ADDRESSED"], _bind("MERGE_CO_ADDRESSED"))
     rows_of(session, CATALOG["WRITE_EMBEDDINGS"], _bind("WRITE_EMBEDDINGS"))
+    rows_of(session, CATALOG["MERGE_COMMUNITIES"], _bind("MERGE_COMMUNITIES"))
+    for name in ("MERGE_MEMBER_OF", "MERGE_IN_CIRCLE", "MERGE_SUGGESTED"):
+        rows_of(session, CATALOG[name], _bind(name))
+    for name in ("MERGE_TOPIC_KEYWORDS", "WRITE_IMPORTANCE", "WRITE_ADDRESS_RANKS"):
+        rows_of(session, CATALOG[name], _bind(name))
 
 
 NOT_IN_THE_SWEEP = frozenset({"CLEAR_EMBEDDINGS"})
@@ -283,6 +387,102 @@ def test_every_statement_runs_with_its_parameters_bound(
             ["id", "subject", "sent_at", "sender", "relevance"],
         ),
         ("VECTOR_INDEX_OPTIONS", ["label", "properties", "types", "options"]),
+        ("MESSAGE_REPLIES", ["id", "parent"]),
+        (
+            "MESSAGE_SIGNALS",
+            [
+                "id",
+                "to",
+                "reply_count",
+                "replied_by",
+                "label_names",
+                "has_attachments",
+            ],
+        ),
+        ("MESSAGE_TEXTS", ["id", "subject", "body"]),
+        ("TAGGED_MEMBERSHIP", ["tag_id", "message_id"]),
+        ("COUNT_COMMUNITIES", ["total"]),
+        (
+            "TOP_COMMUNITIES",
+            [
+                "id",
+                "label",
+                "size",
+                "message_count",
+                "method",
+                "first_seen",
+                "last_seen",
+            ],
+        ),
+        (
+            "TOP_IMPORTANT",
+            ["id", "subject", "sent_at", "sender", "importance", "reasons"],
+        ),
+        ("TOPIC_KEYWORDS", ["id", "label", "keywords", "message_count"]),
+        ("SUGGESTION_COUNTS", ["id", "name", "suggestions"]),
+        ("TAG_SUGGESTIONS", ["id", "subject", "sent_at", "score", "method"]),
+        ("PROCEDURES", ["name"]),
+        ("LABEL_PROPAGATION", ["id", "community"]),
+        ("MESSAGE_PAGERANK", ["id", "score"]),
+        ("ADDRESS_BETWEENNESS", ["id", "score"]),
+        ("SHORTEST_PATHS", ["ids", "types"]),
+        ("NEIGHBOURHOOD", ["ids", "types"]),
+        (
+            "MESSAGE_ADDRESSES",
+            ["message_subject", "message_importance", "id", "domain", "rank", "kind"],
+        ),
+        (
+            "THREAD_SIBLINGS",
+            [
+                "thread_id",
+                "thread_subject",
+                "id",
+                "subject",
+                "sent_at",
+                "importance",
+            ],
+        ),
+        ("REPLY_CHAIN", ["ids", "subjects", "importances", "sources", "targets"]),
+        ("MESSAGE_TOPICS", ["id", "label", "message_count", "method"]),
+        ("MESSAGE_TAGS", ["id", "name", "color"]),
+        ("MESSAGE_CIRCLE", ["id", "label", "size", "message_count", "score"]),
+        (
+            "TOPIC_MEMBERS",
+            [
+                "topic_label",
+                "topic_messages",
+                "id",
+                "subject",
+                "sent_at",
+                "importance",
+                "method",
+            ],
+        ),
+        ("TOPIC_PARTICIPANTS", ["id", "domain", "rank", "messages"]),
+        ("ADDRESS_NEIGHBOURS", ["id", "domain", "rank", "together"]),
+        (
+            "ADDRESS_MESSAGES",
+            [
+                "address_domain",
+                "address_rank",
+                "id",
+                "subject",
+                "sent_at",
+                "importance",
+                "kind",
+            ],
+        ),
+        (
+            "TAG_MEMBERS",
+            ["tag_name", "id", "subject", "sent_at", "importance", "source"],
+        ),
+        ("COMMUNITY_MEMBERS", ["community_label", "id", "domain", "rank"]),
+        ("COMMUNITY_MESSAGES", ["id", "subject", "sent_at", "importance", "score"]),
+        ("OVERVIEW_TOPICS", ["id", "label", "message_count"]),
+        ("OVERVIEW_COMMUNITIES", ["id", "label", "size", "message_count"]),
+        ("OVERVIEW_TAGS", ["id", "name", "messages"]),
+        ("OVERVIEW_TOPIC_CIRCLE", ["topic_id", "community_id", "messages"]),
+        ("OVERVIEW_TAG_TOPIC", ["tag_id", "topic_id", "messages"]),
     ],
 )
 def test_a_reading_statement_returns_the_columns_it_names(
@@ -467,6 +667,7 @@ def test_the_upserts_really_are_upserts_on_this_backend(
     writes = sorted(ROWS)
 
     with client.session(archived) as graph:
+        _plant_tag(graph)
         for name in writes:
             rows_of(graph, CATALOG[name], _bind(name))
         after_first = _counted(graph)
@@ -488,9 +689,12 @@ def test_every_delete_drains_and_then_stops(archived: GraphConfig) -> None:
         "DELETE_TOPICS",
         "DELETE_TEMPLATES",
         "DELETE_CO_ADDRESSED",
+        "DELETE_COMMUNITIES",
+        "DELETE_SUGGESTED",
     )
 
     with client.session(archived) as graph:
+        _plant_tag(graph)
         for name in sorted(ROWS):
             rows_of(graph, CATALOG[name], _bind(name))
 
@@ -501,6 +705,11 @@ def test_every_delete_drains_and_then_stops(archived: GraphConfig) -> None:
             ]
             for name in deletes
         }
+        survivors = graph.execute(
+            "MATCH (t:Tag) OPTIONAL MATCH (m:Message {id: $id}) "
+            "RETURN count(DISTINCT t) AS tags, count(DISTINCT m) AS messages",
+            {"id": corpus.canonical("p2")},
+        ).rows[0]
 
         assert removed == {name: [1, 0] for name in deletes}
         assert _counted(graph) == {
@@ -508,16 +717,21 @@ def test_every_delete_drains_and_then_stops(archived: GraphConfig) -> None:
             "Topic": 0,
             "Template": 0,
             "CO_ADDRESSED": 0,
+            "Community": 0,
         }
+        assert [int(one) for one in survivors] == [1, 1], (
+            "the suggestion delete took the tag or the message with it"
+        )
 
 
 def _counted(session: Session) -> dict[str, int]:
-    """The four derived counts, straight out of the catalogue."""
+    """The five derived counts, straight out of the catalogue."""
     return {
         "Group": int(rows_of(session, catalog.COUNT_GROUPS)[0]["total"]),
         "Topic": int(rows_of(session, catalog.COUNT_TOPICS)[0]["total"]),
         "Template": int(rows_of(session, catalog.COUNT_TEMPLATES)[0]["total"]),
         "CO_ADDRESSED": int(rows_of(session, catalog.COUNT_CO_ADDRESSED)[0]["total"]),
+        "Community": int(rows_of(session, catalog.COUNT_COMMUNITIES)[0]["total"]),
     }
 
 

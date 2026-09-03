@@ -1,12 +1,22 @@
 """What a rebuild reads, the two counts that frame what it read, and when.
 
-Seven statements. Six of them are a rebuild's: the account's own addresses, the
-two halves of every message's facts, the bodies A3 comes back for, and the pair
-of counts that make "what the reader stepped over" and "what a capped rebuild
-could have seen" numbers rather than absences — the first thing a rebuild runs
-and the last thing its job row reports. The seventh, :data:`ARCHIVED_PER_DAY`,
-answers a page instead: it reads the same two things the others do and buckets
-them by the day the copy was archived on.
+Eleven statements. Six of them are the original rebuild's: the account's own
+addresses, the two halves of every message's facts, the bodies A3 comes back
+for, and the pair of counts that make "what the reader stepped over" and "what
+a capped rebuild could have seen" numbers rather than absences — the first
+thing a rebuild runs and the last thing its job row reports.
+:data:`ARCHIVED_PER_DAY` answers a page instead: it reads the same two things
+the others do and buckets them by the day the copy was archived on.
+
+The four at the end are §5.3's, and each is a *separate* read on purpose.
+:data:`MESSAGE_REPLIES` and :data:`MESSAGE_SIGNALS` could both have been more
+columns on :data:`MESSAGE_RELATIONS`, and that is exactly what must not happen:
+that statement already carries five optional expansions which cross-multiply
+per message, and two more would multiply the reply chain and the label set into
+the same rows. :data:`MESSAGE_TEXTS` is A2's late read for the same reason
+:data:`MESSAGE_BODIES` is A3's — the text is only wanted for the members of an
+actual finding. :data:`TAGGED_MEMBERSHIP` reads the annotation layer, which no
+other statement in this package touches at all.
 
 Three measured properties of runic 0.5's builder shape everything here, and
 each is repeated at the statement it bites:
@@ -46,7 +56,9 @@ from mailarc_core.archive.model import (
     Address,
     ArchivedFrom,
     Attachment,
+    Label,
     Message,
+    Tag,
     Thread,
 )
 
@@ -368,4 +380,199 @@ The traversal is an inner match on purpose. A ``Message`` with no
 placed on; ``optional=True`` would give it a null key and collect every one of
 them into a bucket no calendar has. The ``IS NOT NULL`` filter closes the same
 hole from the other side, for an edge written before the field existed.
+"""
+
+
+_reply = alias(Message, "m")
+_parent = alias(Message, "p")
+
+MESSAGE_REPLIES: QueryBuilder[Message] = (
+    select(_reply)
+    .where(_reply.id.is_not_null() & (_reply.id > param("after")))
+    .traverse(Message.replies_to, from_=_reply, to=_parent)
+    .project(_reply.id, _parent.id.as_("parent"))
+    .order_by(var("id"))
+    .limit(param("limit"))
+)
+"""Who answered whom — one row per reply, ``(id, parent)``.
+
+The second half of what makes a *conversation*. A provider's thread id groups
+the copies **one** account holds, so the same exchange imported from two
+mailboxes is two threads; the ``In-Reply-To`` header is the sender's own
+statement that this message answers that one and crosses accounts. Union-find
+over both is signal 7,
+:attr:`~mailarc_analytics.derived.model.TopicSignal.CONVERSATION`.
+
+**The page is cut after the match, not before it**, which is the opposite of
+:data:`MESSAGE_RELATIONS` and is right for the opposite reason. That statement
+expands every message into many rows, so its ``LIMIT`` has to come first or the
+page pays for the whole archive's expansion. This one *narrows*: an inner match
+keeps only the messages that have a parent, which is a small minority of any
+archive. A ``WITH … LIMIT`` above the match would window two thousand messages
+and hand back the five of them that are replies — and
+:func:`~mailarc_analytics.derived.reader._paged` stops on a short page, so the
+walk would end at the first sparse window. Written this way, a page holds two
+thousand replies and the cursor is the last one's id.
+
+That in turn is why the match is **not** optional. An optional one would keep
+every message with a null parent, which is exactly the wide read this statement
+exists to avoid, and the caller would filter in Python what the store can
+filter for free.
+
+One row per message, because the writer produces at most one ``REPLIES_TO``
+edge per message — the parent is a single header. A graph carrying two would
+put both rows on the same page and the reader keeps the first; nothing in this
+project can produce one.
+"""
+
+
+_signals = alias(Message, "m")
+_addressee = alias(Address, "t")
+_answer = alias(Message, "q")
+_answerer = alias(Address, "ra")
+_label = alias(Label, "l")
+
+MESSAGE_SIGNALS: QueryBuilder[Message] = (
+    select(_signals)
+    .where(_signals.id.is_not_null() & (_signals.id > param("after")))
+    .order_by(_signals.id)
+    .limit(param("limit"))
+    .traverse(Message.recipients, from_=_signals, to=_addressee, optional=True)
+    .traverse(
+        Message.replies_to,
+        from_=_signals,
+        to=_answer,
+        direction="INCOMING",
+        optional=True,
+    )
+    .traverse(Message.sender, from_=_answer, to=_answerer, optional=True)
+    .traverse(Message.labels, from_=_signals, to=_label, optional=True)
+    .project(
+        _signals.id,
+        collect(_addressee.id, distinct=True).as_("to"),
+        count(_answer, distinct=True).as_("reply_count"),
+        collect(_answerer.id, distinct=True).as_("replied_by"),
+        collect(_label.name, distinct=True).as_("label_names"),
+        _signals.has_attachments,
+    )
+    .order_by(var("id"))
+)
+"""What a message says about its own importance — a read of its own.
+
+**Not four more columns on :data:`MESSAGE_RELATIONS`, and that is the point.**
+That statement already carries five optional expansions which cross-multiply
+per message — fifty recipients and twenty attachments are a thousand
+intermediate rows — and the two hops below would multiply the reply chain and
+the label set into the same product. It also answers a different question:
+``addressed`` there is To *and* Cc folded into one set, which is what
+co-addressing is defined over, while "addressed directly" is a claim about the
+To line alone. One statement cannot mean both.
+
+Four columns and four reasons:
+
+* ``to`` is ``SENT_TO`` **only**. Cc folded in would make "addressed directly"
+  true of every mail sent to a department.
+* ``reply_count`` counts the archive's own answers to this message, which is
+  the evidence that somebody engaged with it. ``count(DISTINCT q)`` and not
+  ``count(q)``, because the label and recipient expansions multiply each reply
+  into as many rows as the message has recipients.
+* ``replied_by`` is who those answers came from, so "replied by you" is this
+  set meeting the archive's own addresses — the strongest signal a mailbox
+  carries and the one no provider flag can fake.
+* ``label_names`` is the provider's own filing. Only Gmail brings ``IMPORTANT``
+  and ``STARRED`` into the graph (``mailarc_google.source.mapping``); IMAP's
+  ``\\Flagged`` and M365's flags are not imported, so a reason drawn from this
+  column is honest only where a label really says it.
+
+The reply hop is the one traversal here that is **incoming** and the one that
+deliberately *chains*. ``(m)<-[:REPLIES_TO]-(q)`` finds the answers, and the
+next hop leaves from ``q`` rather than from ``m`` — without ``from_=_answer``
+it would leave from the message and collect the message's own sender. Every
+other expansion passes ``from_=_signals`` for the reason
+:data:`MESSAGE_RELATIONS`' do: consecutive traversals walk a path, and a
+chained one comes back empty with no error at all.
+
+The page is cut **before** the expansions, the way that statement's is, and one
+message is exactly one row after the aggregation — so
+:func:`~mailarc_analytics.derived.reader._paged`'s short-page rule holds.
+
+``has_attachments`` is a property and not a traversal: the import already
+stores it, and a fifth hop to count attachment nodes would answer the same
+question at the cost of another product.
+"""
+
+
+_texts = alias(Message, "m")
+
+MESSAGE_TEXTS: QueryBuilder[Message] = (
+    select(_texts)
+    .where(_texts.id.in_(param("ids")))
+    .project(
+        _texts.id,
+        _texts.subject,
+        left(_texts.body_clean, param("max_chars")).as_("body"),
+    )
+)
+"""The words of named messages, already cut to length — the keyword read.
+
+:data:`MESSAGE_BODIES` with a ceiling and a subject, and the two are separate
+because the ceiling is the whole difference. A3 needs a template member's
+*whole* cleaned body: the sample text a human recognises it by and the word
+count the brevity factor divides. The keyword pass needs only enough text to
+count terms in, over twenty members of every topic in the archive, so it cuts
+in the store — ``left(m.body_clean, $max_chars)`` — for the reason
+:data:`~mailarc_analytics.queries.catalog.MESSAGES_NEEDING_EMBEDDING` does:
+``body_clean`` is uncapped, and sending it whole would move tens of megabytes
+per page to count the first two thousand characters of each.
+
+The subject comes back beside the body because a subject line is where a piece
+of work is usually named — "Angebot Datenmigration" is the keyword, and the
+body says "anbei unser Angebot". Both go through the same tokeniser; nothing
+here decides how they are weighed.
+
+``$ids`` bounds the read to the members of actual clusters, and
+``topic_keyword_members`` × ``topic_keyword_chars`` is what bounds it in total.
+``.in_()`` is right on ``Message.id`` for the reason :data:`MESSAGE_BODIES`'
+docstring gives, and would be wrong on a list property like ``refs``.
+
+``body`` is an expression, so it carries an explicit ``.as_()``; without one
+the row would be keyed by ``left(m.body_clean, $max_chars)``.
+"""
+
+
+_membership_tag = alias(Tag, "t")
+_tagged = alias(Message, "m")
+
+TAGGED_MEMBERSHIP: QueryBuilder[Tag] = (
+    select(_membership_tag)
+    .traverse(Tag.messages, from_=_membership_tag, to=_tagged)
+    .where(_tagged.id.is_not_null() & (_tagged.id != ""))
+    .project(_membership_tag.id.as_("tag_id"), _tagged.id.as_("message_id"))
+    .order_by(var("tag_id"))
+    .order_by(var("message_id"))
+)
+"""Who wears what, right now — the suggestion pass's only look at ground truth.
+
+The annotation layer is **read** here and written nowhere in this package: a
+suggestion is an analysis talking and ``TAGGED`` records what a human decided,
+which is the line
+``test_queries_catalog.py::test_it_only_ever_merges_a_derived_label`` draws by
+putting ``Tag`` in the ground-truth set. What this read is for is the other
+half of that: a suggestion may only be made for a message that is *not* already
+tagged, and the score is a share of the members that are — so the pass needs
+the memberships as they stand after every earlier stage.
+
+Rooted at the ``Tag`` and walked to the message, which is not a matter of
+taste. runic emits a predicate naming a *traversed* variable after the whole
+pipeline, so a statement that started at the message would have its filter land
+behind the clause it was meant to narrow — the same argument
+:attr:`~mailarc_core.archive.model.Tag.messages` was declared for.
+
+Not paged, and that is a bounded choice rather than an oversight: a membership
+row is two ids, and the population is the messages a human has tagged by hand —
+thousands, in an archive of a hundred thousand. Both columns are ordered so
+that two rebuilds fold the same mapping in the same order.
+
+The canonical-id filter is :data:`MESSAGE_PROPERTIES`'s, so the ids in here are
+ids the rest of the rebuild has also seen.
 """

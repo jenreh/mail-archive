@@ -1,20 +1,34 @@
-"""Everything the derived layer writes — four deletions and seven upserts.
+"""Everything the derived layer writes — six deletes, eleven upserts, five sets.
 
 A rebuild is a delete before it is anything else, and an upsert afterwards:
-these eleven statements are that whole cycle. Idempotence is the phase's
-contract, so every write here is a ``MERGE`` and every delete is batched and
-counted so the caller can loop it.
+these statements are that whole cycle. Idempotence is the phase's contract, so
+every write here is a ``MERGE`` and every delete is batched and counted so the
+caller can loop it.
+
+**Four of them are not merges and not deletes**, and they are the exception
+this file has to name. ``Message.importance``, ``importance_reasons``,
+``importance_version`` and ``Address.rank``/``rank_version`` are properties on
+*ground-truth* nodes: the import never writes them, a rebuild computes them,
+nulls them and computes them again. The pattern is
+:data:`~mailarc_analytics.queries.catalog.WRITE_EMBEDDINGS`' exactly — ``MATCH``
+the node and ``SET`` the properties, never ``MERGE`` it, and clear with
+``SET … = NULL`` rather than with a ``DELETE`` that would take a real node down
+to reset a number computed from it. The delete guards in
+:mod:`mailarc_analytics.derived.rebuild` never see these four; they are not
+nodes and not edges.
 
 What changed, and what did not
 ------------------------------
 
 The statements stopped being strings and nothing they *do* moved. That was
-verified rather than assumed: each of the eleven was run beside the string it
-replaces, on two isolated graphs of one embedded FalkorDB over the same planted
-data, and the whole graph was dumped from each and compared node for node, edge
-for edge and property for property. All eleven came back identical, including
-the batch-by-batch ``removed`` sequences and a second identical write leaving
-every count where it was.
+verified rather than assumed: each of the original eleven was run beside the
+string it replaces, on two isolated graphs of one embedded FalkorDB over the
+same planted data, and the whole graph was dumped from each and compared node
+for node, edge for edge and property for property. All eleven came back
+identical, including the batch-by-batch ``removed`` sequences and a second
+identical write leaving every count where it was. The eleven §5.3 adds were
+born as builders and have no string to be compared against; what checks them is
+``test_queries_catalog_local.py``, which runs every entry twice and counts.
 
 The builder's ``merge()`` puts only the key in the pattern and everything else
 in a following ``SET``, which is the rule a hand-written ``MERGE`` had to be
@@ -53,6 +67,11 @@ through untouched, which is exactly what an edge row needs. A payload built
 with :func:`~mailarc_analytics.queries.catalog.as_graph_datetime` is still
 accepted byte-identically, which is what makes the switch safe to make one call
 site at a time.
+
+The same holds for the four merges §5.3 adds. ``Community`` declares both
+dates; ``MemberOf``, ``InCircle`` and ``Suggested`` carry none, and their
+``address_id``, ``community_id``, ``message_id`` and ``tag_id`` keys are not
+fields of the edge models and pass through as they are.
 """
 
 from runic.ogm import alias, count, param, select, unwind
@@ -62,12 +81,16 @@ from mailarc_analytics.derived.model import (
     About,
     AddressedGroup,
     CoAddressed,
+    Community,
     Group,
+    InCircle,
     InstanceOf,
+    MemberOf,
+    Suggested,
     Template,
     Topic,
 )
-from mailarc_core.archive.model import Address, Message
+from mailarc_core.archive.model import Address, Message, Tag
 
 # ---------------------------------------------------------------------------
 # Deletions — a rebuild is a delete before it is anything else
@@ -361,4 +384,306 @@ MERGE_INSTANCE_OF = (
 
 Like :data:`MERGE_ABOUT`: both endpoints matched rather than merged, the
 property set on the edge alias, and no date on the row.
+"""
+
+DELETE_COMMUNITIES = (
+    select(Community)
+    .with_("n", limit=param("batch"))
+    .delete(detach=True)
+    .returning(count("n").as_("removed"))
+)
+"""Drop a batch of ``Community`` nodes; loop until ``removed`` is zero.
+
+:data:`DELETE_GROUPS`' shape, and ``DETACH DELETE`` is right here for the same
+reason: ``MEMBER_OF`` and ``IN_CIRCLE`` both hang off the community and have
+nowhere to be without it, while the ``Address`` and ``Message`` at their other
+ends are ground truth and a detach on a *derived* label never reaches them.
+
+The fourth derived label, so the rebuild's ``_DERIVED_NODE_DELETE`` guard has
+to name it too — the regex is what stops a delete statement from ever reaching
+``Message``, and a label missing from it is a delete nothing checks.
+"""
+
+_SUGGESTED_EDGE = alias(Suggested, "r")
+"""The edge handle :data:`DELETE_SUGGESTED` deletes, named once.
+
+Bound to a handle rather than to the string ``"r"`` for the reason
+:data:`_CO_ADDRESSED_EDGE` is: the variable carried through the ``WITH`` stage
+and the variable deleted cannot drift apart in an edit.
+"""
+
+DELETE_SUGGESTED = (
+    select(alias(Tag, "t"))
+    .traverse(Tag.suggested, to="m", edge=_SUGGESTED_EDGE)
+    .with_(_SUGGESTED_EDGE, limit=param("batch"))
+    .delete(_SUGGESTED_EDGE)
+    .returning(count("r").as_("removed"))
+)
+"""Drop a batch of ``SUGGESTED`` edges, keeping the tag and the message.
+
+The second derived edge that lives between two nodes this package may not
+delete, and the more dangerous of the two: ``DETACH DELETE`` here would take
+the ``Tag`` — a node :mod:`mailarc_core.archive.tags` owns, that no rebuild may
+touch and that survives an account clear-out — and the ``Message`` with it.
+``delete()`` defaults to ``detach=False`` and this statement never passes the
+flag, exactly as :data:`DELETE_CO_ADDRESSED` does not.
+
+**Rooted at the tag and not at the message**, which is the finding that made
+:attr:`~mailarc_core.archive.model.Tag.suggested` a declared relation in the
+first place: runic emits a predicate naming a *traversed* variable after the
+whole pipeline, so a statement walked in from the message end puts its ``WITH``
+stage — and anything narrowing it — behind the ``DELETE`` it was meant to bound.
+Starting at the ``Tag`` puts the batching ``WITH`` where the loop needs it,
+which the compiled text shows and ``test_queries_catalog.py`` asserts.
+
+``Tag.suggested`` carries no ``edge_model`` on the core side (the precedent is
+``Address.co_addressed``: ground truth does not describe a derived thing), so
+the handle above supplies the edge class here.
+
+Emits ``MATCH (t:Tag) MATCH (t)<-[r:SUGGESTED]-(m:Message) WITH r LIMIT $batch
+DELETE r RETURN count(r) AS removed``.
+"""
+
+MERGE_COMMUNITIES = (
+    unwind(param("rows"))
+    .merge(Community, key=Community.id, alias="c")
+    .set(
+        Community.size,
+        Community.message_count,
+        Community.label,
+        Community.method,
+        Community.first_seen,
+        Community.last_seen,
+    )
+)
+"""Upsert circles. ``$rows``: ``id``, ``size``, ``message_count``, ``label``,
+``method``, ``first_seen``, ``last_seen``.
+
+Bind ``encode_rows(Community, rows)``; both dates are declared fields, so the
+merge needs nothing from ``as_graph_datetime``.
+
+Only ``id`` is in the pattern, for the reason :data:`MERGE_GROUPS` states: the
+derived labels carry no unique constraint, so a changed ``size`` inside the
+``MERGE`` would grow a second community beside the first and every
+``MEMBER_OF`` written afterwards would hang off both.
+"""
+
+MERGE_MEMBER_OF = (
+    unwind(param("rows"))
+    .match(Address, key={Address.id: row("address_id")}, alias="a")
+    .match(Community, key={Community.id: row("community_id")}, alias="c")
+    .merge_edge("a", MemberOf, "c", alias="r")
+    .set(MemberOf.rank, on="r")
+)
+"""Put addresses in their circle. ``$rows``: ``address_id``, ``community_id``,
+``rank``.
+
+``match()`` on both ends and never ``merge()``: a community that is not there
+yet is a bug in the caller's ordering, and an address that is not there is a
+partition over a graph that moved underneath it. Merging either would invent an
+empty node — and one of them would be a *ground-truth* node carrying nothing
+but a rank.
+
+The rank on the edge is the archive-wide centrality
+:data:`WRITE_ADDRESS_RANKS` has already written to the node, copied here so a
+subgraph read can size a member without a second hop. That is why the stage
+order puts ``CENTRALITY`` before ``COMMUNITIES``: an edge written before the
+ranks exist carries a null and nothing recomputes it.
+"""
+
+MERGE_IN_CIRCLE = (
+    unwind(param("rows"))
+    .match(Message, key={Message.id: row("message_id")}, alias="m")
+    .match(Community, key={Community.id: row("community_id")}, alias="c")
+    .merge_edge("m", InCircle, "c", alias="r")
+    .set(InCircle.score, InCircle.method, on="r")
+)
+"""Place messages in the circle they circulate in. ``$rows``: ``message_id``,
+``community_id``, ``score``, ``method``.
+
+``score`` is the share of *this message's* participants that are members of the
+community, so it belongs on the edge and not on either node: the same community
+holds a mail everybody on it is a member of and a mail with one member on it,
+and the two are not the same statement.
+
+A message joins at most one circle — the largest share wins, ties going to the
+smaller community id — because "which circle is this mail in" has one answer or
+none. Nothing in the statement enforces that; the caller does, the way it
+enforces :data:`MERGE_CO_ADDRESSED`'s pair order.
+"""
+
+MERGE_SUGGESTED = (
+    unwind(param("rows"))
+    .match(Message, key={Message.id: row("message_id")}, alias="m")
+    .match(Tag, key={Tag.id: row("tag_id")}, alias="t")
+    .merge_edge("m", Suggested, "t", alias="r")
+    .set(Suggested.score, Suggested.method, on="r")
+)
+"""Offer messages to a tag. ``$rows``: ``message_id``, ``tag_id``, ``score``,
+``method``.
+
+**The one statement in this package that touches the annotation layer, and it
+only ever points at it.** ``Tag`` is matched, never merged — the catalogue test
+puts it in the ground-truth set for exactly this — so a row naming a tag a
+human deleted writes nothing at all, which is the right answer rather than a
+resurrection.
+
+The edge it writes is derived and disposable: :data:`DELETE_SUGGESTED` takes
+every one of them at the start of the next rebuild, and ``TAGGED`` — the human
+decision — is untouched by both. A user accepting a suggestion goes through
+:meth:`~mailarc_core.archive.tags.TagRepository.tag_messages`, in the other
+component, which is the only thing that may write a membership.
+"""
+
+_keyworded = alias(Topic, "t")
+
+MERGE_TOPIC_KEYWORDS = (
+    unwind(param("rows"))
+    .match(Topic, key={Topic.id: row("topic_id")}, alias="t")
+    .set({Topic.keywords: row("keywords")}, on=_keyworded)
+    .returning(count("t").as_("written"))
+)
+"""Attach keywords to their topic. ``$rows``: ``topic_id``, ``keywords``.
+
+A ``MATCH`` and a ``SET`` rather than a merge, although the name matches its
+siblings: the topic was written by :data:`MERGE_TOPICS` one stage earlier and
+the keywords are a second pass over the same node. Merging it here would create
+an empty ``Topic`` for a keyword row whose cluster had gone — which can only
+happen if the two stages disagree, and an empty node is a worse way to find
+that out than a row that wrote nothing.
+
+Separate from :data:`MERGE_TOPICS` because the two have different *inputs*.
+Clustering needs no message text at all; the TF-IDF needs the text of twenty
+members of every topic, which is a read the clustering must not have to wait
+for. Splitting them is what keeps the expensive read inside its own stage,
+where what it cost is a number in the job row.
+
+``keywords`` is a list of strings and passes through ``encode_rows`` untouched:
+it is a declared field on ``Topic`` with no converter, so the payload the
+caller builds is the payload the store receives.
+"""
+
+_importance = alias(Message, "m")
+
+WRITE_IMPORTANCE = (
+    unwind(param("rows"))
+    .match(Message, key={Message.id: row("id")}, alias="m")
+    .set(
+        {
+            Message.importance: row("importance"),
+            Message.importance_reasons: row("reasons"),
+            Message.importance_version: param("version"),
+        },
+        on=_importance,
+    )
+    .returning(count("m").as_("written"))
+)
+"""Score messages in place. ``$rows``: ``id``, ``importance``, ``reasons``.
+
+The second statement in this catalogue that writes a *ground-truth* node, and
+it is :data:`~mailarc_analytics.queries.catalog.WRITE_EMBEDDINGS`' argument
+word for word: three properties the import deliberately never writes (see
+:mod:`mailarc_core.archive.writer`, which leaves an existing ``Message``
+untouched precisely so a later phase can fill them in), set on a node that is
+matched and never merged. A row naming a message that is not there writes
+nothing; merging it would invent an empty ``Message`` carrying a score and no
+mail, which no import can ever reconcile and every listing would happily
+return.
+
+``$version`` is a parameter of the *statement* rather than a key of each row,
+because it is one value for the whole run — the same shape ``$model`` has on
+the embedding write. A changed formula therefore leaves a visible mark on every
+message it touched, and a message carrying an older version is one this
+rebuild did not reach.
+
+The reasons are not decoration and not optional. A score with no vocabulary
+behind it is a ranking a user cannot argue with, and the whole reason this is
+arithmetic over headers rather than a model is that every term can be named.
+"""
+
+CLEAR_IMPORTANCE = (
+    select(_importance)
+    .where(
+        _importance.importance.is_not_null()
+        | _importance.importance_version.is_not_null()
+    )
+    .set(
+        {
+            Message.importance: None,
+            Message.importance_reasons: None,
+            Message.importance_version: None,
+        },
+        on=_importance,
+    )
+    .returning(count("m").as_("cleared"))
+)
+"""Forget every score, because the next rebuild computes them all again.
+
+:data:`~mailarc_analytics.queries.catalog.CLEAR_EMBEDDINGS`' shape, and needed
+for a sharper reason than tidiness: a rebuild deletes and recomputes the
+derived layer, and a message that dropped out of the archive's scoring — its
+template gone, its replies purged with an account — would otherwise keep the
+number the *previous* run gave it forever. Nulling first is what makes
+``importance`` mean "this run's answer".
+
+``None`` compiles to the Cypher literal ``NULL`` rather than to a parameter
+bound to null, which runic states outright: ``SET n.p = $x`` with a null ``x``
+does remove the property, but it reads as assigning a value and not every
+backend treats the two the same.
+
+Ground truth is untouched by it. These three properties are this phase's own,
+declared on the node and left empty by the import — the same arrangement
+``embedding`` has, and the delete guards in
+:mod:`mailarc_analytics.derived.rebuild` are unaffected because nothing here is
+a node or an edge.
+
+The filter is what keeps it off the whole archive: a message that was never
+scored matches neither condition, so a first rebuild clears nothing and a
+later one touches only what it wrote. Takes **no parameters**, like its
+embedding counterpart.
+"""
+
+_ranked = alias(Address, "a")
+
+WRITE_ADDRESS_RANKS = (
+    unwind(param("rows"))
+    .match(Address, key={Address.id: row("id")}, alias="a")
+    .set(
+        {
+            Address.rank: row("rank"),
+            Address.rank_version: param("version"),
+        },
+        on=_ranked,
+    )
+    .returning(count("a").as_("written"))
+)
+"""Rank addresses in place. ``$rows``: ``id``, ``rank``.
+
+:data:`WRITE_IMPORTANCE` on the other ground-truth node, and the same rules
+apply: matched and never merged, versioned by a statement parameter, cleared by
+its own statement rather than deleted.
+
+The number is computed in **Python**, not by ``algo.pageRank``, and that is not
+an implementation detail: ``CO_ADDRESSED`` is stored with the smaller id first,
+so a PageRank over that arrow would rank an address by where its id sorts.
+:mod:`mailarc_analytics.derived.centrality` runs a weighted, undirected power
+iteration over the pair counts instead — deterministic, and about the graph
+rather than about the alphabet.
+"""
+
+CLEAR_ADDRESS_RANKS = (
+    select(_ranked)
+    .where(_ranked.rank.is_not_null() | _ranked.rank_version.is_not_null())
+    .set({Address.rank: None, Address.rank_version: None}, on=_ranked)
+    .returning(count("a").as_("cleared"))
+)
+"""Forget every rank. :data:`CLEAR_IMPORTANCE`'s argument, on ``Address``.
+
+An address that stopped being written to — every message it was on purged with
+its account — would otherwise keep the centrality it had when it still was, and
+a page sizing nodes by rank would go on showing it as a hub of an archive it is
+no longer in.
+
+Takes no parameters, and its filter keeps it off every address the rebuild has
+not touched.
 """

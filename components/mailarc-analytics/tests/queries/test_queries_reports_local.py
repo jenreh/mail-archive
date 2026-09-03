@@ -26,6 +26,8 @@ from runic.ogm import Session
 from mailarc_analytics import AnalyticsReader, TemplateDirection, rebuild_derived
 from mailarc_analytics.queries import catalog
 from mailarc_analytics.queries.rows import rows_of
+from mailarc_core.archive.model import TagOrigin, TagSource
+from mailarc_core.archive.tags import TagRepository
 from mailarc_core.graph import client
 from mailarc_core.graph.config import GraphConfig
 
@@ -223,6 +225,100 @@ class TestReadingTheFindingsBack:
         assert sorted((one.left_id, one.right_id, one.together) for one in defined) == (
             sorted((one.left_id, one.right_id, one.together) for one in stored)
         )
+
+
+class TestReadingPhaseTwoBack:
+    """The five listings the new stages made answerable, off a real rebuild.
+
+    The scripted tests above prove the façade decodes what it is handed; these
+    prove the store hands it that. The numbers are the ones
+    ``test_derived_rebuild_local.py`` measured off the same corpus, so a change
+    in an analysis shows up as two files disagreeing.
+    """
+
+    def test_the_one_planted_circle_comes_back_labelled_by_its_domain(
+        self, derived: GraphConfig
+    ) -> None:
+        """A name a human recognises and one nobody invented — §1.2's rule
+        about what may appear on a derived node."""
+        found = _reader(derived).communities()
+
+        assert len(found) == 1
+        assert found[0].id.startswith("community:")
+        assert found[0].label.endswith(".example")
+        assert (found[0].size, found[0].message_count) == (3, 33)
+        assert found[0].method == "lpa"
+
+    def test_the_important_messages_come_back_scored_and_argued(
+        self, derived: GraphConfig
+    ) -> None:
+        """Ordered by the score, every row carrying the vocabulary behind it."""
+        found = _reader(derived).important_messages(limit=5)
+
+        assert len(found) == 5
+        assert [one.importance for one in found] == sorted(
+            (one.importance for one in found), reverse=True
+        )
+        assert all(one.sender for one in found), "the sender hop found every one"
+        assert any(one.reasons for one in found)
+
+    def test_an_archive_nobody_has_rebuilt_has_nothing_important_in_it(
+        self, archived: GraphConfig
+    ) -> None:
+        """``importance IS NOT NULL`` doing its work: a null sorts first on a
+        ``DESC`` here, so without the filter the top of this listing would be
+        whichever unscored messages the store happened to visit."""
+        assert _reader(archived).important_messages() == ()
+
+    def test_the_topic_comes_back_with_the_words_its_members_used(
+        self, derived: GraphConfig
+    ) -> None:
+        found = _reader(derived).topic_keywords()
+
+        assert len(found) == 1
+        assert found[0].message_count == 5
+        assert found[0].keywords
+        assert "nord" not in found[0].keywords, "the ticket token is not a keyword"
+
+    def test_a_tag_is_offered_the_rest_of_its_topic(
+        self, archived: GraphConfig
+    ) -> None:
+        """The whole of §5.7 read back through the façade: two of the five
+        project messages are tagged, the rebuild offers the other three, and
+        both the badge and the listing say so."""
+        with client.session(archived) as graph:
+            repository = TagRepository(graph)
+            repository.create("NORD-42", origin=TagOrigin.MANUAL)
+            repository.tag_messages(
+                "tag:nord-42",
+                [corpus.canonical("p1"), corpus.canonical("p2")],
+                source=TagSource.MANUAL,
+            )
+            rebuild_derived(graph, CONFIG)
+        reader = _reader(archived)
+
+        counted = reader.suggestion_counts()
+        offered = reader.suggestions_for("tag:nord-42")
+
+        assert counted == {"tag:nord-42": 3}
+        assert sorted(one.message_id for one in offered) == sorted(
+            corpus.canonical(f"p{n}") for n in (3, 4, 5)
+        )
+        assert [one.score for one in offered] == sorted(
+            (one.score for one in offered), reverse=True
+        )
+        assert {one.method for one in offered} <= {"thread", "topic", "community"}
+
+    def test_a_tag_nothing_was_suggested_for_is_a_zero_and_not_an_absence(
+        self, derived: GraphConfig
+    ) -> None:
+        """A tag with no suggestions and a tag missing from a listing look the
+        same to a card, and only one of them is a state a user should see."""
+        with client.session(derived) as graph:
+            TagRepository(graph).create("Empty", origin=TagOrigin.MANUAL)
+
+        assert _reader(derived).suggestion_counts() == {"tag:empty": 0}
+        assert _reader(derived).suggestions_for("tag:empty") == ()
 
 
 class TestTheCrossCheckOverAHealthyArchive:

@@ -146,13 +146,21 @@ def test_the_rail_covers_every_route_a_person_can_open() -> None:
     assert {item.href for item in _nav_items()} == set(routes.ALL_ROUTES)
 
 
-def test_the_menu_is_the_three_pages_a_person_works_in() -> None:
-    """The redesign's own decision, in one assertion: search first, the
-    dashboard demoted to the rail, insights out from under `/admin/`."""
+def test_the_menu_is_the_four_pages_a_person_works_in() -> None:
+    """The redesign's own decision plus the explorer, in one assertion: search
+    first, the dashboard demoted to the rail, insights out from under
+    `/admin/`, and the graph beside insights.
+
+    Four rather than three since the explorer arrived, which is a deliberate
+    change to a pin (spec R9): `/graph` reads the same derived layer insights
+    tabulates, so it belongs in the menu a person works in rather than in the
+    administration popover.
+    """
     assert [item.href for item in MENU.items] == [
         routes.SEARCH,
         routes.DASHBOARD,
         routes.INSIGHTS,
+        routes.GRAPH,
     ]
     assert MENU.label == "Menu"
 

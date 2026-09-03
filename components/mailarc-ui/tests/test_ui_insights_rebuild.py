@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from appkit_commons.database.entities import Base
-from insights_archive import fresh, graph, published
+from insights_archive import fresh, graph, published, tags
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -36,8 +36,8 @@ from mailarc_core.database.sqlite import install_pragmas
 from mailarc_sync.jobs import JobKind, JobQueue, SessionFactory
 from mailarc_ui.insights import AnalyticsInsightsState
 
-__all__ = ["fresh", "graph", "published"]
-"""pytest collects a fixture off the importing module's namespace, so the three
+__all__ = ["fresh", "graph", "published", "tags"]
+"""pytest collects a fixture off the importing module's namespace, so the four
 are imported to be used; ``__all__`` is what stops ruff removing them again."""
 
 STATE_MODULE = "mailarc_ui.insights.state"

@@ -127,7 +127,15 @@ store as well: it is content-addressed and write-once, so a re-imported message
 finds its own blob already there, and proving that no other message references
 the same bytes is not something worth getting wrong.
 
-The derived layer (groups, topics, templates) is disposable by construction:
+**Tags survive too.** A tag is your name for a set of messages, not something
+the mailbox contained, so clearing the mailbox does not take it. The
+memberships go with the messages they were on — a tag whose mail was only in
+this mailbox comes back with a count of zero — and the tag itself stays in the
+list until you delete it. Re-import the mailbox and the tag is still there,
+ready to be filled again.
+
+The derived layer (groups, topics, circles, templates and the importance
+scores) is disposable by construction:
 whatever hung off a deleted message goes with it, and the next **Rebuild** on
 the insights page recomputes the rest.
 
@@ -164,11 +172,15 @@ the account into `auth_error`. Retrying a revoked token never works.
 
 ## What the graph ends up holding
 
-![Graph ground truth](../diagrams/graph-model.svg)
+![The graph model](../diagrams/graph-model.svg)
 
-Everything above is read out of the message or computed from it
+Everything in the solid boxes is read out of the message or computed from it
 deterministically, so re-parsing the same bytes gives the same node. Nothing is
 guessed.
+
+The two dashed frames are written later and by somebody else. `Tag` is what you
+file mail under by hand, and `Community` is one of the groupings an analysis
+works out. See [Insights](./insights.md) for both.
 
 The graph keeps a capped rendering of the body — 64 KB by default, enough for
 full-text search. The whole message stays in the blob store, so a longer body is
@@ -223,8 +235,11 @@ not what you want.
 
 **Insights** in the rail (`/insights`) is the other half: the search page shows
 what the import wrote, this one shows what was *derived* from it — who gets
-addressed together, which of those groups recur, what the mail is about, and
-which of it is written by a machine.
+addressed together, which of those groups recur, what the mail is about, which
+of it probably matters, and which of it is written by a machine.
+[Insights](./insights.md) covers the whole page; **Graph** (`/graph`) draws the
+same findings as a picture, and [the graph explorer](./graph-explorer.md)
+covers that one.
 
 Nothing is derived until you ask. **Rebuild** queues the work as a job and the
 bar under it climbs in stages, so the page stays usable while a large archive is

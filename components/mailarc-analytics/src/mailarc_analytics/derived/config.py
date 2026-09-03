@@ -189,3 +189,106 @@ class AnalyticsConfig(BaseConfig):
     precisely what the idempotence contract forbids. Any read that honours this
     orders by the canonical id first.
     """
+
+    community_min_size: int = 3
+    """Addresses a community needs before it is worth a node.
+
+    :attr:`min_group_size`'s argument for the inexact question: two people who
+    write to each other are a correspondence, and every archive has thousands
+    of them. Three is the smallest number that is a circle.
+    """
+
+    community_max_iterations: int = 20
+    """Passes ``algo.labelPropagation`` may take before it stops.
+
+    Pinned rather than left to the procedure's own default because label
+    propagation has no seed: an unconverged run is where two rebuilds over an
+    unchanged graph disagree about an ambiguous node, and a fixed iteration
+    count is the only thing this end can hold still. Twenty converges on every
+    archive measured here; the digest key absorbs what it does not.
+    """
+
+    circle_min_share: float = 0.5
+    """Share of a message's participants that must be in a community before
+    the message is counted as circulating in it.
+
+    A half, so a mail belongs to the circle most of its people are in. Lower
+    and every mail to one member of a large circle joins it, which turns
+    ``IN_CIRCLE`` into "was addressed to somebody" and makes the count
+    meaningless.
+    """
+
+    centrality_max_edges: int = 2_000_000
+    """Co-addressing pairs the Python PageRank will walk in one rebuild.
+
+    The address ranking is power iteration in Python rather than
+    ``algo.pageRank`` because ``CO_ADDRESSED`` is stored directed with the
+    smaller id first: a PageRank over that arrow would rank an address by
+    where its id sorts. Two million pairs times twenty iterations is twenty to
+    forty seconds; beyond that the stage reports what it stepped over instead
+    of stalling a job the UI is polling.
+    """
+
+    betweenness_sampling: int = 0
+    """Nodes ``algo.betweenness`` samples; zero skips the call entirely.
+
+    Off by default because nothing renders the number yet and it is the most
+    expensive procedure in the set. The setting is the sampling size rather
+    than a flag because the procedure refuses a size of zero outright — "do
+    not call it" is the only way to spell off.
+    """
+
+    topic_keyword_count: int = 8
+    """Keywords a ``Topic`` keeps. Enough to recognise a piece of work by,
+    short enough to render as chips beside its label."""
+
+    topic_keyword_members: int = 20
+    """Messages per topic whose text the TF-IDF reads.
+
+    Half the cost ceiling of the keyword stage, and the half that bounds the
+    read: a topic of five hundred messages is described as well by twenty of
+    them, and reading all five hundred would put the archive's text next to an
+    in-process FalkorDB for no better answer.
+    """
+
+    topic_keyword_chars: int = 2000
+    """Characters of each of those bodies, cut by ``left()`` in the store.
+
+    The other half of the ceiling. Two thousand characters is a long business
+    mail; what follows it is quoted history and a footer, and the cleaner has
+    already taken most of that out.
+    """
+
+    tag_suggest_min_tagged: int = 2
+    """Tagged members a group needs before it may suggest its untagged ones.
+
+    One is a coincidence — somebody tagged one message that happens to share a
+    thread with fifty others — and would turn the first tag on a busy thread
+    into fifty suggestions.
+    """
+
+    tag_suggest_min_share: float = 0.3
+    """Share of a group's members that must already wear the tag.
+
+    The other half of the same guard, and the half that scales: two tagged
+    messages out of five is a project, two out of two hundred is a mailing
+    list somebody filed twice.
+    """
+
+    tag_auto_accept: bool = False
+    """Whether a strong suggestion may tag its message without being asked.
+
+    Off, and it is the one setting here that is a *decision* rather than a
+    calibration: a tag is a human's word for a set of messages, and the
+    annotation layer's whole argument is that nothing writes to it except a
+    person. Turned on, every membership it creates is still marked
+    ``TagSource.AUTO``, so what the analysis did stays visible.
+    """
+
+    tag_auto_accept_min_score: float = 0.6
+    """Suggestion score at which auto-accept acts, when it is on at all.
+
+    Above what the weakest group can produce: a community suggestion is
+    weighted below this, so however many of a circle's messages are tagged, a
+    circle alone never tags another one. A thread or a topic can.
+    """

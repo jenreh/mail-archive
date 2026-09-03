@@ -47,21 +47,65 @@ STATEMENT_SOURCES = tuple(
 )
 """Every module a statement can be assigned in.
 
-``catalog.py`` is still the surface and still holds one statement — the raw one
-— while the other thirty-four live one family per module under
-``queries/statements/``. The rules below are about statements and not about
-files, so they are read off all six together.
+``catalog.py`` is still the surface, and every statement in the mapping lives
+in one of the seven family modules under ``queries/statements/``. The rules
+below are about statements and not about files, so they are read off all of
+them together.
 """
 
-DERIVED_LABELS = frozenset({"Group", "Topic", "Template"})
+DERIVED_LABELS = frozenset({"Group", "Topic", "Template", "Community"})
 GROUND_TRUTH_LABELS = frozenset(
-    {"Message", "Address", "Thread", "Label", "Attachment", "Account"}
+    {"Message", "Address", "Thread", "Label", "Attachment", "Account", "Tag"}
 )
+"""What this package may match and may never merge.
+
+``Tag`` is not ground truth in the strict sense — no provider sent it — but it
+sits on this side of the line for the same reason ``Message`` does: it is
+written by :mod:`mailarc_core.archive.tags` and by nothing else, and it has to
+survive a rebuild that deletes and recomputes everything below. An analysis
+suggests memberships; a human decides them.
+"""
 
 _MERGE_LABEL = re.compile(r"MERGE \(\w*:(\w+)")
 
+PROCEDURES = (
+    "PROCEDURES",
+    "LABEL_PROPAGATION",
+    "MESSAGE_PAGERANK",
+    "ADDRESS_BETWEENNESS",
+    "SHORTEST_PATHS",
+    "NEIGHBOURHOOD",
+)
+"""The statements that are raw Cypher because runic 0.6 cannot build them.
+
+A ``CALL`` cannot open a statement in the builder — ``select()`` always emits
+``MATCH (n:Label)`` and ``.call()`` is a mid-pipeline clause, so
+``MATCH (m:Message) CALL algo.pageRank(...)`` would run the procedure once per
+message. Every ``algo.*`` and ``dbms.*`` statement is therefore a string, which
+is the second half of what :data:`VECTOR_INDEX_OPTIONS` used to be the only
+example of.
+"""
+
+_BARE_VARIABLES = frozenset({"node", "nodes", "edges", "path", "n", "m", "a", "b"})
+"""Names a procedure yields that are nodes, edges or paths rather than values.
+
+A statement returning one of these bare hands the driver an object, and
+``rows_of`` would put a ``falkordb.node.Node`` into a row a value object is
+built from. Every procedure statement projects ``node.id AS id`` instead.
+"""
+
 _CREATE_PATTERN = re.compile(r"\bCREATE\s*\(", re.IGNORECASE)
 """``CREATE`` followed by a pattern — a node or an edge, never an index."""
+
+_WHOLE_PROPERTY = "\\.{}\\b"
+"""A property read by its **whole** name, so a longer one does not match it.
+
+``.address`` and ``.key`` are the two names the spec's own queries got wrong,
+and a bare substring search for either now hits a statement that is innocent:
+``MERGE_MEMBER_OF`` binds ``row.address_id`` and ``Topic`` really does have a
+property called ``keywords``. The word boundary is what tells ``g.key`` from
+``t.keywords`` — which is the distinction both rules were always making.
+"""
 
 _PLACEHOLDER = re.compile(r"\{[A-Za-z_0-9.\[\]]*\}|%[sdr]\b|%\(")
 """A ``str.format`` field or a percent placeholder.
@@ -114,7 +158,7 @@ def _assigned_statements() -> dict[str, ast.expr]:
     out of caller-supplied text is indistinguishable from an honest one once it
     is a ``QueryBuilder``.
 
-    All six modules at once, and keyed by name, so a statement that moved
+    All seven modules at once, and keyed by name, so a statement that moved
     between families is still covered and one assigned in two places would show
     up as the wrong expression under a familiar name.
     """
@@ -269,8 +313,10 @@ class TestTheSpecsOwnQueriesCorrected:
         """The spec's A1 query writes ``a.address``. ``Address`` has no such
         property — the normalised address *is* the key — so the statement would
         compare two nulls and return the whole cross product."""
+        pattern = re.compile(_WHOLE_PROPERTY.format("address"))
+
         assert not any(
-            ".address" in _cypher(one)
+            pattern.search(_cypher(one))
             for name, one in CATALOG.items()
             if name != "ACCOUNT_ADDRESSES"
         )
@@ -281,8 +327,14 @@ class TestTheSpecsOwnQueriesCorrected:
 
     def test_no_statement_reads_a_group_key_property(self) -> None:
         """The spec's group query returns ``g.key``. The field is ``id``; the
-        *value* is the participant key, which is what the table meant."""
-        assert not any(".key" in _cypher(one) for one in CATALOG.values())
+        *value* is the participant key, which is what the table meant.
+
+        ``Topic.keywords`` is a real property and not this mistake, which is
+        what :data:`_WHOLE_PROPERTY`'s boundary is for.
+        """
+        pattern = re.compile(_WHOLE_PROPERTY.format("key"))
+
+        assert not any(pattern.search(_cypher(one)) for one in CATALOG.values())
 
     def test_the_co_recipient_query_pairs_recipients_and_not_the_sender(
         self,
@@ -547,7 +599,14 @@ class TestTheDeletes:
 
     @pytest.mark.parametrize(
         "name",
-        ["DELETE_GROUPS", "DELETE_TOPICS", "DELETE_TEMPLATES", "DELETE_CO_ADDRESSED"],
+        [
+            "DELETE_GROUPS",
+            "DELETE_TOPICS",
+            "DELETE_TEMPLATES",
+            "DELETE_CO_ADDRESSED",
+            "DELETE_COMMUNITIES",
+            "DELETE_SUGGESTED",
+        ],
     )
     def test_each_delete_is_batched_and_reports_what_it_removed(
         self, name: str
@@ -691,3 +750,193 @@ def test_every_counting_statement_is_on_the_packages_surface() -> None:
 
     assert counters, "the catalogue has to hold counting statements at all"
     assert [name for name in counters if name not in queries.__all__] == []
+
+
+class TestTheProcedureStatements:
+    """The six that cannot be built, and the rules that make that safe."""
+
+    @pytest.mark.parametrize("name", PROCEDURES)
+    def test_it_is_raw_cypher_and_a_plain_literal(self, name: str) -> None:
+        """runic 0.6 cannot start a statement with ``CALL``: ``select()``
+        always emits ``MATCH (n:Label)`` and ``.call()`` is a mid-pipeline
+        clause, so a builder version of ``algo.pageRank`` would run the
+        procedure once per matched message.
+
+        Which puts them where :data:`VECTOR_INDEX_OPTIONS` already was — and
+        keeps the property that made *that* exception safe: the text is a plain
+        literal in the source, checked by
+        ``test_it_is_assembled_from_the_builder_and_never_from_text`` for every
+        entry in the catalogue, so a caller's value can only ever arrive as a
+        bound ``$parameter``.
+        """
+        assert isinstance(CATALOG[name], str)
+
+    @pytest.mark.parametrize("name", PROCEDURES)
+    def test_it_projects_scalars_and_never_a_node(self, name: str) -> None:
+        """``YIELD node`` hands back an entity; ``rows_of`` zips the driver's
+        own value shapes into a row, so a bare ``node`` would put a
+        ``falkordb.node.Node`` where a value object expects an id."""
+        statement = CATALOG[name]
+        assert isinstance(statement, str)
+        returned = statement.rsplit("RETURN ", 1)[1]
+        columns = [one.strip() for one in returned.split(",")]
+
+        assert columns, "a procedure statement has to return something"
+        assert not [one for one in columns if one in _BARE_VARIABLES]
+
+    def test_the_probe_asks_the_store_what_it_can_do(self) -> None:
+        """§5.1's capability probe. Takes no parameters, because "which
+        procedures are there" has no input — and it is the one call that is
+        safe on an empty graph, which is why the guard starts here."""
+        assert parameters_of(CATALOG["PROCEDURES"]) == ()
+        assert "dbms.procedures" in _cypher(CATALOG["PROCEDURES"])
+
+    def test_label_propagation_pins_its_iteration_count(self) -> None:
+        """FalkorDB's LPA has no seed, so an unconverged run is where two
+        rebuilds over an unchanged graph disagree. The iteration count is the
+        one thing this end can hold still, so it is a parameter and not the
+        procedure's own default."""
+        assert parameters_of(CATALOG["LABEL_PROPAGATION"]) == ("max_iterations",)
+        assert "CO_ADDRESSED" in _cypher(CATALOG["LABEL_PROPAGATION"])
+
+    def test_the_pagerank_is_over_the_one_genuinely_directed_edge(self) -> None:
+        """``CO_ADDRESSED`` is stored smaller-id-first, so a PageRank over that
+        arrow would rank an address by where its id sorts. ``REPLIES_TO`` is
+        the edge that really has a direction, and the address ranking is done
+        in Python over the undirected pair counts instead."""
+        statement = _cypher(CATALOG["MESSAGE_PAGERANK"])
+
+        assert "REPLIES_TO" in statement
+        assert "CO_ADDRESSED" not in statement
+
+    def test_the_betweenness_takes_its_sample_and_its_seed(self) -> None:
+        """Sampled because the exact figure is quadratic, seeded because an
+        unseeded sample is a second way for two rebuilds to disagree."""
+        assert parameters_of(CATALOG["ADDRESS_BETWEENNESS"]) == (
+            "sampling_seed",
+            "sampling_size",
+        )
+
+    def test_the_path_read_takes_both_ends_and_both_ceilings(self) -> None:
+        """A path search with no length and no count ceiling is an unbounded
+        walk over the densest edge in the archive."""
+        assert parameters_of(CATALOG["SHORTEST_PATHS"]) == (
+            "left",
+            "max_len",
+            "path_count",
+            "right",
+        )
+
+    def test_the_neighbourhood_takes_a_message_and_a_depth(self) -> None:
+        """The explorer's one-node expansion: ``algo.BFS`` from a message, all
+        relationship types, bounded by a depth the caller sets."""
+        assert parameters_of(CATALOG["NEIGHBOURHOOD"]) == ("depth", "id")
+        assert "algo.BFS" in _cypher(CATALOG["NEIGHBOURHOOD"])
+
+
+class TestTheReplyChain:
+    """The explorer's one raw statement, and why it is one.
+
+    Not a procedure call — it opens with ``MATCH`` like any read — so it does
+    not belong to the class above, and its reason for being a string is its own:
+    runic writes the ``*1..3`` happily (``hops=(1, 3)``) and refuses to bind an
+    ``edge`` variable on a variable-length pattern, because such a pattern binds
+    a *list* of relationships its mapper cannot decode. What a builder version
+    could hand back is therefore the messages a chain reaches and nothing about
+    how they are joined, which is not a subgraph.
+    """
+
+    def test_it_is_raw_cypher_and_a_plain_literal(self) -> None:
+        """The property that makes every raw statement here safe: a caller's
+        value can only arrive as a bound ``$parameter``."""
+        assert isinstance(CATALOG["REPLY_CHAIN"], str)
+
+    def test_it_projects_lists_of_scalars_and_never_a_node(self) -> None:
+        """``nodes(path)`` and ``relationships(path)`` are entities; the row
+        that comes back has to be ids. Five parallel lists, and a bare ``path``
+        in the projection would hand ``rows_of`` an object no value can read."""
+        statement = _cypher(CATALOG["REPLY_CHAIN"])
+        returned = statement.rsplit("RETURN ", 1)[1]
+        columns = [one.strip() for one in returned.split(",")]
+
+        assert not [one for one in columns if one in _BARE_VARIABLES]
+        assert "one.id" in statement
+        assert "startNode(one).id" in statement
+
+    def test_it_takes_a_seed_and_a_ceiling_and_not_a_depth(self) -> None:
+        """A variable-length quantifier is Cypher *syntax*, so ``*1..$depth``
+        does not parse — three is what the statement walks and
+        :meth:`~mailarc_analytics.queries.graphs.GraphReader.message` cuts the
+        returned edges to what a user asked for. The ceiling is a path count: a
+        message in a busy thread is on many of them."""
+        assert parameters_of(CATALOG["REPLY_CHAIN"]) == ("id", "limit")
+        assert "*1..3" in _cypher(CATALOG["REPLY_CHAIN"])
+        assert "$depth" not in _cypher(CATALOG["REPLY_CHAIN"])
+
+
+class TestTheDerivedPropertiesOnGroundTruthNodes:
+    """Four properties the import never writes, and the pair that clears them."""
+
+    @pytest.mark.parametrize(
+        ("write", "clear", "label"),
+        [
+            ("WRITE_IMPORTANCE", "CLEAR_IMPORTANCE", "Message"),
+            ("WRITE_ADDRESS_RANKS", "CLEAR_ADDRESS_RANKS", "Address"),
+        ],
+    )
+    def test_the_write_matches_its_node_and_never_merges_it(
+        self, write: str, clear: str, label: str
+    ) -> None:
+        """``WRITE_EMBEDDINGS``' argument, twice over: a row naming a node that
+        is not there is a bug in the caller, and merging it would invent an
+        empty ground-truth node carrying nothing but a derived score.
+        """
+        statement = _cypher(CATALOG[write])
+
+        assert f"MATCH (m:{label}" in statement or f"MATCH (a:{label}" in statement
+        assert f"MERGE ({label}" not in statement
+        assert "MERGE" not in statement
+        assert "version" in parameters_of(CATALOG[write])
+        assert parameters_of(CATALOG[clear]) == ()
+
+    @pytest.mark.parametrize("name", ["CLEAR_IMPORTANCE", "CLEAR_ADDRESS_RANKS"])
+    def test_a_clear_nulls_the_properties_and_deletes_nothing(self, name: str) -> None:
+        """``CLEAR_EMBEDDINGS``' shape. A ``DELETE`` here would take a
+        ground-truth node down to reset a number computed from it."""
+        statement = _cypher(CATALOG[name])
+
+        assert "NULL" in statement
+        assert "DELETE" not in statement
+        assert "AS cleared" in statement
+
+
+class TestTheSuggestionDelete:
+    """The second derived edge that lives on a node this package may not touch."""
+
+    def test_it_removes_the_relationship_and_not_its_endpoints(self) -> None:
+        """``DETACH DELETE`` here would take the ``Tag`` down — a node
+        ``mailarc_core.archive.tags`` owns and no rebuild may delete — and the
+        message with it."""
+        statement = _cypher(CATALOG["DELETE_SUGGESTED"])
+
+        assert "DELETE r" in statement
+        assert "DETACH" not in statement
+
+    def test_it_is_rooted_at_the_tag_and_not_at_the_message(self) -> None:
+        """runic emits a predicate naming a *traversed* variable after the
+        whole pipeline, so a statement walked from the message end would put
+        its ``WITH`` stage — and anything filtering it — behind the ``DELETE``.
+        Rooting at the tag is what keeps the batch a batch."""
+        statement = _cypher(CATALOG["DELETE_SUGGESTED"])
+
+        assert statement.startswith("MATCH (t:Tag)")
+        assert statement.index("WITH r") < statement.index("DELETE r")
+
+    def test_the_community_delete_takes_its_edges_with_it(self) -> None:
+        """A derived *node*, so ``DETACH DELETE`` is right here and wrong one
+        test up: ``MEMBER_OF`` and ``IN_CIRCLE`` hang off the community and
+        have nowhere to be without it."""
+        statement = _cypher(CATALOG["DELETE_COMMUNITIES"])
+
+        assert "DETACH DELETE" in statement
+        assert "AS removed" in statement

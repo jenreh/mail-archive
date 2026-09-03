@@ -32,17 +32,33 @@ naming what to change. It never answers a semantic search with an empty list —
 an empty list is a valid answer to a search, and reading one would tell you your
 archive holds nothing on a subject when the truth is that a setting is missing.
 
-## The two providers
+## The three providers
 
-| | `ollama` | `openai` |
-| --- | --- | --- |
-| Where the text goes | your own machine | OpenAI's servers |
-| Account | none | API key required |
-| Default model | `nomic-embed-text` | `text-embedding-3-small` |
+| | `ollama` | `openai` | `azure_openai` |
+| --- | --- | --- | --- |
+| Where the text goes | your own machine | OpenAI's servers | your Azure resource |
+| Account | none | API key required | API key required |
+| Default model | `nomic-embed-text` | `text-embedding-3-small` | none — name your deployment |
+| Default base URL | `http://localhost:11434` | `https://api.openai.com/v1` | none — name your resource |
 
-**Every message body you embed with `openai` is uploaded to a third party,
-once.** That is worth deciding on purpose for a private mail archive. `ollama`
-sends nothing anywhere: it talks to a model server on `localhost`.
+**Every message body you embed with `openai` or `azure_openai` is uploaded off
+this machine, once.** That is worth deciding on purpose for a private mail
+archive. `ollama` sends nothing anywhere: it talks to a model server on
+`localhost`.
+
+The difference between the two paid providers is who holds the endpoint.
+`openai` has one address every customer shares, so it needs nothing but a key.
+An Azure OpenAI resource is your own, so `azure_openai` cannot guess either
+half of where to send a request and **both `base_url` and `model` have to be
+set**:
+
+- `base_url` is the resource endpoint with Azure's API version path on it —
+  `https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1`.
+- `model` is the **deployment name** you gave the model in Azure, which is not
+  always the model's own name.
+
+Left unset, the archive refuses to embed with a message naming the setting
+rather than sending a request nowhere.
 
 ## Turning it on
 
@@ -119,6 +135,21 @@ app:
     api_key: sk-...
 ```
 
+For Azure OpenAI you need a key, your resource endpoint and the name of the
+deployment you made there:
+
+```yaml
+app:
+  semantic:
+    provider: azure_openai
+    base_url: https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1
+    model: my-embedding-deployment
+    api_key: ...
+```
+
+The key travels as Azure's own `api-key` header rather than as a bearer token;
+nothing else about the request differs from `openai`, `dimension` included.
+
 Then compute the vectors. Nothing is embedded by the import — the importer
 deliberately never writes `Message.embedding`, so that changing embedder later
 costs one job and not a re-import:
@@ -138,11 +169,11 @@ everything it had already written in place.
 
 | Setting | Default | What it decides |
 | --- | --- | --- |
-| `provider` | `none` | `none`, `ollama` or `openai` |
-| `model` | provider's own | The embedding model's name |
+| `provider` | `none` | `none`, `ollama`, `openai` or `azure_openai` |
+| `model` | provider's own | The embedding model's name — the deployment name on Azure |
 | `dimension` | `768` | Floats per vector. **Must match the graph migration** |
-| `base_url` | provider's own | Where the embedding API lives |
-| `api_key` | unset | Bearer token; OpenAI needs one, Ollama ignores it |
+| `base_url` | provider's own | Where the embedding API lives — required on Azure |
+| `api_key` | unset | The key; both paid providers need one, Ollama ignores it |
 | `batch_size` | `32` | Texts per HTTP call |
 | `page_size` | `500` | Messages per graph round trip |
 | `request_timeout` | `120` | Seconds one call may take — a cold local model is slow |

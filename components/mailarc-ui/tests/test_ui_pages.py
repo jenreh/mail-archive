@@ -1,6 +1,6 @@
 """Every page of the archive: it builds, it answers, it primes itself, it is framed.
 
-One module for six pages, replacing the four ``tests/test_mail_*_page.py``
+One module for seven pages, replacing the four ``tests/test_mail_*_page.py``
 files that each asked the same questions of one page and copied the four
 helpers between them. The questions are the ones a page can get wrong in
 silence: a route nobody links to, an ``on_load`` nobody fires, and a layout
@@ -30,6 +30,7 @@ from mailarc_ui.pages import (
     accounts,
     dashboard,
     embedder,
+    graph,
     insights,
     search,
     status,
@@ -91,6 +92,13 @@ PAGES: tuple[PageSpec, ...] = (
         primes=("AnalyticsInsightsState.load",),
     ),
     PageSpec(
+        name="graph",
+        page=graph.graph_page,
+        route=routes.GRAPH,
+        title="Graph",
+        primes=("GraphExplorerState.load",),
+    ),
+    PageSpec(
         name="accounts",
         page=accounts.accounts_page,
         route=routes.ACCOUNTS,
@@ -114,7 +122,7 @@ PAGES: tuple[PageSpec, ...] = (
 )
 """Every page this application registers, and what it claims to be.
 
-In the rail's own order: the search a person arrives at, then the two other
+In the rail's own order: the search a person arrives at, then the three other
 pages the menu offers, then the three the administration popover holds. Every
 one of them primes itself, the search included — it opens on the newest
 messages, so a page that stopped firing ``load`` would show an empty archive

@@ -46,6 +46,18 @@ DEFAULTS = {
     "topic_bucket_cap": 200,
     "topic_max_weak_pairs": 2_000_000,
     "max_messages": 0,
+    "community_min_size": 3,
+    "community_max_iterations": 20,
+    "circle_min_share": 0.5,
+    "centrality_max_edges": 2_000_000,
+    "betweenness_sampling": 0,
+    "topic_keyword_count": 8,
+    "topic_keyword_members": 20,
+    "topic_keyword_chars": 2000,
+    "tag_suggest_min_tagged": 2,
+    "tag_suggest_min_share": 0.3,
+    "tag_auto_accept": False,
+    "tag_auto_accept_min_score": 0.6,
 }
 
 
@@ -61,10 +73,47 @@ def test_the_defaults_are_the_calibrated_ones() -> None:
     assert {name: getattr(config, name) for name in DEFAULTS} == DEFAULTS
 
 
-def test_there_are_no_settings_beyond_the_fifteen() -> None:
+def test_there_are_no_settings_beyond_the_twenty_seven() -> None:
     """A new knob is a new way for two rebuilds to disagree; it should be a
     visible change here rather than a quiet one in ``config.py``."""
     assert set(AnalyticsConfig.model_fields) == set(DEFAULTS)
+
+
+def test_betweenness_is_off_until_somebody_asks_for_it() -> None:
+    """Zero means skip, and it is the default because the number it produces
+    is not one anything renders yet.
+
+    ``algo.betweenness`` refuses a sampling size of zero outright, so the guard
+    is "do not call it" rather than "call it with nothing" — which is why the
+    setting is the sampling size and not a boolean.
+    """
+    assert _calibrated().betweenness_sampling == 0
+
+
+def test_auto_accept_is_off_and_its_threshold_is_above_a_weak_group() -> None:
+    """Two settings, and the pair is the decision.
+
+    A tag is a human's word for a set of messages, so nothing may join one
+    without somebody saying yes — the flag is off. Turned on, the threshold
+    still has to sit above what a weak group produces: a community group at
+    ``0.4`` weight cannot reach ``0.6`` however many of its members are
+    tagged, so auto-accept is a thread or a topic saying so.
+    """
+    config = _calibrated()
+
+    assert config.tag_auto_accept is False
+    assert config.tag_auto_accept_min_score > config.tag_suggest_min_share
+
+
+def test_the_keyword_read_is_capped_in_both_directions() -> None:
+    """Members times characters is the whole cost of the keyword stage, and
+    both halves are settings so that neither can grow without the other being
+    looked at."""
+    config = _calibrated()
+
+    assert config.topic_keyword_members > 0
+    assert config.topic_keyword_chars > 0
+    assert config.topic_keyword_count < config.topic_keyword_members
 
 
 def test_the_distance_threshold_is_five_and_not_the_spec_s_three() -> None:

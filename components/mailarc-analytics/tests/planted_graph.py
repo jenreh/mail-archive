@@ -17,12 +17,30 @@ from corpus import ACCOUNT_ID, OWN, PlantedMessage
 from runic.ogm import Session
 
 from mailarc_core.archive.config import ArchiveConfig
-from mailarc_core.archive.model import ArchiveSource
+from mailarc_core.archive.model import ArchiveSource, TagOrigin, TagSource
+from mailarc_core.archive.tags import TagRepository
 from mailarc_core.archive.writer import MessageArchiver
 from mailarc_core.graph import client
 from mailarc_core.graph.config import GraphConfig
 from mailarc_core.mail.model import LabelInfo, LabelKind, MailProvider
 from mailarc_core.mail.parsing import parse_message
+
+DERIVED_PROPERTIES = (
+    "importance",
+    "importance_reasons",
+    "importance_version",
+    "rank",
+    "rank_version",
+)
+"""The five properties phase 2 writes onto *ground-truth* nodes.
+
+Named here because two files want them from opposite ends: one compares them
+between two rebuilds, the other asserts that everything *but* these came
+through untouched. R10's argument is that a property the import never writes,
+the rebuild versions, nulls and recomputes is ``Message.embedding``'s
+arrangement rather than a change to ground truth — which is a claim worth
+measuring from both sides.
+"""
 
 LABELLED = "p1"
 """The one message that wears a provider label.
@@ -120,3 +138,63 @@ def ground_truth(session: Session) -> dict[str, int]:
         for name in edges
     }
     return counted
+
+
+def ground_truth_properties(session: Session) -> dict[str, list[dict[str, object]]]:
+    """Every property of every ground-truth node except :data:`DERIVED_PROPERTIES`.
+
+    :func:`ground_truth`'s finer-grained sibling. That one counts nodes and
+    edges, which catches a rebuild that deleted something; this one reads the
+    values, which catches a rebuild that *changed* one — and the five
+    properties phase 2 legitimately writes are subtracted rather than listed
+    around, because the claim is that nothing else moved and a hand-written
+    column list would only ever prove that the columns somebody thought of did
+    not.
+    """
+    return {
+        label: [
+            {
+                key: value
+                for key, value in row[0].items()
+                if key not in DERIVED_PROPERTIES
+            }
+            for row in session.execute(
+                f"MATCH (n:{label}) RETURN properties(n) ORDER BY n.id"
+            ).rows
+        ]
+        for label in ("Message", "Address", "Thread", "Label", "Attachment", "Account")
+    }
+
+
+def named_properties(
+    session: Session, label: str, names: Sequence[str]
+) -> list[list[object]]:
+    """One label's *named* properties, per node, in id order.
+
+    The complement of :func:`ground_truth_properties`, and what a derived-layer
+    snapshot uses to carry the two written properties along with the nodes and
+    edges it already compares.
+    """
+    projected = ", ".join(f"n.{name}" for name in names)
+    return [
+        list(row)
+        for row in session.execute(
+            f"MATCH (n:{label}) RETURN n.id, {projected} ORDER BY n.id"
+        ).rows
+    ]
+
+
+def plant_tag(config: GraphConfig, tag: str, name: str, ids: Sequence[str]) -> None:
+    """Write a tag and its memberships the only way one may be written.
+
+    Through :class:`~mailarc_core.archive.tags.TagRepository`, in
+    ``mailarc-core``, because that is the whole point of the tests that use it:
+    the annotation layer is written by a person through that class and read by
+    everything else, and a tag planted with hand-written Cypher would prove
+    nothing about what a rebuild does to a real one.
+    """
+    with client.session(config) as graph:
+        repository = TagRepository(graph)
+        if not any(one.id == tag for one in repository.list_tags()):
+            repository.create(name, origin=TagOrigin.MANUAL)
+        repository.tag_messages(tag, list(ids), source=TagSource.MANUAL)

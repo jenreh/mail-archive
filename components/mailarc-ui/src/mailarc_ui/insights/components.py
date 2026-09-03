@@ -4,8 +4,8 @@ Layout and nothing else. Every value comes from
 :class:`AnalyticsInsightsState`; nothing here opens a graph or runs a
 statement. The order down the page is the order a person checks an analysis in
 — what is in the archive, what a rebuild made of it, then whether the one
-derived thing that can be verified still verifies, then the three listings —
-so the sceptical question comes before the findings that depend on the answer.
+derived thing that can be verified still verifies, then the listings — so the
+sceptical question comes before the findings that depend on the answer.
 
 Finding a message is not one of them. This page had a search box of its own
 while the archive still opened on a dashboard; the redesign made search the
@@ -20,15 +20,25 @@ nothing legitimate produces.
 
 Every listing is a :func:`~mailarc_ui.kit.scroll_table`: twelve rows with the
 column names pinned above them, because these are rankings and a ranking is
-read from the top.
+read from the top. The tags card is the exception and not a ranking — the
+population is what a person made by hand — so it is a stack of rows with the
+two bulk verbs on each.
+
+Every listing also carries a pill into ``/graph``, rooted at the row. Two of
+the four roots go stale by design (R7) — a topic id and a circle id are digests
+of their members, so a rebuild mints new ones — and the explorer answers a
+cluster it can no longer find with a sentence rather than an empty canvas. A
+message id and a tag id are the two that keep.
 """
 
 import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.insights.model import (
+    CommunityView,
     DisputeView,
     GroupView,
+    ImportantMessageView,
     PairView,
     TemplateView,
     TopicView,
@@ -38,8 +48,10 @@ from mailarc_ui.kit import (
     card_heading,
     empty_panel,
     job_progress,
+    label_chip,
     message,
     panel_card,
+    pill_action,
     primary_button,
     score_bar,
     scroll_table,
@@ -49,6 +61,8 @@ from mailarc_ui.kit import (
     status_badge,
     toned_message,
 )
+from mailarc_ui.shell import routes
+from mailarc_ui.tags import DEFAULT_TAG_COLOR, TagView
 
 KEY_COLUMN = {"width": 140}
 """A digest column: wide enough for twelve characters, and no wider."""
@@ -362,12 +376,66 @@ def groups_card() -> rx.Component:
     )
 
 
+def _graph_link(view: str) -> str:
+    """The explorer, rooted at one row of a listing on this page.
+
+    Concatenated rather than joined by a shared helper — see the same shape in
+    ``search/components.py``. What is worth knowing is that two of the four
+    links *can* go stale: a topic id and a circle id are digests of their
+    members and every rebuild mints new ones (R7), so a page left open across a
+    rebuild sends its reader to a cluster that no longer exists. The explorer
+    answers that with a sentence rather than an empty canvas, which is the
+    whole reason it is safe to offer the link at all. A message id and a tag id
+    keep, and a tag is the durable reference a cluster is not.
+    """
+    return f"{routes.GRAPH}?view={view}&id="
+
+
+TOPIC_LINK = _graph_link("topic")
+COMMUNITY_LINK = _graph_link("community")
+TAG_LINK = _graph_link("tag")
+MESSAGE_LINK = _graph_link("message")
+"""One per listing, because the four differ only in that one word — and a
+communities pill built from the topic link would send a reader to a topic id
+no ``Topic`` answers to, which the explorer reports as a recomputed cluster
+rather than as a wrong link."""
+
+
+def _graph_pill(link: str, node_id: str) -> rx.Component:
+    """Take this row to the explorer, rooted at itself."""
+    return pill_action(
+        "Graph",
+        icon="waypoints",
+        on_click=rx.redirect(link + node_id),
+    )
+
+
+def _word_chips(
+    words: rx.Var | list[str], color: rx.Var | str = "gray.6"
+) -> rx.Component:
+    """A row's short list of words, each in its own pill.
+
+    Two listings print one: a topic's keywords and a message's importance
+    reasons. Both are a handful of terms whose *number* is part of the reading
+    — three reasons is a stronger claim than one — so they wrap rather than
+    being joined into a sentence that a narrow column would cut in the middle.
+    """
+    return mn.group(
+        rx.foreach(words, lambda word: label_chip(word, color)),
+        gap=4,
+        align="center",
+        wrap="wrap",
+    )
+
+
 def _topic_row(row: TopicView) -> rx.Component:
     return mn.table.tr(
         mn.table.td(mn.text(row.label, size="sm", line_clamp=2)),
         mn.table.td(status_badge(row.method, row.method_color)),
+        mn.table.td(_word_chips(row.keywords)),
         mn.table.td(row.messages),
         mn.table.td(mn.code(row.key), style=KEY_COLUMN),
+        mn.table.td(_graph_pill(TOPIC_LINK, row.id)),
     )
 
 
@@ -396,11 +464,226 @@ def topics_card() -> rx.Component:
                 mn.table.tr(
                     mn.table.th("Topic"),
                     mn.table.th("Signal"),
+                    mn.table.th("About"),
                     mn.table.th("Messages"),
                     mn.table.th("Key"),
+                    mn.table.th(""),
                 ),
             ),
             mn.table.tbody(rx.foreach(AnalyticsInsightsState.topics, _topic_row)),
+        ),
+    )
+
+
+def _community_row(row: CommunityView) -> rx.Component:
+    return mn.table.tr(
+        mn.table.td(mn.text(row.label, size="sm", line_clamp=1)),
+        mn.table.td(row.size),
+        mn.table.td(row.message_count),
+        mn.table.td(row.span),
+        mn.table.td(mn.code(row.key), style=KEY_COLUMN),
+        mn.table.td(_graph_pill(COMMUNITY_LINK, row.id)),
+    )
+
+
+def communities_card() -> rx.Component:
+    """B3: the circles label propagation found over the whole archive.
+
+    Beside the recurring groups and not instead of them, because the two are
+    different findings that look alike in a table. A group is one exact set of
+    people a message was addressed to; a circle is a partition of the
+    co-addressing graph, so two of its members need never have shared a single
+    message. The listing is ordered by the mail that circulates in a circle
+    rather than by how many people are in it — a circle of forty who exchanged
+    three mails is a directory.
+    """
+    return _panel(
+        icon="network",
+        title="Circles",
+        hint=(
+            "Groups of correspondents who write to the same people, found by "
+            "label propagation over the whole co-addressing graph. The name is "
+            "the commonest domain among the members, never one anybody invented."
+        ),
+        error=AnalyticsInsightsState.communities_error,
+        loading=AnalyticsInsightsState.loading_communities,
+        anything=AnalyticsInsightsState.communities,
+        nothing="No circle came out above the minimum size.",
+        body=scroll_table(
+            mn.table.thead(
+                mn.table.tr(
+                    mn.table.th("Circle"),
+                    mn.table.th("People"),
+                    mn.table.th("Messages"),
+                    mn.table.th("Seen"),
+                    mn.table.th("Key"),
+                    mn.table.th(""),
+                ),
+            ),
+            mn.table.tbody(
+                rx.foreach(AnalyticsInsightsState.communities, _community_row)
+            ),
+        ),
+    )
+
+
+def _important_row(row: ImportantMessageView) -> rx.Component:
+    return mn.table.tr(
+        mn.table.td(mn.text(row.subject, size="sm", line_clamp=2)),
+        mn.table.td(mn.text(row.sender, size="sm"), style=ADDRESS_COLUMN),
+        mn.table.td(
+            mn.group(
+                score_bar(row.score),
+                mn.text(row.score_label, size="sm", fw=600),
+                gap="xs",
+                wrap="nowrap",
+                align="center",
+            ),
+        ),
+        mn.table.td(_word_chips(row.reasons)),
+        mn.table.td(row.when),
+        mn.table.td(_graph_pill(MESSAGE_LINK, row.id)),
+    )
+
+
+def important_card() -> rx.Component:
+    """B2: what probably matters, and why each row is claimed to.
+
+    The reasons are a column and not a tooltip. The whole argument for scoring
+    importance arithmetically rather than asking a model is that every term can
+    be named, and a bar with the terms hidden behind a hover is a ranking a
+    reader cannot argue with — which is the thing §1.1 refused.
+    """
+    return _panel(
+        icon="flame",
+        title="What probably matters",
+        hint=(
+            "A weighted sum over headers a person can check: who replied, how "
+            "many did, whether you were addressed directly, whether the text "
+            "looks automated. Deterministic, and recomputed by every rebuild."
+        ),
+        error=AnalyticsInsightsState.important_error,
+        loading=AnalyticsInsightsState.loading_important,
+        anything=AnalyticsInsightsState.important,
+        nothing="Nothing has been scored yet — a rebuild writes these.",
+        body=scroll_table(
+            mn.table.thead(
+                mn.table.tr(
+                    mn.table.th("Subject"),
+                    mn.table.th("From"),
+                    mn.table.th("Importance"),
+                    mn.table.th("Why"),
+                    mn.table.th("Sent"),
+                    mn.table.th(""),
+                ),
+            ),
+            mn.table.tbody(
+                rx.foreach(AnalyticsInsightsState.important, _important_row)
+            ),
+        ),
+    )
+
+
+def _tag_line(tag: TagView) -> rx.Component:
+    """One tag: what it is, what it holds, what it is offered, and two verbs.
+
+    "Accept all" appears only where something is actually being offered, and
+    what stands in its place is a sentence rather than a nought — a disabled
+    button with a zero beside it reads as a broken analysis, and R8 says the
+    honest reading is "no rebuild has run since this tag was made".
+    """
+    return mn.group(
+        label_chip(tag.name, rx.cond(tag.color != "", tag.color, DEFAULT_TAG_COLOR)),
+        mn.group(
+            mn.text(tag.message_count, size="xs", c="dimmed", class_name="ma-tabular"),
+            rx.cond(
+                tag.suggestions > 0,
+                pill_action(
+                    f"Accept {tag.suggestions} suggested",
+                    icon="check-check",
+                    on_click=AnalyticsInsightsState.accept_all(tag.id),
+                    loading=AnalyticsInsightsState.tagging,
+                ),
+                mn.text("nothing suggested", size="xs", c="dimmed"),
+            ),
+            _graph_pill(TAG_LINK, tag.id),
+            pill_action(
+                "Delete",
+                icon="trash-2",
+                on_click=AnalyticsInsightsState.delete_tag(tag.id),
+            ),
+            gap=6,
+            align="center",
+            wrap="nowrap",
+        ),
+        justify="space-between",
+        w="100%",
+        wrap="nowrap",
+    )
+
+
+def rebuild_hint() -> rx.Component:
+    """R8, said out loud, with the button that ends the wait.
+
+    ``SUGGESTED`` is derived: every rebuild deletes the edges and writes them
+    again, so a tag made between two rebuilds is offered nothing at all until
+    another one runs. A card that showed only zeroes would read as an analysis
+    that failed, which is why this says which of the two it is and puts the
+    rebuild next to the sentence rather than at the top of the page.
+    """
+    return message(
+        mn.stack(
+            mn.text(
+                "Nothing is being suggested for these tags yet. Suggestions are "
+                "written by a rebuild and deleted by the next one, so a tag made "
+                "since the last rebuild has none until another runs.",
+                size="xs",
+            ),
+            soft_button(
+                "Rebuild the derived layer",
+                on_click=AnalyticsInsightsState.start_rebuild,
+                loading=AnalyticsInsightsState.starting,
+                disabled=~AnalyticsInsightsState.can_rebuild,
+                left_section=rx.icon("play", size=14),
+                size="xs",
+            ),
+            gap="xs",
+            align="flex-start",
+        ),
+        "note",
+    )
+
+
+def tags_card() -> rx.Component:
+    """The annotation layer: the one label a rebuild never recomputes.
+
+    Its own card on this page rather than
+    :func:`~mailarc_ui.tags.tags_panel`, which is the explorer's: that one
+    stands beside a canvas and opens a tag's offers in the column next to it,
+    and this one is a listing among listings with the two bulk verbs on the
+    row. Both drive the same mixin, so a tag deleted here is deleted there.
+    """
+    return _panel(
+        icon="tag",
+        title="Tags",
+        hint=(
+            "What somebody named, and what an analysis thinks belongs to it. A "
+            "tag survives every rebuild; the suggestions beside it do not — "
+            "each rebuild deletes them and works them out again."
+        ),
+        error=AnalyticsInsightsState.tag_error,
+        loading=AnalyticsInsightsState.loading_tags,
+        anything=AnalyticsInsightsState.tags,
+        nothing="No tags yet. Promote a topic or a circle in the graph explorer.",
+        body=mn.stack(
+            rx.foreach(AnalyticsInsightsState.tags, _tag_line),
+            rx.cond(
+                AnalyticsInsightsState.tags_await_a_rebuild,
+                rebuild_hint(),
+                mn.text(""),
+            ),
+            gap="xs",
+            w="100%",
         ),
     )
 
@@ -555,15 +838,16 @@ def guidance_panel() -> rx.Component:
 
 
 def analyses() -> rx.Component:
-    """The cross-check across the page, then the three listings in two columns.
+    """The cross-check across the page, then six listings in two columns.
 
-    The page fills the window, and four cards stacked down a 1300px column is
-    four tables with more white to their right than table. What decides which
-    card goes where is how wide its widest row is: the cross-check carries two
-    address columns beside three more and gets the whole width; templates
-    carries a sample of the text itself and gets the larger of the two columns
-    under it; groups and topics are a key and a handful of numbers and share
-    the smaller one.
+    The page fills the window, and cards stacked down a 1300px column are
+    tables with more white to their right than table. What decides which card
+    goes where is how wide its widest row is. The cross-check carries two
+    address columns beside three more and gets the whole width. The wide column
+    under it takes the three listings whose rows are *prose* — a subject and
+    its reasons, a topic and its keywords, a sample of a template's text — and
+    the narrow one the three that are a name and a handful of numbers: tags,
+    circles, groups.
 
     Columns rather than a grid of rows, for the reason the dashboard states:
     a row is as tall as its tallest cell, and these listings are twelve rows
@@ -577,9 +861,24 @@ def analyses() -> rx.Component:
     return mn.stack(
         agreement_card(),
         mn.grid(
-            mn.grid_col(templates_card(), span={"base": 12, "lg": 7}),
             mn.grid_col(
-                mn.stack(groups_card(), topics_card(), gap="md", w="100%"),
+                mn.stack(
+                    important_card(),
+                    topics_card(),
+                    templates_card(),
+                    gap="md",
+                    w="100%",
+                ),
+                span={"base": 12, "lg": 7},
+            ),
+            mn.grid_col(
+                mn.stack(
+                    tags_card(),
+                    communities_card(),
+                    groups_card(),
+                    gap="md",
+                    w="100%",
+                ),
                 span={"base": 12, "lg": 5},
             ),
             gutter="md",

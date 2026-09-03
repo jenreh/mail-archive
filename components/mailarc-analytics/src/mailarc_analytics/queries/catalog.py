@@ -38,8 +38,10 @@ question the way ``.in_()`` never could. A misspelled property is now a
 split that idempotence depends on is enforced by ``merge()`` instead of trusted
 to whoever wrote the string.
 
-**One exception remains, and it is not an oversight.**
-:data:`VECTOR_INDEX_OPTIONS` is still raw Cypher, because 0.5's replacement for
+**Three kinds of exception remain, and none is an oversight: the index read,
+the procedure calls and the reply chain.**
+
+:data:`VECTOR_INDEX_OPTIONS` is still raw Cypher, because 0.6's replacement for
 reading indexes — ``IndexOperations.describe()`` — returns
 ``IndexSpec(label, property, index_type)`` and nothing else. It cannot report
 the live vector index's *dimension*, which is the only thing that read exists
@@ -47,6 +49,27 @@ to learn, and FalkorDB stores a wrong-length vector silently and never indexes
 it. Replacing it with ``describe()`` would compile, pass every test that checks
 a label, and delete the guard that catches a mismatched index. Its docstring
 names the condition for removing it.
+
+The six statements in
+:mod:`mailarc_analytics.queries.statements.algorithms` are raw Cypher for a
+structural reason rather than a missing feature: **runic 0.6 cannot start a
+statement with ``CALL``**. ``select()`` always opens with ``MATCH (n:Label)``
+and ``.call()`` is a *mid-pipeline* clause, so the closest a builder gets to
+``CALL algo.pageRank(...)`` is ``MATCH (m:Message) CALL algo.pageRank(...)`` —
+which runs a whole-graph algorithm once per matched message. There is no
+builder form of these to prefer. What the builder would have given them is
+replaced in kind: the AST test proves each is a plain literal with nothing
+formatted into it, the ``graph_local`` sweep runs every one against the
+vendored FalkorDB, and each projects ``node.id AS id`` rather than handing back
+an entity the driver would decode into a row.
+
+:data:`REPLY_CHAIN` is the third, and its reason is narrower than either: runic
+*can* write the ``*1..3`` it walks — ``hops=(1, 3)`` compiles to exactly that —
+but it refuses to bind an ``edge`` variable on a variable-length pattern,
+because such a pattern binds a *list* of relationships its mapper cannot decode.
+A reachable set of messages with nothing saying how they are joined is not a
+subgraph, so the explorer's one chain read is written out and covered by the
+same two rules the procedure calls are.
 
 Two things every caller has to know
 -----------------------------------
@@ -97,16 +120,30 @@ from typing import Any
 
 from runic.ogm import QueryBuilder
 
+from mailarc_analytics.queries.statements.algorithms import (
+    ADDRESS_BETWEENNESS,
+    LABEL_PROPAGATION,
+    MESSAGE_PAGERANK,
+    NEIGHBOURHOOD,
+    PROCEDURES,
+    SHORTEST_PATHS,
+)
 from mailarc_analytics.queries.statements.analysis import (
     CO_RECIPIENTS,
     COUNT_CO_ADDRESSED,
+    COUNT_COMMUNITIES,
     COUNT_GROUPS,
     COUNT_TEMPLATES,
     COUNT_TOPICS,
     RECURRING_GROUPS,
+    SUGGESTION_COUNTS,
+    TAG_SUGGESTIONS,
     TOP_CO_ADDRESSED,
+    TOP_COMMUNITIES,
+    TOP_IMPORTANT,
     TOP_TEMPLATES,
     TOPIC_BREAKDOWN,
+    TOPIC_KEYWORDS,
 )
 from mailarc_analytics.queries.statements.embedding import (
     CLEAR_EMBEDDINGS,
@@ -114,6 +151,26 @@ from mailarc_analytics.queries.statements.embedding import (
     MESSAGES_NEEDING_EMBEDDING,
     VECTOR_COVERAGE,
     WRITE_EMBEDDINGS,
+)
+from mailarc_analytics.queries.statements.graph import (
+    ADDRESS_MESSAGES,
+    ADDRESS_NEIGHBOURS,
+    COMMUNITY_MEMBERS,
+    COMMUNITY_MESSAGES,
+    MESSAGE_ADDRESSES,
+    MESSAGE_CIRCLE,
+    MESSAGE_TAGS,
+    MESSAGE_TOPICS,
+    OVERVIEW_COMMUNITIES,
+    OVERVIEW_TAG_TOPIC,
+    OVERVIEW_TAGS,
+    OVERVIEW_TOPIC_CIRCLE,
+    OVERVIEW_TOPICS,
+    REPLY_CHAIN,
+    TAG_MEMBERS,
+    THREAD_SIBLINGS,
+    TOPIC_MEMBERS,
+    TOPIC_PARTICIPANTS,
 )
 from mailarc_analytics.queries.statements.reads import (
     ACCOUNT_ADDRESSES,
@@ -123,6 +180,10 @@ from mailarc_analytics.queries.statements.reads import (
     MESSAGE_BODIES,
     MESSAGE_PROPERTIES,
     MESSAGE_RELATIONS,
+    MESSAGE_REPLIES,
+    MESSAGE_SIGNALS,
+    MESSAGE_TEXTS,
+    TAGGED_MEMBERSHIP,
 )
 from mailarc_analytics.queries.statements.search import (
     CREATE_VECTOR_INDEX,
@@ -133,17 +194,28 @@ from mailarc_analytics.queries.statements.search import (
     VECTOR_INDEX_OPTIONS,
 )
 from mailarc_analytics.queries.statements.writes import (
+    CLEAR_ADDRESS_RANKS,
+    CLEAR_IMPORTANCE,
     DELETE_CO_ADDRESSED,
+    DELETE_COMMUNITIES,
     DELETE_GROUPS,
+    DELETE_SUGGESTED,
     DELETE_TEMPLATES,
     DELETE_TOPICS,
     MERGE_ABOUT,
     MERGE_ADDRESSED_GROUP,
     MERGE_CO_ADDRESSED,
+    MERGE_COMMUNITIES,
     MERGE_GROUPS,
+    MERGE_IN_CIRCLE,
     MERGE_INSTANCE_OF,
+    MERGE_MEMBER_OF,
+    MERGE_SUGGESTED,
     MERGE_TEMPLATES,
+    MERGE_TOPIC_KEYWORDS,
     MERGE_TOPICS,
+    WRITE_ADDRESS_RANKS,
+    WRITE_IMPORTANCE,
 )
 
 type Statement = QueryBuilder[Any] | str
@@ -152,8 +224,10 @@ type Statement = QueryBuilder[Any] | str
 The union is the honest type and the ``str`` half is not a leftover. Every
 statement in this project is a :class:`~runic.ogm.QueryBuilder` except
 :data:`VECTOR_INDEX_OPTIONS`, which reads the live vector index's dimension and
-has no builder equivalent in runic 0.5 (see this module's docstring, and that
-statement's). Annotating the mapping ``Mapping[str, QueryBuilder[Any]]`` and
+has no builder equivalent, and the six procedure calls, which cannot be
+builders at all because runic 0.6 will not let a statement begin with ``CALL``
+(see this module's docstring, and each statement's). Annotating the mapping
+``Mapping[str, QueryBuilder[Any]]`` and
 leaving the one string in it would be a lie a type checker cannot see through;
 annotating it ``Mapping[str, Any]`` would say nothing at all. Both halves
 support what a caller does with an entry — :func:`parameters_of` reads either,
@@ -199,6 +273,51 @@ CATALOG: Mapping[str, Statement] = MappingProxyType(
         "VECTOR_COVERAGE": VECTOR_COVERAGE,
         "CLEAR_EMBEDDINGS": CLEAR_EMBEDDINGS,
         "VECTOR_INDEX_OPTIONS": VECTOR_INDEX_OPTIONS,
+        "MESSAGE_REPLIES": MESSAGE_REPLIES,
+        "MESSAGE_SIGNALS": MESSAGE_SIGNALS,
+        "MESSAGE_TEXTS": MESSAGE_TEXTS,
+        "TAGGED_MEMBERSHIP": TAGGED_MEMBERSHIP,
+        "DELETE_COMMUNITIES": DELETE_COMMUNITIES,
+        "DELETE_SUGGESTED": DELETE_SUGGESTED,
+        "MERGE_COMMUNITIES": MERGE_COMMUNITIES,
+        "MERGE_MEMBER_OF": MERGE_MEMBER_OF,
+        "MERGE_IN_CIRCLE": MERGE_IN_CIRCLE,
+        "MERGE_SUGGESTED": MERGE_SUGGESTED,
+        "MERGE_TOPIC_KEYWORDS": MERGE_TOPIC_KEYWORDS,
+        "WRITE_IMPORTANCE": WRITE_IMPORTANCE,
+        "CLEAR_IMPORTANCE": CLEAR_IMPORTANCE,
+        "WRITE_ADDRESS_RANKS": WRITE_ADDRESS_RANKS,
+        "CLEAR_ADDRESS_RANKS": CLEAR_ADDRESS_RANKS,
+        "COUNT_COMMUNITIES": COUNT_COMMUNITIES,
+        "TOP_COMMUNITIES": TOP_COMMUNITIES,
+        "TOP_IMPORTANT": TOP_IMPORTANT,
+        "TOPIC_KEYWORDS": TOPIC_KEYWORDS,
+        "SUGGESTION_COUNTS": SUGGESTION_COUNTS,
+        "TAG_SUGGESTIONS": TAG_SUGGESTIONS,
+        "PROCEDURES": PROCEDURES,
+        "LABEL_PROPAGATION": LABEL_PROPAGATION,
+        "MESSAGE_PAGERANK": MESSAGE_PAGERANK,
+        "ADDRESS_BETWEENNESS": ADDRESS_BETWEENNESS,
+        "SHORTEST_PATHS": SHORTEST_PATHS,
+        "NEIGHBOURHOOD": NEIGHBOURHOOD,
+        "MESSAGE_ADDRESSES": MESSAGE_ADDRESSES,
+        "THREAD_SIBLINGS": THREAD_SIBLINGS,
+        "REPLY_CHAIN": REPLY_CHAIN,
+        "MESSAGE_TOPICS": MESSAGE_TOPICS,
+        "MESSAGE_TAGS": MESSAGE_TAGS,
+        "MESSAGE_CIRCLE": MESSAGE_CIRCLE,
+        "TOPIC_MEMBERS": TOPIC_MEMBERS,
+        "TOPIC_PARTICIPANTS": TOPIC_PARTICIPANTS,
+        "ADDRESS_NEIGHBOURS": ADDRESS_NEIGHBOURS,
+        "ADDRESS_MESSAGES": ADDRESS_MESSAGES,
+        "TAG_MEMBERS": TAG_MEMBERS,
+        "COMMUNITY_MEMBERS": COMMUNITY_MEMBERS,
+        "COMMUNITY_MESSAGES": COMMUNITY_MESSAGES,
+        "OVERVIEW_TOPICS": OVERVIEW_TOPICS,
+        "OVERVIEW_COMMUNITIES": OVERVIEW_COMMUNITIES,
+        "OVERVIEW_TAGS": OVERVIEW_TAGS,
+        "OVERVIEW_TOPIC_CIRCLE": OVERVIEW_TOPIC_CIRCLE,
+        "OVERVIEW_TAG_TOPIC": OVERVIEW_TAG_TOPIC,
     }
 )
 """Every statement in this catalogue, by name.
@@ -224,9 +343,17 @@ appearance of completeness.
 
 __all__ = [
     "ACCOUNT_ADDRESSES",
+    "ADDRESS_BETWEENNESS",
+    "ADDRESS_MESSAGES",
+    "ADDRESS_NEIGHBOURS",
     "ARCHIVED_PER_DAY",
     "CATALOG",
+    "CLEAR_ADDRESS_RANKS",
     "CLEAR_EMBEDDINGS",
+    "CLEAR_IMPORTANCE",
+    "COMMUNITY_MEMBERS",
+    "COMMUNITY_MESSAGES",
+    "COUNT_COMMUNITIES",
     "COUNT_CO_ADDRESSED",
     "COUNT_GROUPS",
     "COUNT_MESSAGES",
@@ -236,32 +363,69 @@ __all__ = [
     "COUNT_UNIDENTIFIED",
     "CO_RECIPIENTS",
     "CREATE_VECTOR_INDEX",
+    "DELETE_COMMUNITIES",
     "DELETE_CO_ADDRESSED",
     "DELETE_GROUPS",
+    "DELETE_SUGGESTED",
     "DELETE_TEMPLATES",
     "DELETE_TOPICS",
     "DROP_VECTOR_INDEX",
     "FULLTEXT_MESSAGES",
+    "LABEL_PROPAGATION",
     "MERGE_ABOUT",
     "MERGE_ADDRESSED_GROUP",
+    "MERGE_COMMUNITIES",
     "MERGE_CO_ADDRESSED",
     "MERGE_GROUPS",
     "MERGE_INSTANCE_OF",
+    "MERGE_IN_CIRCLE",
+    "MERGE_MEMBER_OF",
+    "MERGE_SUGGESTED",
     "MERGE_TEMPLATES",
     "MERGE_TOPICS",
+    "MERGE_TOPIC_KEYWORDS",
     "MESSAGES_NEEDING_EMBEDDING",
+    "MESSAGE_ADDRESSES",
     "MESSAGE_BODIES",
+    "MESSAGE_CIRCLE",
+    "MESSAGE_PAGERANK",
     "MESSAGE_PROPERTIES",
     "MESSAGE_RELATIONS",
+    "MESSAGE_REPLIES",
+    "MESSAGE_SIGNALS",
+    "MESSAGE_TAGS",
+    "MESSAGE_TEXTS",
+    "MESSAGE_TOPICS",
+    "NEIGHBOURHOOD",
+    "OVERVIEW_COMMUNITIES",
+    "OVERVIEW_TAGS",
+    "OVERVIEW_TAG_TOPIC",
+    "OVERVIEW_TOPICS",
+    "OVERVIEW_TOPIC_CIRCLE",
+    "PROCEDURES",
     "RECURRING_GROUPS",
+    "REPLY_CHAIN",
     "SEMANTIC_NEIGHBOURS",
     "SEMANTIC_TOPIC_PAIRS",
+    "SHORTEST_PATHS",
+    "SUGGESTION_COUNTS",
+    "TAGGED_MEMBERSHIP",
+    "TAG_MEMBERS",
+    "TAG_SUGGESTIONS",
+    "THREAD_SIBLINGS",
     "TOPIC_BREAKDOWN",
+    "TOPIC_KEYWORDS",
+    "TOPIC_MEMBERS",
+    "TOPIC_PARTICIPANTS",
+    "TOP_COMMUNITIES",
     "TOP_CO_ADDRESSED",
+    "TOP_IMPORTANT",
     "TOP_TEMPLATES",
     "VECTOR_COVERAGE",
     "VECTOR_INDEX_OPTIONS",
+    "WRITE_ADDRESS_RANKS",
     "WRITE_EMBEDDINGS",
+    "WRITE_IMPORTANCE",
     "Statement",
     "as_graph_datetime",
     "parameters_of",
@@ -270,7 +434,7 @@ __all__ = [
 
 Written out because ruff refuses an ``__all__`` that is computed, and it would
 otherwise be derived from :data:`CATALOG`, which is what it is: the same
-thirty-five names, plus :func:`CREATE_VECTOR_INDEX` and
+statement names, plus :func:`CREATE_VECTOR_INDEX` and
 :func:`DROP_VECTOR_INDEX` — which are functions now, not statements — plus
 :data:`CATALOG` itself, :data:`Statement`, :func:`parameters_of` and
 :func:`as_graph_datetime`. Two hand-written lists in one file is one too many,
@@ -282,15 +446,15 @@ minus those six names is ``set(CATALOG)``, always.
 _PARAMETER = re.compile(r"\$([a-z_][a-z0-9_]*)")
 """``$name`` in raw Cypher.
 
-All that is left of the regex the whole catalogue was read with, and it now has
-exactly one customer: :data:`VECTOR_INDEX_OPTIONS`, the one entry that is still
-a string. A builder statement declares its parameters and hands them back
-through ``parameter_names()``, so reading them off the compiled text would be
-both slower and less true — an auto-bound literal is a ``$p0`` in the text and
-is *not* caller input. Kept rather than deleted because that one statement has
-to stay bindable and runnable in the sweep with every other entry; delete it
-the day ``describe()`` learns to report a vector index's dimension and the last
-string goes with it.
+All that is left of the regex the whole catalogue was read with, and it has
+seven customers now rather than one: :data:`VECTOR_INDEX_OPTIONS` and the six
+procedure calls, which are the entries that are strings. A builder statement
+declares its parameters and hands them back through ``parameter_names()``, so
+reading them off the compiled text would be both slower and less true — an
+auto-bound literal is a ``$p0`` in the text and is *not* caller input. What the
+regex reads instead is text nobody interpolated into: the AST test proves each
+of those seven is a plain literal, so a ``$name`` in one was written there by
+the statement's author and is exactly the caller-supplied set.
 """
 
 

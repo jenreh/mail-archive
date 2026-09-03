@@ -33,6 +33,7 @@ from mailarc_ui.kit.buttons import (
 from mailarc_ui.kit.card import CardTone, card_heading, panel_card
 from mailarc_ui.kit.chips import count_chip, label_chip, relevance_chip
 from mailarc_ui.kit.empty import empty_panel
+from mailarc_ui.kit.graph import graph_canvas
 from mailarc_ui.kit.message import MessageTone, message, toned_message
 from mailarc_ui.kit.layout import (
     COLUMN_GAP,
@@ -85,6 +86,7 @@ __all__ = [
     "empty_panel",
     "field_label",
     "field_note",
+    "graph_canvas",
     "input_field",
     "job_progress",
     "label_chip",

@@ -32,6 +32,36 @@ running an import, every setting, the component layering, the graph and
 relational models, the import pipeline, the job queue, and what implementing a
 new mail provider involves.
 
+## What it does
+
+- **Pulls a mailbox down over its own API** and keeps the original bytes on
+  disk. Gmail, any IMAP host, and Microsoft 365, all behind one port.
+- **Writes the graph email already carries** into a database you can query, with
+  no guessing and no language model in the write path. Importing the same
+  mailbox twice creates no new nodes and no new edges.
+- **Searches it** by sender, recipient, date or words, and reads a message in a
+  pane beside the results, grouped into conversations the way a mail client
+  does — one row per exchange, expandable, and a button that pulls in the
+  members the search itself did not return. With an embedder configured, it also
+  searches for mail *about* something.
+- **Derives what the headers imply**, in one job that throws the last answer
+  away and computes it again: who gets written to together, which sets of people
+  recur, which mail belongs to one piece of work and what that work is about,
+  which mail is written again and again by a machine, and which correspondents
+  form a circle.
+- **Scores what probably matters** and names every term that produced the score,
+  so the ranking is one you can argue with rather than a verdict.
+- **Lets you tag mail and keep the tag.** A tag is the one grouping no rebuild
+  and no mailbox clear-out can reach, and after each rebuild every tag is
+  offered the untagged mail that looks like it belongs.
+- **Draws one corner of the graph** at `/graph`, rooted at a topic, a circle, a
+  tag, a person or a message, with an expandable canvas and a route between any
+  two correspondents.
+- **Serves the archive to a language model** over MCP, as ten read-only tools
+  that answer at query time and never write back.
+- **Runs on a laptop.** One SQLite file, a content-addressed blob store, and a
+  graph server the desktop app carries with it.
+
 ## Project Initialization
 
 Before initializing the project, install these required tools:
@@ -68,11 +98,11 @@ components/mailarc-core/        everything that works without a browser
     database/                   the relational store
       sqlite.py                 async/sync URL split and the SQLite pragmas
     archive/                    ground truth: what the import writes, and reads back
-      model.py                  the runic nodes and edges, plus MessageSummary
+      model.py                  the runic nodes and edges, plus MessageSummary and Conversation
       writer.py                 MessageArchiver — the idempotent upsert into the graph
       blobs.py                  BlobStore — content-addressed originals on disk
       search.py                 SearchFilters and the hit/page value objects
-      repository.py             MessageRepository — listing and filtered search, via runic's query builder
+      repository.py             MessageRepository / ThreadRepository — listing, search and conversations, via runic's query builder
       reader.py                 ArchiveReader — summaries out of the graph, bytes off disk
 components/mailarc-sync/        the import engine, the job queue and the worker loop
 components/mailarc-analytics/   derived nodes, analysis queries, embeddings
@@ -108,10 +138,10 @@ PROFILES=local task run      # http://localhost:8080 (frontend) + :3030 (backend
 ```
 
 It opens on the search page at `/`; the icon rail down the left edge holds the
-dashboard (`/dashboard`), insights (`/insights`) and an **Admin** popover with
-mail accounts, embedder and graph status under `/admin/`. There is no
-sign-in — the archive is a desktop application, and the boundary is the machine
-it runs on.
+dashboard (`/dashboard`), insights (`/insights`), the graph explorer (`/graph`)
+and an **Admin** popover with mail accounts, embedder and graph status under
+`/admin/`. There is no sign-in — the archive is a desktop application, and the
+boundary is the machine it runs on.
 
 The relational store is a single SQLite file at `.state/mail-archive.db` — no
 database server to start. `task clean` wipes `.state/`, so it takes the

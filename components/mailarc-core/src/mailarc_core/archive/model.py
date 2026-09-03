@@ -11,10 +11,16 @@ These are runic OGM models rather than pydantic ones, because declaring them is
 how the graph schema gets described. The ``index`` and ``index_type`` arguments
 are declarations only — ``runic.migrate`` is what creates the real indexes.
 
-Four plain value objects round it out: :class:`ArchiveSource`, the provenance
+Five plain value objects round it out: :class:`ArchiveSource`, the provenance
 of one write, which the message itself cannot know, :class:`ArchiveResult`,
-what one write did, and :class:`MessageSummary` with :class:`MessageLabel`,
-what one read hands back.
+what one write did, :class:`MessageSummary` with :class:`MessageLabel`, what
+one read hands back, and :class:`TagSummary`, one annotation as a listing
+shows it.
+
+The annotation layer — :class:`Tag` and :class:`Tagged` — is declared here and
+not beside the derived nodes on purpose. A tag is a human's standing decision
+about ground truth, the way :attr:`Address.remote_trusted` is, so it has to
+survive a rebuild that deletes and recomputes everything an analysis inferred.
 
 Class order in this file is load-bearing. runic resolves a node's annotations
 at declaration time, so every type an annotation names has to exist already.
@@ -131,6 +137,57 @@ class MessageSummary(BaseModel):
     provider's own (INBOX, UNREAD) last, each group by name."""
 
 
+class TagOrigin(StrEnum):
+    """Where a tag came from — a human, or a cluster somebody promoted.
+
+    The origin of the *tag*, not of any one membership: a tag promoted from a
+    topic keeps ``TOPIC`` forever, even after every message on it was added by
+    hand. It never stores the cluster's id, because a
+    ``Topic.id`` is a hash of its members and is a different string after every
+    rebuild — the tag *is* the durable reference the cluster is not.
+    """
+
+    MANUAL = "manual"
+    TOPIC = "topic"
+    COMMUNITY = "community"
+
+
+class TagSource(StrEnum):
+    """How one message came to wear one tag.
+
+    Kept on the edge and never overwritten: a message tagged by hand and later
+    suggested again by an analysis stays ``MANUAL``, because the first decision
+    is the one a human made.
+    """
+
+    MANUAL = "manual"
+    ACCEPTED = "accepted"
+    AUTO = "auto"
+
+
+class TagSummary(BaseModel):
+    """One tag the way a listing shows it — a projection, not a node.
+
+    ``message_count`` is filled in only by the listing that counts
+    (:meth:`~mailarc_core.archive.tags.TagRepository.list_tags`). Every other
+    read hands back the tag's own properties and leaves the count at zero
+    rather than paying for a traversal nobody asked for; a caller that needs
+    the number asks for the listing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    """The node key — ``tag:<slug>``, as :func:`~mailarc_core.archive.tags.tag_id`
+    builds it."""
+
+    name: str = ""
+    color: str | None = None
+    origin: TagOrigin = TagOrigin.MANUAL
+    created_at: datetime | None = None
+    message_count: int = 0
+
+
 class Address(Node, labels=["Address"]):
     """One email address, keyed by the normalised form.
 
@@ -142,6 +199,21 @@ class Address(Node, labels=["Address"]):
     local_part: str | None = Field(default=None)
     domain: str | None = Field(default=None, index=True)
     display_names: list[str] = Field(default_factory=list)
+    rank: float | None = Field(default=None, index=True)
+    """How central this address is among the archive's correspondents.
+
+    Declared here and written by ``mailarc-analytics``, for the reason
+    :attr:`co_addressed` is: a rebuild computes it, nulls it and computes it
+    again, and a query needs the declaration before it can filter on it. The
+    import never writes it, so an archive that has never been analysed reads
+    ``None`` — which is not the same number as zero and must not be shown as
+    one.
+    """
+
+    rank_version: str | None = Field(default=None)
+    """Which scoring run produced :attr:`rank`, so a changed formula is
+    detectable rather than merely different."""
+
     remote_trusted: bool = Field(default=False)
     """Whether the viewer may load this address's remote content without asking.
 
@@ -309,6 +381,21 @@ class Message(Node, labels=["Message"]):
     eml_sha256: str | None = Field(default=None)
     embedding: Vector | None = Field(default=None, index_type="VECTOR")
     embedding_model: str | None = Field(default=None)
+    importance: float | None = Field(default=None, index=True)
+    """How much this message probably matters, from 0 to 1 — a *derived* score.
+
+    The same arrangement as :attr:`embedding`, and it needs the same warning:
+    a property on a ground-truth node that the import never writes. The
+    analytics rebuild nulls it and computes it again on every run, so it is
+    disposable in a way nothing else on this node is. ``None`` means "never
+    scored", which is not the same as a low score.
+    """
+
+    importance_reasons: list[str] = Field(default_factory=list)
+    """Why, in a fixed vocabulary — the score is worthless without them."""
+
+    importance_version: str | None = Field(default=None)
+    """Which scoring run produced :attr:`importance`."""
 
     sender: Address | None = Relation(
         relationship="SENT_FROM", direction="OUTGOING", target="Address"
@@ -352,3 +439,88 @@ class Message(Node, labels=["Message"]):
         target="Account",
         edge_model="ArchivedFrom",
     )
+    tags: Any = Relation(relationship="TAGGED", direction="OUTGOING", target="Tag")
+    """The tags a human hung on this message — the annotation layer's edge.
+
+    Annotated ``Any`` for the reason :attr:`replies_to` is, and it is the same
+    landmine with the other class: :class:`Tag` is declared *below* this one,
+    so runic — which resolves annotations while the class body runs — would
+    abort the whole resolution pass on a forward reference and silently strip
+    the datetime and vector converters off every field on this node.
+    ``target`` carries the real type as a string, which runic resolves through
+    its registry once both classes exist.
+
+    Declared from this end as well as from :attr:`Tag.messages` so a read can
+    start at the message — "what is this one tagged with" is the question the
+    detail view asks, and starting at the tag would mean scanning every one of
+    them.
+    """
+
+
+class Tagged(Edge, type="TAGGED"):
+    """One message wearing one tag, and how it got there.
+
+    Both properties are about the *decision*, which is why they sit on the edge
+    and not on the tag: the same tag is put on one message by hand and on the
+    next by an accepted suggestion, and the two are not the same statement.
+    :meth:`~mailarc_core.archive.tags.TagRepository.tag_messages` never
+    overwrites either — a membership that already exists keeps the ``source``
+    and the ``at`` of the decision that made it.
+    """
+
+    source: TagSource | None = Field(default=None)
+    at: datetime | None = Field(default=None)
+
+
+class Tag(Node, labels=["Tag"]):
+    """A human's name for a set of messages, keyed ``tag:<slug>``.
+
+    The one node in this package that no import ever writes and no rebuild ever
+    deletes. It is an annotation *on* ground truth, like
+    :attr:`Address.remote_trusted`: the analytics layer may read it and may
+    suggest additions to it, and nothing outside
+    :mod:`mailarc_core.archive.tags` may remove one.
+
+    Clearing a mailbox leaves it standing. The ``TAGGED`` edges to messages
+    that mailbox was the sole holder of go with those messages — that is what
+    ``DETACH DELETE`` on a message means — so a tag can end up with a count of
+    zero, which is a tag whose mail is gone and not a bug. It stays until
+    somebody deletes it.
+
+    The key is derived from the name, so two people naming the same project the
+    same way get one tag. A rename therefore does *not* move the node: the id
+    is the identity, and re-keying it would orphan every edge already on it.
+    """
+
+    id: str = Field(primary_key=True)
+    name: str | None = Field(default=None)
+    color: str | None = Field(default=None)
+    origin: TagOrigin | None = Field(default=None)
+    created_at: datetime | None = Field(default=None)
+
+    messages: list[Message] = Relation(
+        relationship="TAGGED",
+        direction="INCOMING",
+        target="Message",
+        edge_model="Tagged",
+    )
+    """The messages wearing this tag — :attr:`Message.tags` from the other end.
+
+    Declared here so a statement can be **rooted at the tag**, which is not a
+    matter of taste and is the same argument :attr:`Account.copies` makes:
+    runic emits a predicate naming a traversed variable *after* the whole
+    pipeline, so ``t.id = $tag`` on a traversal from the message end lands
+    behind the ``DELETE`` it was meant to narrow.
+    """
+
+    suggested: list[Message] = Relation(
+        relationship="SUGGESTED", direction="INCOMING", target="Message"
+    )
+    """Messages an analysis thinks belong here — a *derived* edge.
+
+    Declared here, written elsewhere, exactly as :attr:`Address.co_addressed`
+    is: the analytics rebuild computes ``SUGGESTED`` from threads, topics and
+    communities and deletes every one of them again on the next run. No
+    ``edge_model``, because nothing in this component reads the score on it;
+    the package that writes it declares one.
+    """

@@ -76,6 +76,27 @@ The left edge is a slim icon rail; every icon names itself when you hover it.
 Search is the main page because finding a message is what somebody opens a mail
 archive to do; the dashboard is one click away rather than the other way round.
 
+### The result list groups conversations
+
+A switch above the list reads **Conversations** or **Messages**, and it starts on
+Conversations. Grouped, an exchange is one row: the newest message that matched,
+with a chevron that opens the rest and a chip saying how many the conversation
+holds. Clicking the row opens the message it is showing; clicking the chevron
+opens the group.
+
+The chip says `1 of 12` when the search returned one message of a conversation
+that holds twelve, and a **Show whole conversation** button beside it fetches
+the other eleven. So the list groups what you asked for, and offers the context
+around it without pretending the search found more than it did.
+
+Switch to **Messages** for a flat list — worth doing when the ranking of a
+full-text or semantic search is what you want to read straight down.
+
+Mail imported before this feature existed may group less well if it came from
+IMAP: the archive learned to thread a conversation's first message only now, so
+an older exchange can show its opening mail as a row of its own beside its
+replies. Re-importing that mailbox fixes it.
+
 ## Prepare the graph schema
 
 The graph needs its indexes before an import is worth running:

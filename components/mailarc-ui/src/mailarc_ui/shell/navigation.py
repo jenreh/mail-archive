@@ -60,6 +60,7 @@ RAIL_SECTIONS: tuple[NavSection, ...] = (
             NavItem(label="Search", href=routes.SEARCH, icon="mail-search"),
             NavItem(label="Dashboard", href=routes.DASHBOARD, icon="layout-dashboard"),
             NavItem(label="Insights", href=routes.INSIGHTS, icon="chart-line"),
+            NavItem(label="Graph", href=routes.GRAPH, icon="waypoints"),
         ),
     ),
     NavSection(
@@ -115,6 +116,78 @@ def _menu_section(section: NavSection) -> rx.Component:
         mn.stack(
             _section_label(section),
             *[_rail_link(item) for item in section.items],
+            gap=8,
+            align="center",
+        ),
+    )
+
+
+def _holds_the_current_page(section: NavSection) -> Any:
+    """Whether any page of this section is the one the browser is on.
+
+    An explicit OR over the section's own routes rather than a prefix test on
+    the path: the routes are what ``routes.py`` declares, and a prefix would
+    also light the trigger up on a future ``/admin/`` page the menu does not
+    offer.
+    """
+    condition = _is_active(section.items[0].href)
+    for item in section.items[1:]:
+        condition = condition | _is_active(item.href)
+    return condition
+
+
+def _active_flag(section: NavSection) -> rx.Component:
+    """The zero-sized marker the trigger's active look is read from.
+
+    It exists because the trigger cannot carry ``data-active`` itself:
+    ``Menu.Target`` opens the dropdown by cloning its child with an ``onClick``
+    and a ``ref``, and Reflex compiles any element holding a state-dependent
+    attribute into a ``memo(({children}) => …)`` wrapper that keeps children
+    and discards everything else — so both land on a component that throws them
+    away and the menu cannot be opened at all. The Var goes here instead, and
+    ``.ma-rail-flag[data-active] ~ .ma-rail-item`` in the stylesheet reaches the
+    button beside it.
+    """
+    return mn.box(
+        class_name="ma-rail-flag",
+        custom_attrs={"data-active": _holds_the_current_page(section)},
+    )
+
+
+def _menu_row(item: NavItem) -> rx.Component:
+    """One labelled row of the administration popover.
+
+    ``rx.redirect`` rather than an ``rx.link`` around the row: a link inside a
+    menu item is an anchor inside a button, which is the nested-anchor
+    hydration error this module exists to keep out of the rail.
+    """
+    return mn.menu.item(
+        item.label,
+        left_section=rx.icon(item.icon, size=16),
+        on_click=rx.redirect(item.href),
+    )
+
+
+def _administration_section(section: NavSection) -> rx.Component:
+    """The maintenance pages: one icon, and the popover that names them."""
+    return mn.app_shell.section(
+        mn.stack(
+            _section_label(section),
+            _active_flag(section),
+            mn.menu(
+                mn.menu.target(
+                    mn.unstyled_button(
+                        rx.icon("settings", size=20),
+                        class_name="ma-rail-item",
+                        aria_label=section.label,
+                    ),
+                ),
+                mn.menu.dropdown(*[_menu_row(item) for item in section.items]),
+                position="right-start",
+                offset=10,
+                shadow="md",
+                width=200,
+            ),
             gap=8,
             align="center",
         ),

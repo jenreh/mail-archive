@@ -8,24 +8,29 @@ One capability, three modules, layered so nothing points back up.
     inside ``mailarc-analytics`` is not a published breaking change. No I/O.
 ``reads``
     :class:`~mailarc_mcp.server.reads.ArchiveAccess` — where an answer comes
-    from. Holds four factories it was handed, asks each on first use, builds
-    none of them itself, and carries the one conversation read the query
-    catalogue does not have.
+    from. Holds five factories it was handed, asks each on first use, builds
+    none of them itself, and carries the two graph reads no reader above it
+    hands out: one conversation, and one topic's members.
 ``server``
-    :func:`~mailarc_mcp.server.server.build_server`, the six tools bound to one
+    :func:`~mailarc_mcp.server.server.build_server`, the ten tools bound to one
     ``ArchiveAccess``, the failure translation, and the FastMCP logging fix a
     stdio process needs before it serves anything.
 """
 
 from mailarc_mcp.server.model import (
+    ArchivedMessage,
+    ArchiveTag,
     Conversation,
     ConversationMessage,
     CorrespondentPair,
+    ImportantMessage,
     MessageHit,
     MessageTemplate,
     SearchAnswer,
     TimelineEntry,
     TopicCluster,
+    TopicMessage,
+    TopicMessages,
 )
 from mailarc_mcp.server.reads import (
     AnalyticsFactory,
@@ -33,6 +38,7 @@ from mailarc_mcp.server.reads import (
     ArchiveFactory,
     GraphSessionFactory,
     SearchFactory,
+    TagFactory,
 )
 from mailarc_mcp.server.server import (
     INSTRUCTIONS,
@@ -61,16 +67,22 @@ __all__ = [
     "AnalyticsFactory",
     "ArchiveAccess",
     "ArchiveFactory",
+    "ArchiveTag",
+    "ArchivedMessage",
     "Conversation",
     "ConversationMessage",
     "CorrespondentPair",
     "GraphSessionFactory",
+    "ImportantMessage",
     "MessageHit",
     "MessageTemplate",
     "SearchAnswer",
     "SearchFactory",
+    "TagFactory",
     "TimelineEntry",
     "TopicCluster",
+    "TopicMessage",
+    "TopicMessages",
     "build_server",
     "route_fastmcp_logging",
 ]

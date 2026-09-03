@@ -1,10 +1,19 @@
 """What the reports ask — §6 and §12, with the model's real properties put back.
 
-Nine statements: A1 read twice, once straight off the ground truth and once off
-the edge that materialises it, the three listings a page renders, and the four
-counts that turn "a second rebuild changes nothing" into a test rather than a
-claim. Between them they are what
+Fifteen statements. Nine are the original phase's: A1 read twice, once straight
+off the ground truth and once off the edge that materialises it, the three
+listings a page renders, and the four counts that turn "a second rebuild
+changes nothing" into a test rather than a claim. Six more answer what §5
+computes — the circles, the scored messages, the topic keywords and the two
+halves of the suggestion card. Between them they are what
 :class:`~mailarc_analytics.queries.reports.AnalyticsReader` runs.
+
+Every listing here is ordered by the number that matters and cut by a
+``$limit``, so cutting one keeps its interesting rows. The two that read a
+*derived property on a ground-truth node* — :data:`TOP_IMPORTANT` and, through
+its members, :data:`TAG_SUGGESTIONS` — filter the property out where it is
+null rather than defaulting it: an archive that has never been analysed has no
+importance to report, and zero is a score rather than an absence.
 
 The handles below are module-private and shared on purpose — ``a`` and ``b``
 are the same two ``Address`` variables in all three ``CO_ADDRESSED`` statements,
@@ -26,8 +35,16 @@ it. Anything that needs a different shape declares a different constant here.
 
 from runic.ogm import alias, count, param, select
 
-from mailarc_analytics.derived.model import About, CoAddressed, Group, Template, Topic
-from mailarc_core.archive.model import Address, Message
+from mailarc_analytics.derived.model import (
+    About,
+    CoAddressed,
+    Community,
+    Group,
+    Suggested,
+    Template,
+    Topic,
+)
+from mailarc_core.archive.model import Address, Message, Tag
 
 _message = alias(Message, "m")
 _left = alias(Address, "a")
@@ -37,6 +54,9 @@ _group = alias(Group, "g")
 _template = alias(Template, "t")
 _topic = alias(Topic, "t")
 _about = alias(About, "r")
+_community = alias(Community, "c")
+_tag = alias(Tag, "t")
+_suggested = alias(Suggested, "r")
 
 _messages_together = count(_message).as_("together")
 """``count(m) AS together`` — projected and then ordered by, so the ``ORDER BY``
@@ -287,4 +307,176 @@ Which is why this is the one ``CO_ADDRESSED`` read that does *not* pass
 ``direction="BOTH"``: here the relation's declared ``OUTGOING`` is the arrow,
 and adding the override would report twice as many edges as the graph holds —
 measured, 6 against a graph carrying 3.
+"""
+
+COUNT_COMMUNITIES = select(_community).project(count(_community).as_("total"))
+"""How many ``Community`` nodes there are.
+
+The fifth derived count, and it earns its place for the reason the other four
+do: "a second rebuild changes nothing" is only a test if every label a rebuild
+writes is counted before and after.
+"""
+
+_community_messages = _community.message_count.as_("message_count")
+"""The circle's own count, projected under the name the readers use and reused
+in the ``ORDER BY`` so the clause names the column."""
+
+TOP_COMMUNITIES = (
+    select(_community)
+    .project(
+        _community.id,
+        _community.label,
+        _community.size,
+        _community_messages,
+        _community.method,
+        _community.first_seen,
+        _community.last_seen,
+    )
+    .order_by(_community_messages, desc=True)
+    .limit(param("limit"))
+)
+"""The circles worth looking at, busiest first — B3's answer as a listing.
+
+Ordered by ``message_count`` and not by ``size``, which is the same choice
+:data:`RECURRING_GROUPS` makes and for the same reason: a circle of forty
+people who exchanged three mails is a directory, and a circle of five who
+exchanged four hundred is where the work is. The size is in the row all the
+same, because it is what tells the two apart.
+
+``label`` is the most common domain among the members, computed where the
+community is built. A name a human recognises and never a name a model
+invented — §3.2's rule that nothing in this graph is written by an LLM.
+
+Every column but ``message_count`` is a bare field and names itself; that one
+carries an ``.as_()`` only so the ``ORDER BY`` can name the result column
+rather than repeat ``c.message_count``.
+"""
+
+_message_importance = _message.importance.as_("importance")
+"""``m.importance AS importance`` — named so the ``ORDER BY`` reads the result
+column, the way every other listing here orders."""
+
+TOP_IMPORTANT = (
+    select(_message)
+    .where(_message.importance.is_not_null())
+    .traverse(Message.sender, from_=_message, to=_left, optional=True)
+    .project(
+        _message.id,
+        _message.subject,
+        _message.sent_at,
+        _left.id.as_("sender"),
+        _message_importance,
+        _message.importance_reasons.as_("reasons"),
+    )
+    .order_by(_message_importance, desc=True)
+    .limit(param("limit"))
+)
+"""What probably matters, best first — B2's answer, with its reasons attached.
+
+``importance IS NOT NULL`` is the load-bearing filter. The property is written
+by the rebuild and by nothing else, so an archive that has never been analysed
+holds only nulls — and a null sorts *first* on this backend's ``DESC``,
+measured on :data:`TOP_CO_ADDRESSED`'s own count. Without the filter, the top
+of this listing would be whichever unscored messages the store happened to
+visit, each rendering as a score of zero.
+
+The reasons travel with the score, always. A ranking a user cannot argue with
+is not what §1.1 asked for, and the vocabulary — "replied by you", "addressed
+directly", "looks automated" — is the whole difference between this and a
+model's opinion.
+
+The sender is an optional hop: a message whose ``SENT_FROM`` edge is missing is
+a broken import, and dropping it from the listing would hide the score rather
+than the gap. One row per message all the same, because a message has one
+sender.
+"""
+
+_keyword_messages = _topic.message_count.as_("message_count")
+"""The topic's own count, named for the ``ORDER BY``."""
+
+TOPIC_KEYWORDS = (
+    select(_topic)
+    .where(_topic.keywords.is_not_null())
+    .project(
+        _topic.id,
+        _topic.label,
+        _topic.keywords,
+        _keyword_messages,
+    )
+    .order_by(_keyword_messages, desc=True)
+    .limit(param("limit"))
+)
+"""What each topic is about, in its members' own words.
+
+A separate listing from :data:`TOPIC_BREAKDOWN` rather than four more columns
+on it, because that statement groups by ``ABOUT.method`` and returns one row
+per topic *per signal* — the same keywords repeated once for every way its
+messages were joined. This one is one row per topic.
+
+``keywords IS NOT NULL`` for :data:`TOP_IMPORTANT`'s reason at one remove: the
+keyword stage runs after the clustering, so a rebuild interrupted between them
+leaves topics with no keywords at all, and a row of nulls is not a finding.
+
+Ordered by size, so a cut listing keeps the topics a user would look at first.
+"""
+
+SUGGESTION_COUNTS = (
+    select(_tag)
+    .traverse(Tag.suggested, from_=_tag, to=_message, optional=True)
+    .project(
+        _tag.id,
+        _tag.name,
+        count(_message, distinct=True).as_("suggestions"),
+    )
+    .order_by(_tag.id)
+)
+"""How many messages each tag is being offered — the badge on the tags card.
+
+Every tag, including the ones with nothing to accept: the traversal is optional
+and ``count`` skips a null, so a tag no analysis had anything to say about
+comes back with a zero rather than being absent. That distinction is the whole
+point of the column — a tag with no suggestions and a tag missing from a
+listing look the same to a card, and only one of them is a state a user should
+be shown.
+
+``count(DISTINCT m)`` because a message could in principle be offered to the
+same tag by two groups; the writer merges one edge per pair, so the ``DISTINCT``
+is a guard rather than a correction.
+
+Unlimited and ordered by id: the population is the tags a human made, which is
+a list somebody is already looking at.
+"""
+
+_suggestion_score = _suggested.score.as_("score")
+"""``r.score AS score`` — the edge's own number, named for the ``ORDER BY``."""
+
+TAG_SUGGESTIONS = (
+    select(_tag)
+    .where(_tag.id == param("tag"))
+    .traverse(Tag.suggested, from_=_tag, to=_message, edge=_suggested)
+    .project(
+        _message.id,
+        _message.subject,
+        _message.sent_at,
+        _suggestion_score,
+        _suggested.method.as_("method"),
+    )
+    .order_by(_suggestion_score, desc=True)
+    .limit(param("limit"))
+)
+"""What one tag is being offered, strongest first — and why each one.
+
+Rooted at the ``Tag`` and filtered on the *root*, which is what keeps the
+predicate where it belongs: runic emits a condition naming a traversed variable
+after the whole pipeline, so a statement walked in from the message end would
+filter after the traversal it was meant to narrow. Here ``t.id = $tag`` lands
+in the root ``WHERE`` and the store seeks one node.
+
+``method`` is on the edge and travels with the row for the same reason
+:data:`TOP_IMPORTANT`'s reasons do: "these two share a thread" and "these two
+are in the same circle" are not the same claim, and a user accepting a
+suggestion should see which one was made.
+
+The traversal is **not** optional here — a tag with no suggestions has nothing
+to list, and :data:`SUGGESTION_COUNTS` is what says so with a number.
 """

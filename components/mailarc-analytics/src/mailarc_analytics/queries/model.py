@@ -23,9 +23,10 @@ materialisation run against each other — and the whole argument about what
 import logging
 from collections.abc import Sequence
 from datetime import datetime
+from enum import StrEnum
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from mailarc_analytics.derived.model import TemplateDirection
 
@@ -141,6 +142,108 @@ class TemplateRow(BaseModel):
 
     first_seen: datetime | None = None
     last_seen: datetime | None = None
+
+
+class CommunityRow(BaseModel):
+    """One circle of correspondents, as a listing shows it.
+
+    ``label`` is the most common domain among the members and never a name
+    anybody invented — §3.2's rule that nothing in this graph is written by a
+    model. ``size`` and ``message_count`` are both here because they are what
+    tell a directory from a working group: forty people who exchanged three
+    mails are the first, five who exchanged four hundred are the second.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    """``community:<digest>`` — keyed on its members, so the circle keeps its
+    id across a rebuild even though label propagation numbers it afresh."""
+
+    label: str = ""
+    size: int = 0
+    """Addresses in the circle."""
+
+    message_count: int = 0
+    """Messages that circulate in it — what the listing is ordered by."""
+
+    method: str = ""
+    """How the partition was found. A plain string, so a graph written by a
+    build that knows a second method still decodes here."""
+
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+
+
+class ImportantMessageRow(BaseModel):
+    """A message that probably matters, and the reasons it is claimed to.
+
+    The reasons travel with the score, always. A number on its own is a ranking
+    a user cannot argue with, and the whole reason importance is arithmetic
+    over headers rather than a model's opinion is that every term can be named.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    subject: str = ""
+    sent_at: datetime | None = None
+    sender: str = ""
+    """The address the message was sent from; empty where the ``SENT_FROM``
+    edge is missing, which is a broken import rather than a reason to drop the
+    row."""
+
+    importance: float = 0.0
+    """``0..1``, so a page can render it as a bar."""
+
+    reasons: tuple[str, ...] = ()
+    """The fixed vocabulary the scorer used, in the order it stored them."""
+
+
+class TopicKeywordsRow(BaseModel):
+    """What one topic is about, in its own members' words.
+
+    Its own row rather than columns on :class:`TopicRow`, because that one is
+    per topic *per signal* and these words would be repeated once for every way
+    the topic's messages were joined.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    label: str = ""
+    keywords: tuple[str, ...] = ()
+    """Most discriminating first — the TF-IDF's own order, which is why this is
+    a tuple and not a set."""
+
+    message_count: int = 0
+
+
+class TagSuggestionRow(BaseModel):
+    """A message an analysis thinks a tag might want, and the case for it.
+
+    Never a membership. ``TAGGED`` records what a person decided and is written
+    by ``mailarc-core``; this is a ``SUGGESTED`` edge, which the next rebuild
+    deletes and recomputes.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    message_id: str
+    """Named for what it is, because a row about *two* nodes cannot have a bare
+    ``id`` that means either of them."""
+
+    subject: str = ""
+    sent_at: datetime | None = None
+    score: float = 0.0
+    """``weight[kind] × k/n`` — how much of the group already wears the tag,
+    weighted by what kind of group is arguing."""
+
+    method: str = ""
+    """A :class:`~mailarc_analytics.derived.findings.GroupingKind` value:
+    ``thread``, ``topic`` or ``community``. "These two answer each other" and
+    "these two are in the same circle" are not the same claim, and a user
+    accepting a suggestion should see which one was made."""
 
 
 class ArchiveTotals(BaseModel):
@@ -587,3 +690,196 @@ def _floor(counts: Sequence[int], limit: int) -> int:
     depending on that keeps the rule true of any listing somebody hands in.
     """
     return min(counts) if limit > 0 and len(counts) >= limit else 0
+
+
+class NodeKind(StrEnum):
+    """What a node on the canvas *is*, in the explorer's own vocabulary.
+
+    Six kinds and not one per label, which is the point of having the enum at
+    all: a canvas colours and shapes by kind, a state toggles by kind, and the
+    reader is the one place that decides which graph label becomes which. The
+    values are lower case because they also reach a URL —
+    ``/graph?view=topic&id=…`` — and a query parameter a user can read is worth
+    more than an exact echo of the label.
+
+    ``THREAD`` is here although no view is rooted at one: a thread is drawn as
+    the hub its members hang off, so it needs a colour like everything else.
+    """
+
+    MESSAGE = "message"
+    ADDRESS = "address"
+    THREAD = "thread"
+    TOPIC = "topic"
+    TAG = "tag"
+    COMMUNITY = "community"
+
+
+class Weight(StrEnum):
+    """The numbers a canvas may size a node by.
+
+    Four, and each comes from somewhere different: ``DEGREE`` is counted in
+    Python off the edges of *this* subgraph, ``PAGERANK`` and ``IMPORTANCE`` are
+    properties a rebuild wrote onto ground-truth nodes, and ``COUNT`` is how
+    much a collection holds. A node carries only the ones that apply to it — a
+    thread has no importance, an address has no count — and
+    :class:`~mailarc_analytics.queries.graphs.GraphReader` normalises each key
+    across the picture it belongs to.
+
+    Named rather than spelled into the reader, because the page picking one is
+    in another component and a typo there is a node with no size rather than an
+    error.
+    """
+
+    DEGREE = "degree"
+    PAGERANK = "pagerank"
+    IMPORTANCE = "importance"
+    COUNT = "count"
+
+
+class GraphNode(BaseModel):
+    """One node as a canvas draws it: an identity, a name and its numbers.
+
+    Not a runic entity and deliberately not: a page outlives the session that
+    read it, and the whole of what it needs is here as plain values.
+
+    Frozen like every row in this module, and unhashable for it — pydantic
+    derives ``__hash__`` from the fields and two of these are mappings. Nothing
+    puts one in a set; :class:`Subgraph` keys nodes by :attr:`id`, which is what
+    identity means here anyway.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    """The store's own id — a canonical message id, an address, a topic digest.
+    Unique across a subgraph, because a canvas refuses a duplicate outright."""
+
+    kind: NodeKind
+    label: str = ""
+    """What to write on it: a subject, an address, a topic's label, a tag's
+    name. Empty where the store had nothing, and a canvas falls back to the
+    id."""
+
+    weights: dict[str, float] = Field(default_factory=dict)
+    """:class:`Weight` keys, each between 0 and 1 within this subgraph.
+
+    Sparse on purpose: a key that is absent means *this node has no such
+    number*, which is not the same as zero and must not be drawn as the
+    smallest circle. A message nobody has scored has no ``importance`` key at
+    all.
+    """
+
+    props: dict[str, str] = Field(default_factory=dict)
+    """Whatever else is worth putting in a tooltip, already rendered as text.
+
+    Strings and not values, because everything in here is going into a DOM
+    attribute: a page that had to decide how to print a timestamp would be a
+    second place that decides it.
+    """
+
+
+class GraphEdge(BaseModel):
+    """One line between two nodes: where it goes, what it means, how heavy.
+
+    Directed, always, because every edge this reader draws has a direction in
+    the store — even ``CO_ADDRESSED``, which is *stored* directed
+    smaller-id-first and merely read from both ends.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source: str
+    target: str
+    kind: str
+    """The relationship type as the store spells it — ``SENT_TO``,
+    ``REPLIES_TO``, ``ABOUT`` — or one of the two names this reader coins for
+    an aggregate: ``PARTICIPATES`` and ``OVERLAPS``.
+
+    A plain string rather than an enum for
+    :attr:`TopicRow.method`'s reason: a graph written by a build that knows one
+    more edge type still has to decode here.
+    """
+
+    weight: float = 0.0
+    """What the store counted on this edge, **raw**.
+
+    Unlike a node's weights, which are normalised so a canvas can map them onto
+    a diameter. An edge's number means something different per kind — a pair
+    count, a share, a message count — and normalising across kinds would put a
+    share of 0.75 and a count of 300 on one scale that describes neither. Zero
+    where the edge carries no number, which most ground-truth edges do not.
+    """
+
+    label: str = ""
+    """A word for what put this edge here — a topic signal, a tag's source.
+    Empty where the kind already says everything."""
+
+
+class Subgraph(BaseModel):
+    """A corner of the graph, complete enough to draw.
+
+    Two guarantees a consumer may rely on and a canvas needs: **every edge has
+    both of its ends in** :attr:`nodes`, and **no id appears twice**. Both are
+    established by :class:`~mailarc_analytics.queries.graphs.GraphReader`,
+    which is the only thing that builds one out of rows, and preserved by
+    :meth:`merged_with`.
+
+    :attr:`truncated` is per view rather than per read: a user needs to know
+    that the picture is partial, and *which* read was cut is what
+    :attr:`notice` says in a sentence.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    nodes: tuple[GraphNode, ...] = ()
+    edges: tuple[GraphEdge, ...] = ()
+    truncated: bool = False
+    notice: str = ""
+
+    def merged_with(self, other: Subgraph) -> Subgraph:
+        """This subgraph with *other* laid over it — what an expansion does.
+
+        The canvas holds one picture and a double-click adds a hop to it, so the
+        merge has to be idempotent in the two ways a canvas cares about: a node
+        both halves hold stays one node, and an edge both halves drew stays one
+        line.
+
+        **This half wins on identity, and the heavier number wins on weight.** A
+        node keeps the label it already had unless it had none — a message
+        drawn with its subject must not lose it to an expansion that only knew
+        its id — while each weight takes the larger of the two. Both halves were
+        normalised within their own picture, so both are already between 0 and 1
+        and the maximum keeps them there; a node that is the hub of the
+        expansion is drawn as one.
+
+        Neither guarantee can be lost by merging two complete subgraphs, so no
+        second dangling-edge pass runs here.
+        """
+        nodes = {one.id: one for one in self.nodes}
+        for one in other.nodes:
+            nodes[one.id] = _folded(nodes[one.id], one) if one.id in nodes else one
+        edges = {(one.source, one.target, one.kind): one for one in self.edges}
+        for one in other.edges:
+            key = (one.source, one.target, one.kind)
+            if key not in edges or edges[key].weight < one.weight:
+                edges[key] = one
+        return Subgraph(
+            nodes=tuple(nodes.values()),
+            edges=tuple(edges.values()),
+            truncated=self.truncated or other.truncated,
+            notice=self.notice or other.notice,
+        )
+
+
+def _folded(kept: GraphNode, other: GraphNode) -> GraphNode:
+    """One node out of two readings of it. See :meth:`Subgraph.merged_with`."""
+    weights = dict(kept.weights)
+    for name, value in other.weights.items():
+        weights[name] = max(weights.get(name, value), value)
+    return kept.model_copy(
+        update={
+            "label": kept.label or other.label,
+            "weights": weights,
+            "props": {**other.props, **kept.props},
+        }
+    )

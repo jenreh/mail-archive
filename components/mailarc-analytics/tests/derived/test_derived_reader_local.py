@@ -26,6 +26,10 @@ from mailarc_analytics import (
     read_account_addresses,
     read_bodies,
     read_facts,
+    read_replies,
+    read_signals,
+    read_tagged,
+    read_texts,
 )
 from mailarc_analytics.derived import reader
 from mailarc_core.archive.model import to_signed_64
@@ -447,3 +451,169 @@ class TestTheBatchSizes:
             bodies = read_bodies(graph, wanted)
 
         assert set(bodies) == set(wanted)
+
+
+class TestTheConversationRead:
+    """``MESSAGE_REPLIES`` folded into the mapping union-find walks."""
+
+    def test_only_the_planted_reply_comes_back(self, archived: GraphConfig) -> None:
+        """One ``In-Reply-To`` in the whole corpus, and the read finds exactly
+        it — a mapping over every message would mean the inner match had been
+        made optional and the reader was filtering in Python."""
+        with client.session(archived) as graph:
+            found = read_replies(graph, CONFIG)
+
+        assert found == {corpus.canonical("p2"): corpus.canonical("p1")}
+
+    def test_a_message_that_answers_nothing_is_simply_absent(
+        self, archived: GraphConfig
+    ) -> None:
+        """The mapping is the reply table, not a column on every message."""
+        with client.session(archived) as graph:
+            found = read_replies(graph, CONFIG)
+
+        assert corpus.canonical("p1") not in found
+        assert corpus.canonical("s01") not in found
+
+
+class TestTheSignalRead:
+    """``MESSAGE_SIGNALS`` — the four things ``MessageFacts`` cannot say."""
+
+    def test_the_reply_signals_point_back_at_the_message_they_answer(
+        self, archived: GraphConfig
+    ) -> None:
+        """``p2`` answers ``p1``, so ``p1`` is the one that was replied to.
+
+        The direction is the whole reason the traversal is ``INCOMING`` and the
+        second hop leaves from the reply rather than from the message: written
+        the other way round, every message would report its own sender as
+        having answered it.
+        """
+        with client.session(archived) as graph:
+            found = read_signals(graph, CONFIG)
+
+        answered = found[corpus.canonical("p1")]
+
+        assert (answered.reply_count, answered.replied_by) == (1, (corpus.ANNA,))
+        assert found[corpus.canonical("p2")].reply_count == 0
+
+    def test_the_addressed_column_is_the_to_line_and_not_the_cc(
+        self, archived: GraphConfig
+    ) -> None:
+        """``p1`` was sent to Anna with Thomas in copy. "Addressed directly" is
+        a claim about the To line, which is why this read does not fold the two
+        together the way ``MESSAGE_RELATIONS`` deliberately does."""
+        with client.session(archived) as graph:
+            found = read_signals(graph, CONFIG)
+
+        assert found[corpus.canonical("p1")].sent_to == (corpus.ANNA,)
+
+    def test_the_provider_label_and_the_attachment_flag_come_back(
+        self, archived: GraphConfig
+    ) -> None:
+        """``p1`` is the one planted message wearing a label, and one of two
+        carrying a PDF. Both are reasons the scorer is allowed to name."""
+        with client.session(archived) as graph:
+            found = read_signals(graph, CONFIG)
+
+        signals = found[corpus.canonical("p1")]
+
+        assert signals.label_names == ("Kunden",)
+        assert signals.has_attachments is True
+        assert found[corpus.canonical("p2")].has_attachments is False
+
+    def test_every_readable_message_gets_a_row(self, archived: GraphConfig) -> None:
+        """One row per message after the aggregation, which is what lets the
+        paged walk stop on a short page the way the facts read does."""
+        with client.session(archived) as graph:
+            found = read_signals(graph, CONFIG)
+            facts = read_facts(graph, CONFIG)
+
+        assert set(found) == {one.id for one in facts}
+
+
+class TestTheKeywordRead:
+    """``MESSAGE_TEXTS`` — the subject and a capped body, by id."""
+
+    def test_the_text_is_the_subject_and_the_body_together(
+        self, archived: GraphConfig
+    ) -> None:
+        """A piece of work is usually named in the subject and described in the
+        body, and the tokeniser should see both."""
+        with client.session(archived) as graph:
+            found = read_texts(graph, [corpus.canonical("p1")], 2000)
+
+        text = found[corpus.canonical("p1")]
+
+        assert "Angebot Datenmigration" in text
+        assert "Zeitplan" in text
+
+    def test_the_store_cuts_the_body_rather_than_python(
+        self, archived: GraphConfig
+    ) -> None:
+        """``left(m.body_clean, $max_chars)`` is what keeps the keyword stage's
+        cost bounded; a caller that trimmed afterwards would have paid for the
+        whole archive's text first."""
+        with client.session(archived) as graph:
+            short = read_texts(graph, [corpus.canonical("p1")], 20)
+            long = read_texts(graph, [corpus.canonical("p1")], 2000)
+
+        assert len(short[corpus.canonical("p1")]) < len(long[corpus.canonical("p1")])
+
+    def test_a_message_nobody_asked_for_is_not_read(
+        self, archived: GraphConfig
+    ) -> None:
+        with client.session(archived) as graph:
+            found = read_texts(graph, [corpus.canonical("p1")], 2000)
+
+        assert set(found) == {corpus.canonical("p1")}
+
+    def test_a_message_with_nothing_to_say_is_absent_rather_than_empty(
+        self, archived: GraphConfig
+    ) -> None:
+        """A quote-only reply with no subject leaves both columns empty, and an
+        empty document would count towards the ``T`` in ``log(T / (1 + df))``
+        while contributing no term — every keyword in the archive would get a
+        little rarer for a message that said nothing."""
+        with client.session(archived) as graph:
+            graph.execute(
+                "CREATE (m:Message {id: $id, body_clean: '', simhash: 0, refs: []})",
+                {"id": "silent@nordlicht.example"},
+            )
+            found = read_texts(
+                graph, ["silent@nordlicht.example", corpus.canonical("p1")], 2000
+            )
+
+        assert set(found) == {corpus.canonical("p1")}
+
+
+class TestTheTagRead:
+    """``TAGGED_MEMBERSHIP`` — the annotation layer, read and never written."""
+
+    def test_an_archive_with_no_tags_reads_as_no_memberships(
+        self, archived: GraphConfig
+    ) -> None:
+        """The normal state before anybody has promoted a cluster, and not a
+        failure of the suggestion pass."""
+        with client.session(archived) as graph:
+            assert read_tagged(graph) == {}
+
+    def test_a_tag_comes_back_with_the_messages_wearing_it(
+        self, archived: GraphConfig
+    ) -> None:
+        """Planted with raw Cypher because this package has no statement that
+        writes a ``Tag`` — that is the line the catalogue test draws by putting
+        the label in the ground-truth set."""
+        with client.session(archived) as graph:
+            graph.execute(
+                "MERGE (t:Tag {id: 'tag:nord-42'}) "
+                "WITH t MATCH (m:Message) WHERE m.id IN $ids "
+                "MERGE (m)-[:TAGGED]->(t)",
+                {"ids": [corpus.canonical("p1"), corpus.canonical("p2")]},
+            )
+
+            found = read_tagged(graph)
+
+        assert found == {
+            "tag:nord-42": frozenset({corpus.canonical("p1"), corpus.canonical("p2")})
+        }

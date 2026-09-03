@@ -33,6 +33,7 @@ from mailarc_analytics import (
     group_templates,
     template_id,
 )
+from mailarc_analytics.derived.templates import automation_by_message
 from mailarc_core.archive.model import to_signed_64
 from mailarc_core.mail.parsing import hamming_distance
 
@@ -615,3 +616,41 @@ def test_the_answer_does_not_depend_on_the_order_of_the_facts() -> None:
     facts = corpus.planted_facts()
 
     assert _described(tuple(reversed(facts))) == _described(facts)
+
+
+class TestTheAutomationScorePerMessage:
+    """A3's answer, keyed the way the importance stage has to ask it.
+
+    ``looks automated`` is one of the eight reasons a message can carry, and
+    what it argues from is the automation score of the *template* the message
+    is an instance of. The scorer walks messages and A3 answers in clusters, so
+    somebody has to turn one into the other — and it is A3, because the shape
+    of a :class:`~mailarc_analytics.derived.model.TemplateCluster` is this
+    module's to know.
+    """
+
+    def test_every_member_carries_its_own_templates_score(
+        self, found: tuple[TemplateCluster, ...]
+    ) -> None:
+        scores = automation_by_message(found)
+
+        assert scores[STATUS[0]] == _by_id(found, SENT).automation_score
+        assert scores[NEWSLETTER[0]] == _by_id(found, RECEIVED).automation_score
+
+    def test_it_covers_exactly_the_members_of_every_template(
+        self, found: tuple[TemplateCluster, ...]
+    ) -> None:
+        """Nothing else: a message no template claimed has no automation score,
+        and defaulting it to zero here would hide the difference between "not a
+        template" and "a template nobody could automate"."""
+        scores = automation_by_message(found)
+
+        assert set(scores) == {
+            member.message_id for template in found for member in template.members
+        }
+        assert len(scores) == 22
+
+    def test_no_template_at_all_is_an_empty_mapping(self) -> None:
+        """An archive with nothing repetitive in it, which the scorer then
+        reads as no message looking automated."""
+        assert automation_by_message(()) == {}

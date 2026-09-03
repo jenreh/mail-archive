@@ -23,7 +23,7 @@ from appkit_commons.database.session import get_asyncdb_session
 from appkit_commons.registry import service_registry
 from pydantic import ValidationError
 
-from mailarc_analytics import AnalyticsConfig, AnalyticsReader
+from mailarc_analytics import AnalyticsConfig, AnalyticsReader, GraphReader
 from mailarc_analytics.semantic import (
     EmbedderPort,
     SemanticConfig,
@@ -39,6 +39,7 @@ from mailarc_core import (
     FalkorDBServer,
     GraphConfig,
     GraphServerStatus,
+    TagStore,
     read_status_async,
 )
 from mailarc_core.database import database_path
@@ -563,6 +564,37 @@ def publish_archive_reader() -> ArchiveReader:
 
 
 @lru_cache(maxsize=1)
+def tag_store() -> TagStore:
+    """The annotation layer, on the graph the archive reader reads.
+
+    Deliberately the same graph and no second store: a tag is an annotation
+    *on* ground truth, so a tag store pointed somewhere else would not read as a
+    bug — it would read as an archive whose tags name messages it does not
+    hold. Cached like the readers: one decision, and two objects would be two
+    answers to "where are the tags".
+
+    No blob half, unlike :func:`archive_reader`: everything the annotation layer
+    writes is a node or an edge.
+    """
+    return TagStore(graph_session=partial(graph_session, graph_config()))
+
+
+def publish_tag_store() -> TagStore:
+    """Leave the tag store where the pages that tag can find it.
+
+    Same route and same reason as :func:`publish_archive_reader`, down to the
+    second call being a no-op: ``mailarc-ui`` may not import ``app``, and this
+    is the one module allowed to build a component from configuration.
+    """
+    services = service_registry()
+    store = tag_store()
+    if services.has(TagStore) and services.get(TagStore) is store:
+        return store
+    services.register_as(TagStore, store)
+    return store
+
+
+@lru_cache(maxsize=1)
 def analytics_reader() -> AnalyticsReader:
     """The read side of the derived layer, on the graph the rebuild wrote to.
 
@@ -590,6 +622,38 @@ def publish_analytics_reader() -> AnalyticsReader:
     if services.has(AnalyticsReader) and services.get(AnalyticsReader) is reader:
         return reader
     services.register_as(AnalyticsReader, reader)
+    return reader
+
+
+@lru_cache(maxsize=1)
+def graph_reader() -> GraphReader:
+    """The subgraph side of the same derived layer, on the same graph.
+
+    A second reader rather than more methods on :func:`analytics_reader`,
+    because the two answer different shapes: that one hands a page rows to put
+    in a table, this one hands it nodes and edges to draw. The wiring is
+    identical — one session factory, no store on disk — and deliberately the
+    *same* graph, because the explorer draws a derived edge against the messages
+    it was derived from.
+
+    Cached for the reason every handle here is: one decision, and two objects
+    would be two answers to "which graph is being explored".
+    """
+    return GraphReader(graph_session=partial(graph_session, graph_config()))
+
+
+def publish_graph_reader() -> GraphReader:
+    """Leave the reader where the graph explorer can find it.
+
+    Same route and same reason as :func:`publish_analytics_reader`, down to the
+    second call being a no-op: ``mailarc-ui`` may not import ``app``, and this
+    is the one module allowed to build a component from configuration.
+    """
+    services = service_registry()
+    reader = graph_reader()
+    if services.has(GraphReader) and services.get(GraphReader) is reader:
+        return reader
+    services.register_as(GraphReader, reader)
     return reader
 
 

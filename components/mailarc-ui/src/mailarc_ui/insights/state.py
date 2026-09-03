@@ -1,6 +1,6 @@
 """What the derived layer found, and whether to believe it.
 
-The three analyses answer through
+The analyses answer through
 :class:`~mailarc_analytics.AnalyticsReader`, which the composition root builds
 and leaves in the service registry — ``mailarc-ui`` may not import ``app``
 (§4.1), so this reads the reader out the way the search page reads its archive,
@@ -19,8 +19,15 @@ Turning a catalogue row into the strings a table prints is the other half of
 this page and lives in :mod:`mailarc_ui.insights.model`; what is left here is
 everything that touches the graph, the job queue or the state lock. Every panel
 carries its own loading flag and its own error string, because a graph that
-goes away halfway through a refresh is a state four tables have to be able to
-render — one dead panel must not take the other four with it.
+goes away halfway through a refresh is a state every table has to be able to
+render — one dead panel must not take the rest of the page with it.
+
+One panel here is not derived at all. The tags come from
+:class:`~mailarc_core.archive.tags.TagStore` and the counts beside them from
+the derived layer, which is why this state hosts
+:class:`~mailarc_ui.tags.state.TagActionsState` rather than reading the
+annotation layer itself: the explorer needs the same three verbs, and a mixin
+is how Reflex gives each page its own copy of them.
 """
 
 import asyncio
@@ -43,7 +50,9 @@ from mailarc_ui.insights.model import (
     NO_JOB,
     NO_TOTALS,
     AgreementView,
+    CommunityView,
     GroupView,
+    ImportantMessageView,
     PairView,
     Readout,
     RebuildJobView,
@@ -51,6 +60,7 @@ from mailarc_ui.insights.model import (
     TopicView,
     TotalsView,
 )
+from mailarc_ui.tags.state import TagActionsState, read_tags
 
 logger = logging.getLogger(__name__)
 
@@ -137,16 +147,48 @@ def _projected[R, V](
     return lambda: [view(one) for one in read()]
 
 
-class AnalyticsInsightsState(rx.State):
+def _topics_of(reader: AnalyticsReader) -> Callable[[], list[TopicView]]:
+    """The clusters and the words they are about, as one unit of work.
+
+    Two statements behind one panel, because they are one row on screen and
+    they answer in different shapes: ``topics`` comes back once per topic *per
+    signal* — the method column is the difference between a fact and a
+    suggestion and is never folded away — while the keywords are one row per
+    topic. So the words are looked up by id rather than zipped on, and a topic
+    joined two ways carries the same set on both of its rows.
+
+    Together inside one :func:`_answered` for the reason :func:`_projected`
+    states: half a table under a spinner is worse than a panel that says the
+    graph did not answer.
+    """
+
+    def read() -> list[TopicView]:
+        words = {one.id: one.keywords for one in reader.topic_keywords()}
+        return [
+            TopicView.from_row(one, words.get(one.id, ())) for one in reader.topics()
+        ]
+
+    return read
+
+
+class AnalyticsInsightsState(TagActionsState, rx.State):
     """The insights page, and the cross-check that makes it a test.
 
-    What the three analyses found, and whether A1's materialised edge still
-    agrees with the archive it was derived from.
+    What the analyses found, and whether A1's materialised edge still agrees
+    with the archive it was derived from.
 
     ``job_id`` is the rebuild being watched and ``job`` is the last reading of
     it — separate for the reason the import panel keeps them separate: a read
     that comes back empty must not make the panel forget what it was
     following.
+
+    :class:`~mailarc_ui.tags.state.TagActionsState` is mixed in rather than
+    written again: the tags card here and the explorer's do the same three
+    things to the annotation layer, and Reflex copies a mixin's vars into each
+    host, so the two pages keep their own listings rather than sharing one.
+    This host fills in no ``_cluster_members`` — nothing on this page promotes a
+    cluster, because a topic row holds a digest and not a membership, and the
+    explorer is one pill away.
     """
 
     totals: TotalsView = NO_TOTALS
@@ -156,18 +198,25 @@ class AnalyticsInsightsState(rx.State):
     topics: list[TopicView] = []
     sent_templates: list[TemplateView] = []
     received_templates: list[TemplateView] = []
+    communities: list[CommunityView] = []
+    important: list[ImportantMessageView] = []
 
     totals_error: str = ""
     agreement_error: str = ""
     groups_error: str = ""
     topics_error: str = ""
     templates_error: str = ""
+    communities_error: str = ""
+    important_error: str = ""
 
     loading_totals: bool = True
     loading_agreement: bool = True
     loading_groups: bool = True
     loading_topics: bool = True
     loading_templates: bool = True
+    loading_communities: bool = True
+    loading_important: bool = True
+    loading_tags: bool = True
     """True to begin with, one per panel.
 
     The page renders before its first read returns, and an empty table is a
@@ -175,6 +224,10 @@ class AnalyticsInsightsState(rx.State):
     state actually knows at that moment. Every one of them is cleared by the
     same :meth:`_apply`, so a panel cannot be left spinning over data that
     arrived.
+
+    ``loading_tags`` is here rather than on the mixin: it is about *this
+    page's* first read, and the mixin's own writes refresh the listing without
+    ever putting the card back to "has not answered yet".
     """
 
     job_id: int = 0
@@ -237,7 +290,25 @@ class AnalyticsInsightsState(rx.State):
             or self.loading_groups
             or self.loading_topics
             or self.loading_templates
+            or self.loading_communities
+            or self.loading_important
+            or self.loading_tags
         )
+
+    @rx.var
+    def tags_await_a_rebuild(self) -> bool:
+        """Tags exist and not one of them is being offered anything (R8).
+
+        ``SUGGESTED`` is derived: every rebuild deletes the edges and computes
+        them again, so a tag made between two rebuilds is offered nothing until
+        the next one runs. A card showing nothing but zeroes reads as an
+        analysis that failed, which is the wrong conclusion — so this is what
+        the card hangs a sentence and a rebuild button off.
+
+        False when there are no tags at all — that is a different state, and
+        the card already has its own line for it.
+        """
+        return bool(self.tags) and not any(one.suggestions for one in self.tags)
 
     @rx.var
     def has_templates(self) -> bool:
@@ -454,9 +525,18 @@ class AnalyticsInsightsState(rx.State):
             "the recurring groups",
             [],
         )
-        topics, topics_error = await _answered(
-            _projected(reader.topics, TopicView.from_row), "the topics", []
+        topics, topics_error = await _answered(_topics_of(reader), "the topics", [])
+        communities, communities_error = await _answered(
+            _projected(reader.communities, CommunityView.from_row),
+            "the communities",
+            [],
         )
+        important, important_error = await _answered(
+            _projected(reader.important_messages, ImportantMessageView.from_row),
+            "the important messages",
+            [],
+        )
+        tags, tag_error = await read_tags()
         sent, sent_error = await _answered(
             _projected(
                 partial(reader.templates, TemplateDirection.SENT),
@@ -485,6 +565,12 @@ class AnalyticsInsightsState(rx.State):
             sent=sent,
             received=received,
             templates_error=sent_error or received_error,
+            communities=communities,
+            communities_error=communities_error,
+            important=important,
+            important_error=important_error,
+            tags=tags,
+            tag_error=tag_error,
         )
 
     async def _read_agreement(
@@ -572,6 +658,9 @@ class AnalyticsInsightsState(rx.State):
         self.loading_groups = True
         self.loading_topics = True
         self.loading_templates = True
+        self.loading_communities = True
+        self.loading_important = True
+        self.loading_tags = True
 
     def _apply(self, readout: Readout) -> None:
         """One refresh's answers, all of them, at once."""
@@ -587,8 +676,17 @@ class AnalyticsInsightsState(rx.State):
         self.sent_templates = readout.sent
         self.received_templates = readout.received
         self.templates_error = readout.templates_error
+        self.communities = readout.communities
+        self.communities_error = readout.communities_error
+        self.important = readout.important
+        self.important_error = readout.important_error
+        self.tags = readout.tags
+        self.tag_error = readout.tag_error
         self.loading_totals = False
         self.loading_agreement = False
         self.loading_groups = False
         self.loading_topics = False
         self.loading_templates = False
+        self.loading_communities = False
+        self.loading_important = False
+        self.loading_tags = False

@@ -23,14 +23,26 @@ from mailarc_analytics import (
     AddressedGroup,
     CoAddressed,
     CoAddressedPair,
+    Community,
+    CommunityFacts,
+    CommunityFindings,
     CorrespondentFindings,
     DerivedCounts,
     Group,
     GroupFacts,
+    Grouping,
+    GroupingKind,
+    ImportanceScore,
+    InCircle,
     InstanceOf,
+    MemberOf,
     MessageFacts,
+    MessageSignals,
     RebuildProgress,
+    RebuildStage,
     SimilarityEdge,
+    Suggested,
+    Suggestion,
     Template,
     TemplateCluster,
     TemplateDirection,
@@ -42,6 +54,7 @@ from mailarc_analytics import (
     TopicFindings,
     TopicMember,
     TopicSignal,
+    community_id,
     template_id,
     topic_id,
 )
@@ -52,6 +65,8 @@ VALUE_OBJECTS = (
     SimilarityEdge, TopicMember, TopicCluster, TopicFindings,
     TemplateMember, TemplateGroup, TemplateGrouping, TemplateCluster,
     RebuildProgress, DerivedCounts,
+    MessageSignals, ImportanceScore, CommunityFacts, CommunityFindings,
+    Suggestion, Grouping,
 )  # fmt: skip
 
 TOP_BIT = 0xA0B86145044638A0
@@ -145,11 +160,29 @@ class TestTheSignalVocabulary:
     def test_the_weights_are_the_calibration_the_spec_asks_for(self) -> None:
         assert dict(SIGNAL_WEIGHTS) == {
             TopicSignal.REF: 1.0,
+            TopicSignal.CONVERSATION: 0.9,
             TopicSignal.THREAD: 0.8,
             TopicSignal.SUBJECT: 0.5,
             TopicSignal.ATTACHMENT: 0.4,
             TopicSignal.PARTICIPANTS: 0.2,
         }
+
+    def test_a_conversation_is_a_fact_and_outranks_a_thread(self) -> None:
+        """Union-find over ``thread_id`` *and* the reply parent, so it joins
+        what a provider's thread id splits across two accounts.
+
+        Above ``THREAD`` because it is the stronger evidence of the same two
+        things: a reply header is the sender's own statement that this message
+        answers that one, while a thread id is one provider's grouping of its
+        own copy. Below ``REF`` because a ticket token names the piece of work
+        and a conversation only names the exchange.
+        """
+        assert SIGNAL_WEIGHTS[TopicSignal.CONVERSATION] == 0.9
+        assert (
+            SIGNAL_WEIGHTS[TopicSignal.THREAD]
+            < SIGNAL_WEIGHTS[TopicSignal.CONVERSATION]
+            < SIGNAL_WEIGHTS[TopicSignal.REF]
+        )
 
     def test_the_weights_cannot_be_edited_at_runtime(self) -> None:
         """A mapping proxy, because the five numbers only mean anything
@@ -170,7 +203,12 @@ class TestTheSignalVocabulary:
         }
         weak = {name for name, weight in SIGNAL_WEIGHTS.items() if weight < threshold}
 
-        assert strong == {TopicSignal.REF, TopicSignal.THREAD, TopicSignal.SUBJECT}
+        assert strong == {
+            TopicSignal.REF,
+            TopicSignal.CONVERSATION,
+            TopicSignal.THREAD,
+            TopicSignal.SUBJECT,
+        }
         assert weak == {TopicSignal.ATTACHMENT, TopicSignal.PARTICIPANTS}
         assert sum(SIGNAL_WEIGHTS[one] for one in weak) >= threshold
 
@@ -230,7 +268,13 @@ class TestTheOgmDeclarations:
     """What runic actually registered — read off the class, not the source."""
 
     @pytest.mark.parametrize(
-        ("node", "label"), [(Group, "Group"), (Topic, "Topic"), (Template, "Template")]
+        ("node", "label"),
+        [
+            (Group, "Group"),
+            (Topic, "Topic"),
+            (Template, "Template"),
+            (Community, "Community"),
+        ],
     )
     def test_each_derived_node_has_its_own_label_and_an_indexed_key(
         self, node: Any, label: str
@@ -252,9 +296,12 @@ class TestTheOgmDeclarations:
             (AddressedGroup, "ADDRESSED_GROUP"),
             (About, "ABOUT"),
             (InstanceOf, "INSTANCE_OF"),
+            (MemberOf, "MEMBER_OF"),
+            (InCircle, "IN_CIRCLE"),
+            (Suggested, "SUGGESTED"),
         ],
     )
-    def test_the_four_derived_edge_types_are_named_as_the_spec_names_them(
+    def test_the_seven_derived_edge_types_are_named_as_the_spec_names_them(
         self, edge: Any, name: str
     ) -> None:
         assert edge._edge_type == name
@@ -265,6 +312,7 @@ class TestTheOgmDeclarations:
             (Group, "ADDRESSED_GROUP", AddressedGroup),
             (Topic, "ABOUT", About),
             (Template, "INSTANCE_OF", InstanceOf),
+            (Community, "IN_CIRCLE", InCircle),
         ],
     )
     def test_each_relation_points_back_at_message_from_the_derived_side(
@@ -284,7 +332,7 @@ class TestTheOgmDeclarations:
         assert relation.target is Message
         assert relation.edge_model is edge
 
-    @pytest.mark.parametrize("node", [Group, Topic, Template])
+    @pytest.mark.parametrize("node", [Group, Topic, Template, Community])
     def test_the_timestamps_kept_their_converter(self, node: Any) -> None:
         """The failure the class order in ``model.py`` exists to prevent.
 
@@ -319,3 +367,209 @@ class TestTheOgmDeclarations:
         assert (group.id, group.size, group.message_count) == ("key", 3, 5)
         with pytest.raises(TypeError):
             Group("key")  # ty: ignore[missing-argument, too-many-positional-arguments]
+
+
+class TestTheRebuildStages:
+    """Ten stages, and the order is the dependency graph written down."""
+
+    def test_the_stages_are_the_ten_the_spec_names_in_its_order(self) -> None:
+        """A rebuild reports one progress row per stage, so the order is what a
+        user watches — and it is also what decides whether a stage has what it
+        needs. Written out rather than derived, so a reordering shows up here
+        before it shows up as a stage reading a property nothing wrote yet.
+        """
+        assert [stage.value for stage in RebuildStage] == [
+            "delete",
+            "read",
+            "correspondents",
+            "centrality",
+            "communities",
+            "topics",
+            "keywords",
+            "templates",
+            "importance",
+            "suggestions",
+        ]
+
+    def test_every_stage_runs_after_what_it_reads(self) -> None:
+        """The four orderings that are not arbitrary.
+
+        ``CENTRALITY`` before ``COMMUNITIES`` because a community's label and
+        every ``MEMBER_OF.rank`` are ranks; ``KEYWORDS`` after ``TOPICS``
+        because it needs the clusters; ``IMPORTANCE`` after ``TEMPLATES``
+        (the automation score pulls a message down) and after ``CENTRALITY``
+        (the sender's rank pushes it up); ``SUGGESTIONS`` last, because it
+        needs topics, communities and the current tag memberships at once.
+        """
+        order = list(RebuildStage)
+
+        def before(one: RebuildStage, other: RebuildStage) -> bool:
+            return order.index(one) < order.index(other)
+
+        assert before(RebuildStage.CENTRALITY, RebuildStage.COMMUNITIES)
+        assert before(RebuildStage.TOPICS, RebuildStage.KEYWORDS)
+        assert before(RebuildStage.TEMPLATES, RebuildStage.IMPORTANCE)
+        assert before(RebuildStage.CENTRALITY, RebuildStage.IMPORTANCE)
+        assert order[0] is RebuildStage.DELETE
+        assert order[-1] is RebuildStage.SUGGESTIONS
+
+
+class TestTheCounts:
+    """What one rebuild did — every stage answers with a number of its own."""
+
+    def test_every_new_stage_reports_a_count_of_its_own(self) -> None:
+        """A stage that produced nothing and a stage that never ran look the
+        same in a log line unless each has its own field."""
+        counts = DerivedCounts()
+
+        assert {
+            "communities": counts.communities,
+            "circles": counts.circles,
+            "ranked_addresses": counts.ranked_addresses,
+            "ranked_messages": counts.ranked_messages,
+            "keyworded_topics": counts.keyworded_topics,
+            "scored_messages": counts.scored_messages,
+            "suggestions": counts.suggestions,
+            "algorithms_skipped": counts.algorithms_skipped,
+        } == dict.fromkeys(
+            (
+                "communities",
+                "circles",
+                "ranked_addresses",
+                "ranked_messages",
+                "keyworded_topics",
+                "scored_messages",
+                "suggestions",
+                "algorithms_skipped",
+            ),
+            0,
+        )
+
+    def test_a_skipped_algorithm_is_a_number_and_not_an_absence(self) -> None:
+        """The guard §5.1 asks for: a procedure that refuses an empty graph
+        leaves its stage at zero, and a rebuild that reported nothing would
+        otherwise be indistinguishable from one that found nothing."""
+        counts = DerivedCounts(algorithms_skipped=2, communities=0)
+
+        assert (counts.algorithms_skipped, counts.communities) == (2, 0)
+
+
+class TestCommunityIds:
+    """A community is the set of addresses in it, and its key says so."""
+
+    def test_a_community_id_is_the_digest_of_its_members(self) -> None:
+        """Keyed on membership for the reason a topic is: FalkorDB's label
+        propagation has no seed, so a run that produced the same partition must
+        produce the same node — and a run that produced a different partition
+        must not silently update the old one."""
+        found = community_id([corpus.ANNA, corpus.THOMAS])
+
+        assert found.startswith("community:")
+        assert len(found) == len("community:") + 32
+
+    def test_a_community_id_ignores_order_and_repetition(self) -> None:
+        assert community_id([corpus.THOMAS, corpus.ANNA, corpus.ANNA]) == community_id(
+            [corpus.ANNA, corpus.THOMAS]
+        )
+
+    def test_different_members_give_a_different_community(self) -> None:
+        assert community_id([corpus.ANNA]) != community_id([corpus.THOMAS])
+
+
+class TestTheNewFindings:
+    """The value objects the four new analyses pass between their halves."""
+
+    def test_a_community_counts_its_own_members_and_messages(self) -> None:
+        """Both counts are derived from the mappings they describe, so the node
+        this becomes cannot claim a size its ``MEMBER_OF`` edges do not have."""
+        facts = CommunityFacts(
+            id=community_id([corpus.ANNA, corpus.THOMAS]),
+            label="kunde.example",
+            members={corpus.ANNA: 0.9, corpus.THOMAS: 0.4},
+            messages={corpus.canonical("p1"): 1.0},
+        )
+
+        assert (facts.size, facts.message_count) == (2, 1)
+        assert facts.method == "lpa"
+
+    def test_a_finding_carries_what_the_guard_stepped_over(self) -> None:
+        """§5.1's skipped procedure calls reach ``DerivedCounts`` from here."""
+        findings = CommunityFindings(skipped=1)
+
+        assert (findings.communities, findings.skipped) == ((), 1)
+
+    def test_a_score_keeps_its_reasons_and_the_version_that_made_it(self) -> None:
+        """A number without the vocabulary behind it is not explainable, and a
+        number without a version is not comparable with the next run's."""
+        score = ImportanceScore(
+            message_id=corpus.canonical("p1"),
+            score=0.75,
+            reasons=("addressed directly", "replied by you"),
+            version="1",
+        )
+
+        assert score.reasons == ("addressed directly", "replied by you")
+        assert score.version == "1"
+
+    def test_a_suggestion_names_the_group_that_made_it(self) -> None:
+        """``method`` is the vocabulary a user reads before accepting: a thread
+        is a stronger reason than a community."""
+        suggestion = Suggestion(
+            tag_id="tag:nord-42",
+            message_id=corpus.canonical("p2"),
+            score=0.6,
+            method=GroupingKind.THREAD,
+        )
+        grouping = Grouping(
+            kind=GroupingKind.COMMUNITY,
+            members=(corpus.canonical("p1"), corpus.canonical("p2")),
+        )
+
+        assert suggestion.method == "thread"
+        assert [kind.value for kind in GroupingKind] == [
+            "thread",
+            "topic",
+            "community",
+        ]
+        assert grouping.members == (corpus.canonical("p1"), corpus.canonical("p2"))
+
+    def test_signals_default_to_the_absence_of_every_signal(self) -> None:
+        """A message nothing was read for scores on its own properties alone,
+        rather than failing the scorer with a missing attribute."""
+        signals = MessageSignals(id=corpus.canonical("w1"))
+
+        assert (signals.reply_count, signals.has_attachments) == (0, False)
+        assert (signals.sent_to, signals.replied_by, signals.label_names) == (
+            (),
+            (),
+            (),
+        )
+
+
+class TestTheAnnotationLayerStaysOutOfReach:
+    """``Tag`` is core's, and the derived model may only point at it."""
+
+    def test_the_suggestion_edge_carries_a_score_and_a_method(self) -> None:
+        """A suggestion is a judgement, so it says how strong and why —
+        exactly what ``TAGGED`` deliberately does not carry."""
+        assert {one.name for one in _fields(Suggested)} == {"score", "method"}
+
+    def test_the_circle_edge_says_how_much_of_the_message_is_in_it(self) -> None:
+        assert {one.name for one in _fields(InCircle)} == {"score", "method"}
+
+    def test_the_membership_edge_carries_the_rank(self) -> None:
+        assert {one.name for one in _fields(MemberOf)} == {"rank"}
+
+    def test_a_topic_keeps_its_keywords(self) -> None:
+        """Written by ``MERGE_TOPIC_KEYWORDS`` and by nothing else."""
+        assert _field(Topic, "keywords") is not None
+
+    def test_a_community_points_at_its_addresses(self) -> None:
+        """``INCOMING`` from the community, which emits
+        ``(address)-[:MEMBER_OF]->(community)`` — and declared here rather than
+        on ``Address``, so ground truth never describes a derived thing."""
+        relation = _field(Community, "members")
+
+        assert relation.relationship == "MEMBER_OF"
+        assert relation.direction == "INCOMING"
+        assert relation.edge_model is MemberOf

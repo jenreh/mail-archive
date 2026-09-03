@@ -26,9 +26,20 @@ it.
 
 Class order in this file is load-bearing. runic resolves a node's annotations
 at declaration time, so every type an annotation names has to exist already —
-which is why the four edges stand before the three nodes that name them, and
+which is why the seven edges stand before the four nodes that name them, and
 why :class:`~mailarc_core.archive.model.Message` is imported as a class rather
 than referred to by name.
+
+The six value objects §5.4 adds live next door in
+:mod:`mailarc_analytics.derived.findings`, and the split is the thousand-line
+house limit and nothing else: this file keeps the schema — the nodes, the
+edges, the two vocabularies and the three id functions — and that one keeps the
+values the newer analyses pass between their halves. It imports nothing from
+here, so the split cannot become a cycle, and both halves are re-exported side
+by side from :mod:`mailarc_analytics.derived` and from the package root, which
+is how every caller in this project reaches either. Re-exporting them *here* as
+well is what ruff's ``PLC0414`` refuses, and an ``__all__`` written out to
+allow it would be a second copy of this file's surface to keep in step.
 """
 
 import hashlib
@@ -41,7 +52,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, model_validator
 from runic.ogm import Edge, Field, Node, Relation
 
-from mailarc_core.archive.model import Message, to_unsigned_64
+from mailarc_core.archive.model import Address, Message, to_unsigned_64
 
 _TOPIC_KEY_DIGITS = 32
 """Hex characters of the sha256 a topic id keeps — 128 bits, collision-free
@@ -60,6 +71,7 @@ class TopicSignal(StrEnum):
     """
 
     REF = "ref"
+    CONVERSATION = "conversation"
     THREAD = "thread"
     SUBJECT = "subject"
     ATTACHMENT = "attachment"
@@ -80,6 +92,7 @@ server reads it back off one, and two spellings of it would make
 SIGNAL_WEIGHTS: Mapping[TopicSignal, float] = MappingProxyType(
     {
         TopicSignal.REF: 1.0,
+        TopicSignal.CONVERSATION: 0.9,
         TopicSignal.THREAD: 0.8,
         TopicSignal.SUBJECT: 0.5,
         TopicSignal.ATTACHMENT: 0.4,
@@ -90,13 +103,20 @@ SIGNAL_WEIGHTS: Mapping[TopicSignal, float] = MappingProxyType(
 :attr:`~mailarc_analytics.derived.config.AnalyticsConfig.topic_min_score`.
 
 A calibration, not a preference, which is why it sits beside the vocabulary
-instead of in the configuration: the five numbers only mean anything relative
-to each other and to the threshold. They are chosen so that the first three
+instead of in the configuration: the six numbers only mean anything relative
+to each other and to the threshold. They are chosen so that the first four
 carry a topic on their own and the last two carry one only together — a shared
 ticket is a project, a shared attachment *and* a shared participant group is a
 project, but a shared participant group alone is just two people who talk.
-Exposing them as five settings would let a well-meant edit collapse that
+Exposing them as six settings would let a well-meant edit collapse that
 distinction and turn a fifth of an archive into one topic.
+
+``CONVERSATION`` sits between ``REF`` and ``THREAD`` because that is what it
+is evidence of. A reply header is the sender's own statement that this message
+answers that one, and union-find over ``thread_id`` *and* the reply parent
+joins an exchange a provider split across two accounts — stronger than one
+provider's thread id, weaker than a ticket token, which names the piece of work
+rather than the exchange about it.
 """
 
 
@@ -141,6 +161,29 @@ def topic_id(member_ids: Iterable[str]) -> str:
     joined = "\n".join(sorted(set(member_ids)))
     digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()
     return f"topic:{digest[:_TOPIC_KEY_DIGITS]}"
+
+
+def community_id(member_ids: Iterable[str]) -> str:
+    """A community's key, derived from exactly the addresses in it.
+
+    :func:`topic_id`'s argument, for a harder case. FalkorDB's
+    ``algo.labelPropagation`` takes no seed, so two runs over an unchanged
+    graph can label an ambiguous node differently — and a key that came from
+    the algorithm's own community number would rename every circle whenever
+    that happened. The digest of the membership cannot: an unchanged partition
+    is the same node, and a changed one is a different node rather than a
+    silent update of the old one.
+
+    The same price as a topic's key, and it is worth naming: a community id is
+    **not a durable reference**. One address joining a circle changes the
+    digest wholesale, so nothing outside this package may store one and expect
+    to find it after the next rebuild. A user who wants a circle to last
+    promotes it to a ``Tag``, which is the annotation layer's and outlives
+    every rebuild.
+    """
+    joined = "\n".join(sorted(set(member_ids)))
+    digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()
+    return f"community:{digest[:_TOPIC_KEY_DIGITS]}"
 
 
 def template_id(representative_simhash: int, direction: TemplateDirection) -> str:
@@ -469,13 +512,33 @@ class TemplateCluster(BaseModel):
 
 
 class RebuildStage(StrEnum):
-    """The five things a rebuild does, in the order it does them."""
+    """The ten things a rebuild does, in the order it does them.
+
+    Declaration order *is* the running order — ``app.worker`` takes
+    ``tuple(RebuildStage)`` as the progress total — so the four dependencies
+    below are the reason each stage sits where it does rather than a comment
+    about it:
+
+    * ``CENTRALITY`` before ``COMMUNITIES``: a circle's label and every
+      ``MEMBER_OF.rank`` are ranks, so the ranks have to exist first.
+    * ``KEYWORDS`` after ``TOPICS``: the TF-IDF is over the clusters.
+    * ``IMPORTANCE`` after ``TEMPLATES`` and ``CENTRALITY``: "looks automated"
+      is a template's automation score and "sent by a central correspondent"
+      is a rank.
+    * ``SUGGESTIONS`` last: it needs the topics, the communities and the
+      ``TAGGED`` memberships as they stand after everything else.
+    """
 
     DELETE = "delete"
     READ = "read"
     CORRESPONDENTS = "correspondents"
+    CENTRALITY = "centrality"
+    COMMUNITIES = "communities"
     TOPICS = "topics"
+    KEYWORDS = "keywords"
     TEMPLATES = "templates"
+    IMPORTANCE = "importance"
+    SUGGESTIONS = "suggestions"
 
 
 class RebuildProgress(BaseModel):
@@ -553,6 +616,49 @@ class DerivedCounts(BaseModel):
     reporting the other.
     """
 
+    communities: int = 0
+    """Circles of correspondents ``algo.labelPropagation`` found."""
+
+    circles: int = 0
+    """``IN_CIRCLE`` edges written — messages placed in one of those circles.
+
+    Its own number rather than a share of :attr:`messages`, because a message
+    belongs to a circle only when enough of its participants are in one: a
+    rebuild that found ten communities and placed no mail in them has found
+    ten sets of people who do not write to each other in this archive.
+    """
+
+    ranked_addresses: int = 0
+    """Addresses ``Address.rank`` was written for."""
+
+    ranked_messages: int = 0
+    """Messages the reply PageRank scored. Only messages with a
+    ``REPLIES_TO`` edge at either end have a centrality to report, so this is
+    normally a small fraction of :attr:`messages` and not a shortfall."""
+
+    keyworded_topics: int = 0
+    """Topics that came out of the TF-IDF with at least one keyword."""
+
+    scored_messages: int = 0
+    """Messages ``Message.importance`` was written for."""
+
+    suggestions: int = 0
+    """``SUGGESTED`` edges written — messages a tag might want.
+
+    Zero on an archive with no tags at all, which is the normal state before
+    anybody has promoted a cluster, and is not a failure of the pass.
+    """
+
+    algorithms_skipped: int = 0
+    """Procedure calls the §5.1 guard stepped over.
+
+    FalkorDB's ``algo.*`` procedures throw on a label or a relationship type
+    the graph does not hold yet — an archive whose first rebuild has not
+    written a ``CO_ADDRESSED`` edge is exactly that — so each call is guarded,
+    the stage reports zero and the rebuild carries on. A number here is the
+    difference between "the graph has no communities" and "nothing looked".
+    """
+
     deleted_nodes: int = 0
     deleted_edges: int = 0
 
@@ -623,6 +729,51 @@ class InstanceOf(Edge, type="INSTANCE_OF"):
     the two bodies hash identically, not that they are byte-identical."""
 
 
+class MemberOf(Edge, type="MEMBER_OF"):
+    """This address is in that circle, and this is how central it is in the
+    archive.
+
+    The rank is the *archive's* centrality, not the circle's: it is the number
+    ``CENTRALITY`` wrote to ``Address.rank``, copied onto the edge so a
+    subgraph read can size a node without a second hop to the address. Which
+    is also why the stage order puts centrality first — a ``MEMBER_OF`` written
+    before the ranks exist carries a null and nothing recomputes it.
+    """
+
+    rank: float | None = Field(default=None)
+
+
+class InCircle(Edge, type="IN_CIRCLE"):
+    """This message circulates in that circle, and this much of it does.
+
+    ``score`` is the share of the message's participants that are members of
+    the community, so a mail to one member and nine strangers scores 0.1 and
+    does not belong to it. A message joins at most one circle — the one with
+    the largest share, ties going to the smaller id — because "which circle is
+    this mail in" has one answer or none.
+    """
+
+    score: float | None = Field(default=None)
+    method: str | None = Field(default=None)
+    """How the share was computed. ``"participants"`` today; a plain string so
+    a graph written by a build that knows a second way still decodes here."""
+
+
+class Suggested(Edge, type="SUGGESTED"):
+    """An analysis thinks this message belongs on that tag.
+
+    The one derived edge that touches the annotation layer, and it only ever
+    *points* at it: ``TAGGED`` is a human's decision and is written by
+    :mod:`mailarc_core.archive.tags` alone, while this is recomputed and
+    deleted with every rebuild. Both properties are the argument a user reads
+    before accepting one — how strong, and what kind of group made the case.
+    """
+
+    score: float | None = Field(default=None)
+    method: str | None = Field(default=None)
+    """A :class:`~mailarc_analytics.derived.findings.GroupingKind` value."""
+
+
 class Group(Node, labels=["Group"]):
     """A set of people who are repeatedly on the same message.
 
@@ -672,6 +823,16 @@ class Topic(Node, labels=["Topic"]):
     first_seen: datetime | None = Field(default=None)
     last_seen: datetime | None = Field(default=None)
 
+    keywords: list[str] = Field(default_factory=list)
+    """What this topic is about, in its own members' words.
+
+    TF-IDF over the *topics* rather than over the messages, so a term that
+    every topic uses — "rechnung", "meeting" — scores nothing and a term that
+    only this one uses carries it. Written by ``MERGE_TOPIC_KEYWORDS`` in a
+    stage of its own, because the text costs a second read that the clustering
+    itself never needs.
+    """
+
     messages: list[Message] = Relation(
         relationship="ABOUT",
         direction="INCOMING",
@@ -705,3 +866,56 @@ class Template(Node, labels=["Template"]):
         target=Message,
         edge_model=InstanceOf,
     )
+
+
+class Community(Node, labels=["Community"]):
+    """A circle of people who write to each other, found rather than declared.
+
+    ``Group`` is the exact question — who is repeatedly on the same message,
+    keyed by the ``participant_key`` the import already hashed — and this is
+    the inexact one: label propagation over ``CO_ADDRESSED`` finds the circles
+    nobody ever addressed as a set. The two answer different questions and a
+    circle is deliberately not a big group.
+
+    Keyed by :func:`community_id`, the digest of its members, for the reason
+    that function gives: FalkorDB's label propagation has no seed, and a key
+    taken from the algorithm's own community number would rename every circle
+    the moment an ambiguous node flipped.
+    """
+
+    id: str = Field(primary_key=True, index=True)
+    size: int | None = Field(default=None)
+    """How many addresses are in it."""
+
+    message_count: int | None = Field(default=None)
+    label: str | None = Field(default=None)
+    """The most common domain among the members — a name a human recognises,
+    and never a name a model invented."""
+
+    method: str | None = Field(default=None)
+    """How the partition was found; ``"lpa"`` today."""
+
+    first_seen: datetime | None = Field(default=None)
+    last_seen: datetime | None = Field(default=None)
+
+    members: list[Address] = Relation(
+        relationship="MEMBER_OF",
+        direction="INCOMING",
+        target=Address,
+        edge_model=MemberOf,
+    )
+    """The addresses in this circle.
+
+    Declared from this side and ``INCOMING``, which emits
+    ``(community)<-[:MEMBER_OF]-(address)`` — the edge §3.2 draws. Declaring
+    it on ``Address`` instead would mean editing ground truth to describe
+    something derived, which is the one thing this package exists to avoid.
+    """
+
+    messages: list[Message] = Relation(
+        relationship="IN_CIRCLE",
+        direction="INCOMING",
+        target=Message,
+        edge_model=InCircle,
+    )
+    """The mail that circulates inside it."""

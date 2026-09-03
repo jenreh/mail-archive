@@ -28,6 +28,7 @@ from insights_archive import (
     graph,
     pairs,
     published,
+    tags,
 )
 from pydantic import ValidationError
 
@@ -47,9 +48,11 @@ from mailarc_ui.insights import (
     agreement_card,
     analyses,
     analytics_reader,
+    communities_card,
     disputes_table,
     groups_card,
     guidance_panel,
+    important_card,
     insights_panel,
     method_color,
     pairs_table,
@@ -57,14 +60,15 @@ from mailarc_ui.insights import (
     rebuild_controls,
     short_key,
     span_label,
+    tags_card,
     templates_card,
     topics_card,
     totals_card,
 )
 from mailarc_ui.insights.model import DISPUTE_LIMIT, sample_label, short_date
 
-__all__ = ["fresh", "graph", "published"]
-"""pytest collects a fixture off the importing module's namespace, so the three
+__all__ = ["fresh", "graph", "published", "tags"]
+"""pytest collects a fixture off the importing module's namespace, so the four
 are imported to be used; ``__all__`` is what stops ruff removing them again."""
 
 
@@ -719,40 +723,43 @@ class TestAPanelThatCannotBeProjected:
         assert state.loading_agreement is False
 
 
-class TestTheBusyFlag:
-    """Five panels, one page-level spinner, and never a mixed state in a test.
+PANELS = (
+    "loading_totals",
+    "loading_agreement",
+    "loading_groups",
+    "loading_topics",
+    "loading_templates",
+    "loading_communities",
+    "loading_important",
+    "loading_tags",
+)
+"""Every panel that answers on its own, and therefore every term of ``busy``.
 
-    Every assertion on ``busy`` was taken either before any read (all five
-    flags true) or after ``_apply`` (all five false), so collapsing the
-    five-way ``or`` to a single term survived the whole suite. The var exists
-    precisely for the future in which they do not move together.
+Named once so the two tests below cannot drift apart from the state: a ninth
+panel added without a flag here is a page-level spinner that stops early.
+"""
+
+
+class TestTheBusyFlag:
+    """Eight panels, one page-level spinner, and never a mixed state in a test.
+
+    Every assertion on ``busy`` was taken either before any read (all flags
+    true) or after ``_apply`` (all false), so collapsing the ``or`` to a single
+    term survived the whole suite. Written per panel instead: each one is set
+    alone and has to hold the flag up on its own, which is the future the var
+    exists for.
     """
 
-    def test_one_panel_still_waiting_is_still_busy(self, state) -> None:
-        state.loading_totals = False
-        state.loading_groups = False
-        state.loading_topics = False
-        state.loading_templates = False
-        state.loading_agreement = True
+    @pytest.mark.parametrize("panel", PANELS)
+    def test_one_panel_still_waiting_is_still_busy(self, state, panel) -> None:
+        for one in PANELS:
+            setattr(state, one, one == panel)
 
-        assert state.busy is True
-
-    def test_only_the_totals_still_waiting_is_busy_too(self, state) -> None:
-        """The other end: the one term a collapsed ``or`` would have kept."""
-        state.loading_agreement = False
-        state.loading_groups = False
-        state.loading_topics = False
-        state.loading_templates = False
-        state.loading_totals = True
-
-        assert state.busy is True
+        assert state.busy is True, f"{panel} alone no longer holds the spinner"
 
     def test_every_panel_answered_is_not_busy(self, state) -> None:
-        state.loading_totals = False
-        state.loading_agreement = False
-        state.loading_groups = False
-        state.loading_topics = False
-        state.loading_templates = False
+        for one in PANELS:
+            setattr(state, one, False)
 
         assert state.busy is False
 
@@ -834,6 +841,9 @@ class TestTheComponents:
             groups_card,
             topics_card,
             templates_card,
+            communities_card,
+            important_card,
+            tags_card,
             guidance_panel,
             analyses,
             insights_panel,
@@ -867,6 +877,22 @@ class TestTheComponents:
             (groups_card, "groups_error_rx_state_?.valueOf?.()"),
             (topics_card, "topics_error_rx_state_?.valueOf?.()"),
             (templates_card, "templates_error_rx_state_?.valueOf?.()"),
+            (communities_card, "communities_error_rx_state_?.valueOf?.()"),
+            (important_card, "important_error_rx_state_?.valueOf?.()"),
+            (tags_card, "tag_error_rx_state_?.valueOf?.()"),
+            # What a topic is about, in its members' own words — a column that
+            # renders nothing at all if the keywords never reach the row.
+            (topics_card, 'row_rx_state_?.["keywords"]'),
+            # The circle's two numbers: forty people who exchanged three mails
+            # and five who exchanged four hundred are not the same finding.
+            (communities_card, 'row_rx_state_?.["size"]'),
+            (communities_card, 'row_rx_state_?.["message_count"]'),
+            # B2's whole point: a score a reader cannot argue with is not what
+            # SS1.1 asked for, so the reasons are as load-bearing as the bar.
+            (important_card, 'row_rx_state_?.["score"]'),
+            (important_card, 'row_rx_state_?.["reasons"]'),
+            # R8's badge, and the count that makes the notice under it true.
+            (tags_card, 'tag_rx_state_?.["suggestions"]'),
         ],
     )
     def test_the_binding_a_reader_depends_on_is_actually_rendered(
@@ -895,7 +921,15 @@ class TestTheComponents:
 
     @pytest.mark.parametrize(
         "build",
-        [disputes_table, pairs_table, groups_card, topics_card, templates_card],
+        [
+            disputes_table,
+            pairs_table,
+            groups_card,
+            topics_card,
+            templates_card,
+            communities_card,
+            important_card,
+        ],
     )
     def test_every_listing_is_a_window_of_rows(self, build) -> None:
         """Twelve rows under a header that stays put, on all five.

@@ -2,7 +2,7 @@
 
 The server itself lives in ``components/mailarc-mcp/`` and is tested there: the
 tool names, the schemas, the sentence a failure puts on the wire. None of that
-needs this application. What does is the other half — the four readers a tool
+needs this application. What does is the other half — the five readers a tool
 answers from, the version a client displays, the console script that starts the
 process, and the one property the whole split exists for:
 
@@ -161,12 +161,12 @@ def test_the_version_a_client_displays_is_this_applications() -> None:
 class TestTheAccessTheApplicationBuilds:
     """The one ``ArchiveAccess`` an installed server actually uses.
 
-    Every test in the component subclasses it and overrides all five methods,
-    so the object the console script builds is only exercised here — including
-    the single line that decides whether a deployed MCP server has semantic
-    search at all. Nothing here opens a connection: an ``ArchiveAccess`` is
-    documented as building nothing at construction, and these assertions are
-    what keep that true.
+    Every test in the component subclasses it and overrides every accessor, so
+    the object the console script builds is only exercised here — including the
+    single line that decides whether a deployed MCP server has semantic search
+    at all. Nothing here opens a connection: an ``ArchiveAccess`` is documented
+    as building nothing at construction, and these assertions are what keep
+    that true.
     """
 
     def test_it_reads_through_the_composition_root_and_builds_nothing(self) -> None:
@@ -179,6 +179,7 @@ class TestTheAccessTheApplicationBuilds:
         assert access.analytics() is composition.analytics_reader()
         assert access.archive() is composition.archive_reader()
         assert access.search() is composition.semantic_search()
+        assert access.tags() is composition.tag_store()
 
     def test_semantic_search_is_off_by_default_and_says_so(self) -> None:
         """``provider=none`` is the supported default, so the tool has to fail

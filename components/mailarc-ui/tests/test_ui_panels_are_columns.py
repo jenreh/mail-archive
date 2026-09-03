@@ -45,7 +45,13 @@ def _components(node: Any, found: list[str] | None = None) -> list[str]:
 
 
 class TestTheInsightsListingsSitInTwoColumns:
-    """The cross-check across the width, the three listings beside each other."""
+    """The cross-check across the width, the six listings beside each other.
+
+    Three to a column, and which column a card is in is decided by how wide its
+    widest row is: the listings whose rows are prose — a subject and its
+    reasons, a topic and its keywords, a template's own text — take the wide
+    one, and the three that are a name and a handful of numbers take the other.
+    """
 
     def test_the_listings_are_laid_out_as_two_columns(self) -> None:
         drawn = _components(insights_panel().render())
@@ -58,14 +64,15 @@ class TestTheInsightsListingsSitInTwoColumns:
     def test_every_card_is_still_on_the_page(self) -> None:
         """Rearranging is not dropping.
 
-        Seven surfaces: the rebuild card, the totals, the cross-check, the
-        three listings — and the guidance panel, which is the other branch of
-        the same ``rx.cond`` the listings sit in and is therefore in the tree
+        Ten surfaces: the rebuild card, the totals, the cross-check, the six
+        listings — pairs and groups, topics, templates, circles, what matters,
+        and tags — and the guidance panel, which is the other branch of the
+        same ``rx.cond`` the listings sit in and is therefore in the tree
         beside them rather than instead of them. A ``panel_card`` renders as a
         ``Card``, so a listing that fell out while the layout was being
-        rearranged shows up here as a six.
+        rearranged shows up here as a nine.
         """
-        assert _components(insights_panel().render()).count("Card") == 7
+        assert _components(insights_panel().render()).count("Card") == 10
 
 
 class TestTheGraphStatusCardsSitInTwoColumns:

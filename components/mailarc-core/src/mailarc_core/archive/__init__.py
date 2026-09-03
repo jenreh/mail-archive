@@ -25,6 +25,10 @@ One module per concern, layered so nothing points back up:
     ``purge_account`` — the writer's undo, for one mailbox and no other.
 ``reader``
     ``ArchiveReader`` — the listing back out, and the bytes of one message.
+``tags``
+    ``TagRepository`` / ``TagStore`` — the annotation layer, which is neither
+    ground truth nor derived: a human's names for sets of messages, which no
+    rebuild may delete.
 """
 
 from mailarc_core.archive.blobs import BlobStore
@@ -42,6 +46,11 @@ from mailarc_core.archive.model import (
     Message,
     MessageLabel,
     MessageSummary,
+    Tag,
+    Tagged,
+    TagOrigin,
+    TagSource,
+    TagSummary,
     Thread,
     to_signed_64,
     to_unsigned_64,
@@ -49,6 +58,7 @@ from mailarc_core.archive.model import (
 from mailarc_core.archive.purge import PurgeCounts, purge_account
 from mailarc_core.archive.reader import ArchiveReader, preview_of
 from mailarc_core.archive.repository import AddressRepository, MessageRepository
+from mailarc_core.archive.tags import TagExists, TagRepository, TagStore, tag_id
 from mailarc_core.archive.writer import MessageArchiver
 
 __all__ = [
@@ -71,9 +81,18 @@ __all__ = [
     "MessageRepository",
     "MessageSummary",
     "PurgeCounts",
+    "Tag",
+    "TagExists",
+    "TagOrigin",
+    "TagRepository",
+    "TagSource",
+    "TagStore",
+    "TagSummary",
+    "Tagged",
     "Thread",
     "preview_of",
     "purge_account",
+    "tag_id",
     "to_signed_64",
     "to_unsigned_64",
 ]

@@ -157,7 +157,7 @@ class TestTheDeriveJob:
 
         await self._handler(RecordingRebuild())(a_derive_job(job_id=7), queue)
 
-        assert queue.reports == [(7, index, 0, 5) for index in range(1, 6)]
+        assert queue.reports == [(7, index, 0, 10) for index in range(1, 11)]
 
     async def test_a_cancel_between_two_stages_ends_the_rebuild(self) -> None:
         """A job is asked to stop, never killed — and the flag is read in the
@@ -168,7 +168,7 @@ class TestTheDeriveJob:
         await self._handler(rebuild)(a_derive_job(), queue)
 
         assert rebuild.reported == [RebuildStage.DELETE, RebuildStage.READ]
-        assert queue.reports == [(1, 1, 0, 5), (1, 2, 0, 5), (1, 3, 0, 5)], (
+        assert queue.reports == [(1, 1, 0, 10), (1, 2, 0, 10), (1, 3, 0, 10)], (
             "the stage that was running when the cancel arrived still counts"
         )
 

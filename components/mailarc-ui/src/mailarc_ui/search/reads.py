@@ -22,9 +22,11 @@ writes through and lists from.
 from appkit_commons.database.session import get_asyncdb_session
 from appkit_commons.registry import service_registry
 
+from mailarc_analytics.nlq import QueryInterpreter
 from mailarc_analytics.semantic import SemanticSearch
 from mailarc_core.database.repositories import MailAccountRepository
 from mailarc_ui.message_detail.model import archive_reader
+from mailarc_ui.search.ordering import by_label
 from mailarc_ui.tags.reads import analytics_reader, tag_store
 
 _ACCOUNTS = MailAccountRepository()
@@ -41,11 +43,29 @@ half-wired application apart from a broken one, and the two have completely
 different fixes.
 """
 
+NO_INTERPRETER = (
+    "Natural-language search is not wired up in this build — no "
+    "QueryInterpreter is registered. The composition root publishes it; did "
+    "app.composition run?"
+)
+"""The developer's error, in the one place a user could meet it.
+
+:data:`NO_SEARCH`'s twin and kept separate for the same reason it exists at
+all: this sentence must never be shown for an installation that simply has no
+model configured. That is an ordinary state with a one-line remedy, and it is
+:data:`~mailarc_analytics.nlq.errors.NO_LLM`'s to describe — which is why the
+composition root publishes an interpreter whether or not a provider exists.
+Reaching this message means the application is half-built, and the page cannot
+tell that apart from a broken one on its own.
+"""
+
 __all__ = [
+    "NO_INTERPRETER",
     "NO_SEARCH",
     "account_options",
     "analytics_reader",
     "archive_reader",
+    "query_interpreter",
     "semantic_search",
     "tag_store",
 ]
@@ -59,6 +79,19 @@ def semantic_search() -> SemanticSearch:
         raise RuntimeError(NO_SEARCH) from error
 
 
+def query_interpreter() -> QueryInterpreter:
+    """The reader the composition root published. Call inside a method only.
+
+    Always registered, even where no model is configured — see
+    :data:`NO_INTERPRETER`. So a ``RuntimeError`` here means the build is half
+    wired, never that a person has not set a provider.
+    """
+    try:
+        return service_registry().get(QueryInterpreter)
+    except KeyError as error:
+        raise RuntimeError(NO_INTERPRETER) from error
+
+
 async def account_options() -> list[dict[str, str]]:
     """Every mailbox this archive imports from, as the picker lists them.
 
@@ -70,6 +103,10 @@ async def account_options() -> list[dict[str, str]]:
 
     The projection runs inside the session: Reflex serialises what a state
     holds, and a row whose session has closed hands back nothing.
+
+    By name, through the same :func:`~mailarc_ui.search.ordering.by_label`
+    every other picker on the form is ordered with — a mailbox is looked up
+    under what somebody called it, never under the order it was added in.
     """
     async with get_asyncdb_session() as session:
         entities = await _ACCOUNTS.find_all(session)
@@ -80,4 +117,4 @@ async def account_options() -> list[dict[str, str]]:
             }
             for entity in entities
         ]
-    return sorted(options, key=lambda one: one["label"].casefold())
+    return by_label(options)

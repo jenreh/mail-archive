@@ -4,6 +4,7 @@ The behaviour that only shows up against a live FalkorDB lives in
 `test_server_local.py`, which is skipped without the vendored runtime.
 """
 
+import signal
 import threading
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,171 @@ class TestLocalMode:
 
         assert server.owned is False
         assert server.startup_error is None
+
+    def test_an_adopted_server_is_left_alone_by_stop(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Somebody else's server, and stopping it would take their app down."""
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.is_serving", lambda host, port: True
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.FalkorDBServer._signal_group",
+            staticmethod(
+                lambda pid, sig: pytest.fail("must not signal a server it does not own")
+            ),
+        )
+        server = FalkorDBServer(
+            _config(GraphServerMode.LOCAL, host="127.0.0.1", data_dir=tmp_path / "data")
+        )
+        server.start()
+
+        server.request_stop()
+        server.stop()
+
+        assert server.owned is False
+
+    def test_an_orphan_of_a_previous_run_is_taken_over(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """The leak this record exists for. Adopting an orphan *un-owned* is
+        what used to make one leaked server permanent: every later start
+        declined to stop it, so it held the port until somebody killed it."""
+        data_dir = tmp_path / "data"
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.is_serving", lambda host, port: True
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.orphan_pid",
+            lambda directory, port: 4242,
+        )
+        server = FalkorDBServer(
+            _config(GraphServerMode.LOCAL, host="127.0.0.1", data_dir=data_dir)
+        )
+
+        server.start()
+
+        assert server.owned is True
+
+    def test_a_server_taken_over_is_signalled_and_reaped_by_pid(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """It was never this process's child, so there is no handle to wait on."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.is_serving", lambda host, port: True
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.orphan_pid",
+            lambda directory, port: 4242,
+        )
+        signalled: list[tuple[int, int]] = []
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.FalkorDBServer._signal_group",
+            staticmethod(lambda pid, sig: signalled.append((pid, sig))),
+        )
+        # It answers "gone" the moment it has been asked, which is what a
+        # server that takes its SIGTERM does.
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.alive",
+            lambda pid: not signalled,
+        )
+        server = FalkorDBServer(
+            _config(GraphServerMode.LOCAL, host="127.0.0.1", data_dir=data_dir)
+        )
+        server.start()
+
+        server.stop()
+
+        assert signalled == [(4242, signal.SIGTERM)]
+        assert server.owned is False
+
+    def test_a_take_over_that_will_not_die_is_killed(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.is_serving", lambda host, port: True
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.orphan_pid",
+            lambda directory, port: 4242,
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.alive", lambda pid: True
+        )
+        monkeypatch.setattr("mailarc_core.graph.server._TERMINATE_GRACE_SECONDS", 0.01)
+        signalled: list[int] = []
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.FalkorDBServer._signal_group",
+            staticmethod(lambda pid, sig: signalled.append(sig)),
+        )
+        server = FalkorDBServer(
+            _config(GraphServerMode.LOCAL, host="127.0.0.1", data_dir=data_dir)
+        )
+        server.start()
+
+        server.stop()
+
+        assert signalled == [signal.SIGTERM, signal.SIGKILL]
+
+    def test_a_second_start_keeps_a_server_it_took_over(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """A lifespan can fire twice on reload. The second start must not read
+        back its own record, see a live supervisor because that supervisor is
+        this very process, and give up the ownership it already holds."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.is_serving", lambda host, port: True
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.orphan_pid",
+            lambda directory, port: 4242,
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.alive", lambda pid: True
+        )
+        server = FalkorDBServer(
+            _config(GraphServerMode.LOCAL, host="127.0.0.1", data_dir=data_dir)
+        )
+        server.start()
+
+        server.start()
+
+        assert server.owned is True
+
+    def test_asking_twice_signals_once(self, monkeypatch, tmp_path: Path) -> None:
+        """The lifespan asks, then stops; a second SIGTERM would be noise."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.is_serving", lambda host, port: True
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.orphan_pid",
+            lambda directory, port: 4242,
+        )
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.ownership.alive", lambda pid: True
+        )
+        signalled: list[int] = []
+        monkeypatch.setattr(
+            "mailarc_core.graph.server.FalkorDBServer._signal_group",
+            staticmethod(lambda pid, sig: signalled.append(sig)),
+        )
+        server = FalkorDBServer(
+            _config(GraphServerMode.LOCAL, host="127.0.0.1", data_dir=data_dir)
+        )
+        server.start()
+
+        server.request_stop()
+        server.request_stop()
+
+        assert signalled == [signal.SIGTERM]
 
 
 class TestAsyncLifecycle:

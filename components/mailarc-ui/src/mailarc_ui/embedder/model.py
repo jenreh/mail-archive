@@ -390,7 +390,7 @@ def host_advice(
     )
     if not (keyed and provider in _KEYED_PROVIDERS and now):
         return Advice(text=space, color="blue")
-    if _is_cleartext_to_elsewhere(now):
+    if is_cleartext_to_elsewhere(now):
         return Advice(
             text=(
                 f"{space} It also sends this archive's stored API key to that "
@@ -421,8 +421,14 @@ _LOOPBACK = ("localhost", "127.0.0.1", "::1", "[::1]")
 """Hosts that never put a packet on a network, so cleartext to them is not a leak."""
 
 
-def _is_cleartext_to_elsewhere(url: str) -> bool:
-    """Whether *url* would carry a bearer token unencrypted off this machine."""
+def is_cleartext_to_elsewhere(url: str) -> bool:
+    """Whether *url* would carry a bearer token unencrypted off this machine.
+
+    Public because both halves of this page ask it. Whether a configured
+    endpoint puts a stored credential on a wire in the clear is one question
+    with one answer, and two forms answering it differently would be worse than
+    either answer on its own.
+    """
     if not url.lower().startswith("http://"):
         return False
     host = url[len("http://") :].split("/", 1)[0].rsplit(":", 1)[0]

@@ -205,6 +205,16 @@ class ParsedAttachment(BaseModel):
 
     filename: str | None = None
     content_type: str = "application/octet-stream"
+    charset: str = ""
+    """What the sender said the bytes are encoded in, or ``""``.
+
+    Kept because it is thrown away everywhere else: ``get_content_type()``
+    drops the parameter it arrived in, and a reader left guessing prints a
+    replacement character where a German mail program wrote an umlaut. Empty
+    for every part that is not text, and for the several that are and did not
+    say — which is why it is a hint to whoever decodes rather than an answer.
+    """
+
     size: int = 0
     sha256: str = ""
     content_id: str | None = None

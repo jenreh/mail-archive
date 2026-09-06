@@ -48,6 +48,10 @@ export default defineConfig({
           { text: 'Insights', link: '/user/insights' },
           { text: 'The graph explorer', link: '/user/graph-explorer' },
           { text: 'Semantic search', link: '/user/semantic-search' },
+          {
+            text: 'Natural-language search',
+            link: '/user/natural-language-search',
+          },
           { text: 'Configuration', link: '/user/configuration' },
           { text: 'The desktop app', link: '/user/desktop-app' },
           { text: 'Troubleshooting', link: '/user/troubleshooting' },

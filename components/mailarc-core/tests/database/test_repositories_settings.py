@@ -26,9 +26,10 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from mailarc_core.database.entities import SEMANTIC_SETTINGS_ID
+from mailarc_core.database.entities import LLM_SETTINGS_ID, SEMANTIC_SETTINGS_ID
 from mailarc_core.database.repositories import (
     ApiKeyNotStored,
+    LlmSettingsRepository,
     SemanticSettingsRepository,
     SettingsChangedElsewhere,
     _without_parameters,
@@ -406,3 +407,161 @@ class TestSemanticSettingsRepository:
             await repository.clear_api_key(session)
 
         assert "sk-live" not in caplog.text
+
+
+class TestLlmSettingsRepository:
+    """The interpreter's row, and the three properties it shares with the
+    embedder's — because sharing them is the whole reason it is a twin rather
+    than something new.
+
+    What is *not* re-argued here is why a write-only secret needs an explicit
+    clear, or why a stale editor is refused: those arguments are above, and the
+    point of these tests is that a second table did not quietly lose them.
+    """
+
+    async def test_store_has_no_way_to_write_a_key(self, session) -> None:
+        """The security property, stated as a signature rather than as a rule
+        a form has to remember: "an empty box leaves the stored key alone" is
+        the only thing this method can do."""
+        import inspect
+
+        parameters = inspect.signature(LlmSettingsRepository.store).parameters
+
+        assert "api_key" not in parameters
+
+    async def test_a_first_save_creates_the_row(self, session) -> None:
+        stored = await LlmSettingsRepository().store(
+            session, provider="ollama", model="qwen2.5:7b-instruct", base_url=""
+        )
+
+        assert stored.id == LLM_SETTINGS_ID
+        assert stored.provider == "ollama"
+
+    async def test_null_is_a_value_and_means_let_the_file_answer(self, session) -> None:
+        """Which is what makes the reset expressible at all. Without it a
+        single save would be one-way."""
+        repository = LlmSettingsRepository()
+        await repository.store(session, provider="openai", model="x", base_url="")
+
+        await repository.store(session, provider=None, model=None, base_url=None)
+
+        row = await repository.load(session)
+        assert row is not None
+        assert (row.provider, row.model, row.base_url) == (None, None, None)
+
+    async def test_the_key_is_stored_encrypted_and_read_back_by_the_root_alone(
+        self, session, encryption_key
+    ) -> None:
+        repository = LlmSettingsRepository()
+
+        await repository.set_api_key(session, "sk-interpreter")
+
+        row = await repository.load(session)
+        assert row is not None
+        assert row.api_key == "sk-interpreter"
+
+    async def test_a_form_is_told_only_that_a_key_exists(
+        self, session, encryption_key
+    ) -> None:
+        """The ``IS NOT NULL`` is evaluated by the database, so a boolean comes
+        back and the ciphertext is never fetched, decrypted or held here."""
+        repository = LlmSettingsRepository()
+        assert await repository.api_key_is_set(session) is False
+
+        await repository.set_api_key(session, "sk-interpreter")
+
+        assert await repository.api_key_is_set(session) is True
+
+    async def test_clearing_the_key_leaves_the_settings_alone(
+        self, session, encryption_key
+    ) -> None:
+        repository = LlmSettingsRepository()
+        await repository.store(session, provider="openai", model="x", base_url="")
+        await repository.set_api_key(session, "sk-interpreter")
+
+        await repository.clear_api_key(session)
+
+        row = await repository.load(session)
+        assert row is not None
+        assert row.api_key is None
+        assert row.provider == "openai"
+
+    async def test_a_stale_editor_is_refused(self, session) -> None:
+        repository = LlmSettingsRepository()
+        first = await repository.store(
+            session, provider="ollama", model="", base_url=""
+        )
+        baseline = first.updated
+
+        await repository.store(session, provider="openai", model="", base_url="")
+        row = await repository.load(session)
+        assert row is not None
+        row.updated = row.updated + timedelta(minutes=1)
+
+        with pytest.raises(SettingsChangedElsewhere):
+            await repository.store(
+                session,
+                provider="ollama",
+                model="",
+                base_url="",
+                expected_updated=baseline,
+            )
+
+    async def test_no_baseline_means_i_read_no_row(self, session) -> None:
+        """Which is what a fresh installation and the reset control honestly
+        are — so neither is made to invent a timestamp."""
+        repository = LlmSettingsRepository()
+        await repository.store(session, provider="openai", model="", base_url="")
+
+        await repository.store(session, provider="ollama", model="", base_url="")
+
+        row = await repository.load(session)
+        assert row is not None
+        assert row.provider == "ollama"
+
+    async def test_a_failing_key_write_never_renders_the_key(
+        self, session, caplog
+    ) -> None:
+        """The one way this write can fail is also the one way the key could
+        reach a log: ``StatementError`` quotes the statement *and its bind
+        parameters*. A caller doing the right thing — reporting the error —
+        would be the thing that leaked it.
+        """
+        registry = service_registry()
+        saved = registry.snapshot()
+        registry.register_as(
+            DatabaseConfig,
+            DatabaseConfig.model_validate({"encryption_key": "nonsense"}),
+        )
+        # Through a variable, the way a form would pass it: a traceback renders
+        # each frame's source line, so a literal in the call below would put the
+        # key into the rendering by way of this test rather than the code.
+        secret = "sk-interpreter-do-not-print"  # noqa: S105 - not a real key
+        try:
+            with pytest.raises(ApiKeyNotStored) as raised:
+                await LlmSettingsRepository().set_api_key(session, secret)
+        finally:
+            registry.restore(saved)
+
+        rendered = "".join(traceback.format_exception(raised.value))
+        assert "sk-interpreter" not in rendered
+        assert "Fernet" in rendered
+        assert raised.value.__cause__ is None
+        assert raised.value.__suppress_context__
+
+    async def test_the_two_tables_do_not_share_a_row(self, session) -> None:
+        """The reason there are two: ``updated`` is each form's concurrency
+        baseline, so one save would otherwise invalidate the other's."""
+        await SemanticSettingsRepository().store(
+            session, provider="ollama", model="a", dimension=768, base_url=""
+        )
+        await LlmSettingsRepository().store(
+            session, provider="openai", model="b", base_url=""
+        )
+
+        embedder = await SemanticSettingsRepository().load(session)
+        interpreter = await LlmSettingsRepository().load(session)
+        assert embedder is not None
+        assert interpreter is not None
+        assert embedder.provider == "ollama"
+        assert interpreter.provider == "openai"

@@ -129,7 +129,7 @@ be a second answer to "which is *the* one":
 
 ### Two lifespans, one policy
 
-`graph_server_lifespan` and `sync_worker_lifespan` both own their process for as
+`supervised_children_lifespan` owns both child processes for as
 long as the application runs, and both swallow a failed start after logging it.
 The page whose job is reporting server state is more useful up than down, and a
 job simply waits in the queue until a worker exists.

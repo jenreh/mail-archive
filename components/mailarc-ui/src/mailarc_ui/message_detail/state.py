@@ -20,10 +20,11 @@ read actually belongs, keeps its own.
 
 import asyncio
 import logging
+from collections.abc import Sequence
 
 import reflex as rx
 
-from mailarc_core.mail import render_message
+from mailarc_core.mail import ParsedAttachment, render_message
 from mailarc_ui.message_detail.model import (
     TAB_GRAPH,
     TAB_MESSAGE,
@@ -46,6 +47,26 @@ logger = logging.getLogger(__name__)
 
 _NO_VIEW = MessageView()
 _NO_PREVIEW = AttachmentPreview()
+
+ATTACHMENT_CACHE_LIMIT = 16 * 1024 * 1024
+"""How many bytes of one message's files are worth holding while it is open.
+
+A ceiling and not a policy: the point of keeping the parse is that opening a
+second file on the same message should not re-read the original and re-decode
+every attachment in it. The point of the ceiling is that ``self.raw`` is capped
+at :data:`~mailarc_ui.message_detail.model.RAW_LIMIT` precisely so a state does
+not grow with the message, and an uncapped cache would put that back — a
+message carrying several files near the preview limit would sit in memory for
+as long as a reader left it open. Above this, the re-read is the cheaper
+mistake.
+"""
+
+
+def _worth_keeping(attachments: Sequence[ParsedAttachment]) -> bool:
+    """Whether this message's files are small enough to hold on to."""
+    return sum(len(one.payload) for one in attachments) <= ATTACHMENT_CACHE_LIMIT
+
+
 """Nothing chosen yet. A sentinel keeps every component free of `None`."""
 
 
@@ -89,6 +110,14 @@ class MessageDetailState(rx.State, mixin=True):
     :class:`~mailarc_ui.message_detail.model.MessageView` nor the socket that
     carries it, so the strip lists names and sizes and the file itself is
     fetched when somebody actually asks for one.
+    """
+
+    _attachments: list[ParsedAttachment] = []
+    """The open message's parsed files, or empty — see :meth:`_read_attachment`.
+
+    Backend-only: these carry the decoded bytes and must never be serialised to
+    a browser, which is the same reason the strip is built from
+    :class:`~mailarc_ui.message_detail.model.AttachmentRow` metadata instead.
     """
 
     preview: AttachmentPreview = _NO_PREVIEW
@@ -252,11 +281,24 @@ class MessageDetailState(rx.State, mixin=True):
         on the worker thread — reading a stored original and rendering it is
         the same work opening the message was, and none of it belongs on the
         loop.
+
+        The parse is kept for as long as the message stays open, because it is
+        the same parse :meth:`_open_message` already ran: without it, opening
+        three files on one message read the whole original from the blob store
+        three times and decoded *every* attachment's bytes each time, to keep
+        one. Held only under :data:`ATTACHMENT_CACHE_LIMIT` — a message whose
+        files are larger than that is exactly the one not worth carrying
+        around, so it pays the re-read instead — and dropped by
+        :meth:`_clear_views` the moment another message is selected.
         """
-        data = archive_reader().raw_message(self.eml_sha256)
-        if data is None:
-            return self.preview.model_copy(update={"note": PREVIEW_FAILED})
-        attachments = render_message(data).attachments
+        attachments = self._attachments
+        if not attachments:
+            data = archive_reader().raw_message(self.eml_sha256)
+            if data is None:
+                return self.preview.model_copy(update={"note": PREVIEW_FAILED})
+            attachments = render_message(data).attachments
+            if _worth_keeping(attachments):
+                self._attachments = list(attachments)
         if index >= len(attachments):
             return self.preview.model_copy(update={"note": PREVIEW_FAILED})
         return preview_of(attachments[index])
@@ -315,6 +357,7 @@ class MessageDetailState(rx.State, mixin=True):
         self.preview = _NO_PREVIEW
         self.preview_open = False
         self.preview_loading = False
+        self._attachments = []
         self._close_chip()
 
     def _close_chip(self) -> None:

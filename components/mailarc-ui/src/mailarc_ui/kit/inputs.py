@@ -47,8 +47,8 @@ OPTION_LIMIT = 100
 Mantine renders every option it is given, so a picker over an archive's whole
 address book would put thousands of nodes on a page that draws fifty. The cap
 is on the *rendering*, not on the data: the search still runs over the whole
-list, and what a person sees before typing is the first hundred — which is why
-the reads behind these lists come back busiest-first.
+list, and what a person sees before typing is the first hundred of it — so a
+list longer than that is one whose options are reached by typing.
 """
 
 FIELD_GAP = 18

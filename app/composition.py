@@ -6,14 +6,9 @@ a connection or a provider itself — which is also why this is the one file tha
 is allowed to name an implementation (§4.1).
 """
 
-import asyncio
 import contextlib
 import logging
-import os
-import signal
-import subprocess
-import sys
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping
 from functools import lru_cache, partial
 from pathlib import Path
 from typing import Any
@@ -21,9 +16,37 @@ from typing import Any
 from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.database.session import get_asyncdb_session
 from appkit_commons.registry import service_registry
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
+# The two child processes this application owns live in `app.supervisors`: this
+# module was over §1.6's thousand lines, and a process supervisor is not a
+# component built from configuration. Re-exported rather than moved out of
+# reach — `app/app.py` registers the lifespan and the status page reads the
+# health, and both have always found them here. `F401` is suppressed for that:
+# an import that exists only to be re-exported is the one case ruff cannot tell
+# from an oversight.
+from app.supervisors import (  # noqa: F401 — a deliberate re-export, see above
+    STARTUP_GRACE_SECONDS,
+    TERMINATE_GRACE_SECONDS,
+    WORKER_COMMAND,
+    WorkerProcess,
+    graph_health,
+    graph_server,
+    graph_startup_error,
+    graph_status,
+    publish_graph_health,
+    supervised_children_lifespan,
+    sync_worker,
+)
 from mailarc_analytics import AnalyticsConfig, AnalyticsReader, GraphReader
+from mailarc_analytics.nlq import (
+    ChatPort,
+    LlmConfig,
+    LlmControl,
+    LlmOverrides,
+    QueryInterpreter,
+    build_chat_client,
+)
 from mailarc_analytics.semantic import (
     EmbedderPort,
     SemanticConfig,
@@ -36,16 +59,15 @@ from mailarc_core import (
     ArchiveConfig,
     ArchiveReader,
     BlobStore,
-    FalkorDBServer,
     GraphConfig,
-    GraphServerStatus,
     TagStore,
-    read_status_async,
 )
 from mailarc_core.database import database_path
-from mailarc_core.database.repositories import SemanticSettingsRepository
+from mailarc_core.database.repositories import (
+    LlmSettingsRepository,
+    SemanticSettingsRepository,
+)
 from mailarc_core.graph.client import session as graph_session
-from mailarc_core.graph.health import GraphHealth
 from mailarc_core.mail.config import MailConfig
 from mailarc_core.mail.errors import MailAuthError
 from mailarc_core.mail.ports import CONSENT_ADDRESS_KEY
@@ -71,12 +93,28 @@ logger = logging.getLogger(__name__)
 _SEMANTIC_SETTINGS = SemanticSettingsRepository()
 """The one row a human's embedder choice is stored in."""
 
+_LLM_SETTINGS = LlmSettingsRepository()
+"""The one row a human's interpreter choice is stored in.
+
+Its own table rather than four more columns on the embedder's, because the two
+share nothing but a shape — including ``updated``, which is each form's
+concurrency baseline, so one save would otherwise invalidate the other's.
+"""
+
 _semantic_override: SemanticConfig | None = None
 """The merge of the stored settings over the file, once it has been read.
 
 ``None`` until :func:`load_semantic_config` has run, and that is not a
 degraded state: it is the configuration this application had before any of
 this existed, and the one a process that never reaches a database keeps.
+"""
+
+_llm_override: LlmConfig | None = None
+"""The same, for the interpreter, and a separate variable on purpose.
+
+One shared override would make adopting either model adopt whatever the other
+was last left at — including ``None``, which is how a process that read only
+one of the two tables would silently put the other back to the file.
 """
 
 
@@ -204,7 +242,9 @@ async def _stored_semantic_overrides(
     )
 
 
-def _validated_overrides(stored: dict[str, Any]) -> SemanticOverrides:
+def _validated[OverridesT: BaseModel](
+    kind: type[OverridesT], stored: dict[str, Any], what: str
+) -> OverridesT:
     """The stored columns that validate, without the ones that do not.
 
     A row that does not validate — a provider name no release of this
@@ -220,30 +260,40 @@ def _validated_overrides(stored: dict[str, Any]) -> SemanticOverrides:
     are found by asking pydantic which fields it blamed and building the model
     again without them, rather than by validating field by field — the model is
     the authority on what is valid, and a second implementation of that here
-    would be a second answer to drift from it.
+    would be a second answer to drift from it. The loop repeats because one
+    pass is not enough: removing a blamed field can let the model get far
+    enough to blame the next one, and a single retry would throw away every
+    remaining good column the moment that happened.
 
     Only the *names* are logged, never pydantic's own message:
-    ``ValidationError`` quotes the input that failed, and one of these five
-    fields is an API key. A refusal that names no field at all — what a model
-    validator produces — cannot be narrowed to a column, so the whole row goes;
-    that branch also exists because indexing into an empty ``loc`` used to
-    raise ``IndexError`` out of the handler and chain the ``ValidationError``,
-    quoted inputs and all, into somebody's ``logger.exception``.
+    ``ValidationError`` quotes the input that failed, and one of these fields
+    is an API key. That is also why no branch here calls ``logger.exception``.
+    A refusal that names no field at all — what a model validator produces —
+    cannot be narrowed to a column, so the whole row goes; that branch also
+    exists because indexing into an empty ``loc`` used to raise ``IndexError``
+    out of the handler and chain the ``ValidationError``, quoted inputs and
+    all, into somebody's ``logger.exception``.
+
+    Generic over the model because there are two of these rows now, and the
+    interpreter's copy had already drifted: it retried once, then discarded the
+    row, and logged the ``ValidationError`` itself — putting a stored
+    ``api_key`` into the log this docstring exists to keep it out of.
     """
     candidates = dict(stored)
     refused: list[str] = []
     while True:
         try:
-            overrides = SemanticOverrides(**candidates)
+            overrides = kind(**candidates)
         except ValidationError as error:
             named = [name for name in _refused_fields(error) if name in candidates]
             if not named:
                 logger.warning(
-                    "Ignoring every stored embedder setting: the row does not "
+                    "Ignoring every stored %s setting: the row does not "
                     "validate and no single field was blamed. The "
-                    "configuration file answers for all of them."
+                    "configuration file answers for all of them.",
+                    what,
                 )
-                return SemanticOverrides()
+                return kind()
             refused.extend(named)
             for name in named:
                 del candidates[name]
@@ -251,11 +301,17 @@ def _validated_overrides(stored: dict[str, Any]) -> SemanticOverrides:
         break
     if refused:
         logger.warning(
-            "Ignoring these stored embedder settings; these do not validate: "
-            "%s. The configuration file answers for them.",
+            "Ignoring these stored %s settings; these do not validate: %s. "
+            "The configuration file answers for them.",
+            what,
             ", ".join(sorted(refused)),
         )
     return overrides
+
+
+def _validated_overrides(stored: dict[str, Any]) -> SemanticOverrides:
+    """The embedder's stored columns, by :func:`_validated`'s rule."""
+    return _validated(SemanticOverrides, stored, "embedder")
 
 
 def _refused_fields(error: ValidationError) -> list[str]:
@@ -333,6 +389,22 @@ async def semantic_settings_lifespan() -> AsyncIterator[None]:
     yield
 
 
+@contextlib.asynccontextmanager
+async def llm_settings_lifespan() -> AsyncIterator[None]:
+    """ASGI lifespan hook: adopt the stored interpreter settings before serving.
+
+    :func:`semantic_settings_lifespan`'s twin, and its own hook rather than two
+    lines added to that one: the two settings fail independently — a database
+    missing one table has no bearing on the other — and a single hook would
+    make either failure swallow both adoptions.
+
+    Only the web application registers it. The worker and the two commands read
+    no questions, so there is nothing there for a stored interpreter to change.
+    """
+    await adopt_llm_settings()
+    yield
+
+
 def mail_config() -> MailConfig:
     return _registered(MailConfig)
 
@@ -347,55 +419,6 @@ def imap_config() -> ImapConfig:
 
 def m365_config() -> M365Config:
     return _registered(M365Config)
-
-
-@lru_cache(maxsize=1)
-def graph_server() -> FalkorDBServer:
-    """The application-wide graph server handle.
-
-    Cached deliberately: a local server is a real child process, and one per
-    caller would leak a redis-server for every request.
-    """
-    return FalkorDBServer(graph_config())
-
-
-async def graph_status() -> GraphServerStatus:
-    """Read a fresh snapshot of the graph server."""
-    return await read_status_async(graph_config())
-
-
-def graph_startup_error() -> str | None:
-    """Why the graph server failed to start, if it did."""
-    return graph_server().startup_error
-
-
-@lru_cache(maxsize=1)
-def graph_health() -> GraphHealth:
-    """The two questions the status page asks, behind one object.
-
-    A façade over the pair this module already holds — the configuration a
-    fresh snapshot is read over, and the handle that knows why a start failed.
-    Cached like the other handles: it owns nothing, but it is one decision and
-    two objects would be two answers to "which server is being reported on".
-    """
-    return GraphHealth(graph_config(), graph_server())
-
-
-def publish_graph_health() -> GraphHealth:
-    """Leave the façade where the status page can find it.
-
-    Same route and same reason as :func:`publish_archive_reader`, down to the
-    second call being a no-op. This is the one that let a Reflex state leave
-    ``app/``: ``GraphStatusState`` used to import :func:`graph_status` and
-    :func:`graph_startup_error` from this module by name, which is a component
-    importing the application.
-    """
-    services = service_registry()
-    health = graph_health()
-    if services.has(GraphHealth) and services.get(GraphHealth) is health:
-        return health
-    services.register_as(GraphHealth, health)
-    return health
 
 
 @lru_cache(maxsize=1)
@@ -432,27 +455,6 @@ def publish_storage_reader() -> StorageReader:
         return reader
     services.register_as(StorageReader, reader)
     return reader
-
-
-@contextlib.asynccontextmanager
-async def graph_server_lifespan() -> AsyncIterator[None]:
-    """ASGI lifespan hook: own the graph server for as long as the app runs.
-
-    Policy only: the core knows *how* to start and stop without blocking the
-    loop, this decides what a failure means. A failed start is logged and
-    swallowed rather than killing the app — the page whose whole job is
-    reporting server state is more useful up than down, and it shows the
-    reason via :func:`graph_startup_error`.
-    """
-    server = graph_server()
-    try:
-        await server.start_async()
-    except Exception:
-        logger.exception("Could not start the graph server")
-    try:
-        yield
-    finally:
-        await server.stop_async()
 
 
 @lru_cache(maxsize=1)
@@ -713,6 +715,195 @@ def publish_semantic_search() -> SemanticSearch:
     return search
 
 
+def llm_config() -> LlmConfig:
+    """The interpreter model this installation is configured with.
+
+    Its own block rather than a field on
+    :class:`~mailarc_analytics.semantic.config.SemanticConfig`, and the reason
+    is what leaves the machine: embedding uploads message bodies once,
+    interpreting uploads the sentence a person typed. An installation may
+    reasonably want either without the other, which one shared ``provider``
+    could not express.
+
+    No stored-settings merge, unlike :func:`semantic_config`. There is no
+    settings page for this yet, so the file and the environment are the whole
+    of it — and :data:`~mailarc_analytics.nlq.errors.CONFIGURE_LLM` says so
+    rather than naming a route that is not registered.
+    """
+    if _llm_override is not None:
+        return _llm_override
+    return _registered(LlmConfig)
+
+
+@lru_cache(maxsize=1)
+def chat_client() -> ChatPort | None:
+    """This installation's interpreter model, or ``None`` because none is set.
+
+    :func:`semantic_embedder`'s shape exactly, including the cache: the
+    adapters hold an ``httpx`` connection pool, and a second one would pay a
+    fresh handshake per question and never be closed.
+
+    It inherits that function's one wart, which is worth naming rather than
+    leaving to be discovered: **nothing closes this pool at shutdown.** The
+    embedder's is closed only when a settings save replaces it, and this one
+    has no settings page to be replaced from at all. Both are process-lifetime
+    objects and the process exiting closes the sockets, so the cost is a
+    warning on a hard stop rather than a leak that grows — mirroring it beats
+    inventing a lifespan for one of the two clients.
+    """
+    return build_chat_client(llm_config())
+
+
+@lru_cache(maxsize=1)
+def query_interpreter() -> QueryInterpreter:
+    """The natural-language reader, on this installation's model.
+
+    **Built even when no model is configured**, for
+    :func:`semantic_search`'s reason turned inside out. There it is because the
+    working half must not be taken down with the unconfigured one; here it is
+    because "no interpreter configured" is an *ordinary* state with a one-line
+    remedy, and a page that could not look one up would show the half-wired
+    -build sentence for it instead — a developer's error in front of a user,
+    naming a fix that is not theirs to make.
+
+    It reads no graph. Grounding is the caller's: the search page already holds
+    the address, file and account options a question is matched against, and
+    passing them in is what keeps this object constructible in a test with no
+    application around it.
+    """
+    return QueryInterpreter(llm_config(), chat_client())
+
+
+async def load_llm_config(
+    session_factory: SessionFactory = get_asyncdb_session,
+) -> LlmConfig:
+    """Read the stored interpreter settings and adopt the merge as effective.
+
+    :func:`load_semantic_config`'s twin, and the merge lives here for the same
+    reason: §4.1 puts building a component from configuration in this module
+    alone, and ``mailarc-analytics`` describes what an interpreter is without
+    having to learn that a database holds one setting of it.
+
+    Idempotent and cheap when nothing changed — a settings row that resolves to
+    the configuration already in force returns without clearing a cache,
+    without closing a client and without re-registering anything. With no row
+    stored, :meth:`LlmOverrides.applied_to` hands back the configured object
+    itself and this function is a no-op.
+    """
+    merged = (await _stored_llm_overrides(session_factory)).applied_to(
+        _registered(LlmConfig)
+    )
+    if merged == llm_config():
+        logger.debug("The stored interpreter settings change nothing")
+        return merged
+    await _adopt_llm_config(merged)
+    # Both identifying values, never the key — nothing in this module logs one.
+    logger.info(
+        "Interpreter settings adopted: provider=%s model=%s",
+        merged.provider,
+        merged.model or "<the provider's default>",
+    )
+    return merged
+
+
+async def _stored_llm_overrides(session_factory: SessionFactory) -> LlmOverrides:
+    """The stored row as overrides, or nothing at all."""
+    async with session_factory() as session:
+        stored = await _LLM_SETTINGS.load(session)
+    if stored is None:
+        return LlmOverrides()
+    return _validated_llm_overrides(
+        {
+            "provider": stored.provider,
+            "model": stored.model,
+            "base_url": stored.base_url,
+            "api_key": stored.api_key,
+        }
+    )
+
+
+def _validated_llm_overrides(stored: dict[str, Any]) -> LlmOverrides:
+    """The interpreter's stored columns, by :func:`_validated`'s rule.
+
+    The embedder's twin and now literally so. It used to be its own single
+    retry that dropped the whole row on a second refusal and logged pydantic's
+    message — with a stored ``api_key`` quoted inside it.
+    """
+    return _validated(LlmOverrides, stored, "interpreter")
+
+
+async def _adopt_llm_config(merged: LlmConfig) -> None:
+    """Make *merged* effective and close the client it replaces."""
+    global _llm_override
+    # Read before the swap, and only if one was ever built: asking for the
+    # client here would otherwise construct one from the configuration being
+    # replaced, just to close it again.
+    stale = chat_client() if chat_client.cache_info().currsize else None
+    _llm_override = merged
+    chat_client.cache_clear()
+    query_interpreter.cache_clear()
+    if stale is not None:
+        await stale.aclose()
+    if service_registry().has(QueryInterpreter):
+        publish_query_interpreter()
+
+
+async def adopt_llm_settings() -> None:
+    """Adopt the stored interpreter settings for this process, whatever happens.
+
+    :func:`adopt_semantic_settings`' twin, with one fewer entry point to reach:
+    only the web application reads a question, so the worker and the two
+    commands have no reason to run this. It is still its own named step rather
+    than two lines in the lifespan, because a second entry point that grows a
+    reason to interpret should have one thing to call.
+
+    A failure is logged and swallowed, and that is policy. The two real ones
+    are a database whose migration has not been applied, so ``llm_settings``
+    does not exist yet, and a row somebody edited by hand; neither is a reason
+    to refuse to start. Both leave :func:`llm_config` answering with the file
+    and the environment, which is a complete state (§7.4).
+    """
+    try:
+        await load_llm_config()
+    except Exception:
+        logger.exception("Could not read the stored interpreter settings")
+
+
+def publish_llm_control() -> LlmControl:
+    """Leave the interpreter's two verbs where the settings page can find them.
+
+    :func:`publish_semantic_control` minus its third verb. There is no
+    ``reindex`` because nothing this model produces is stored — changing it
+    costs the next question, so there is nothing to rebuild and nothing to warn
+    about before a save.
+
+    Registered once and never replaced: the entry is two references to
+    module-level functions, so a second call has nothing new to say and
+    overwriting it would only log noise.
+    """
+    services = service_registry()
+    if services.has(LlmControl):
+        return services.get(LlmControl)
+    control = LlmControl(current=llm_config, reload=load_llm_config)
+    services.register_as(LlmControl, control)
+    return control
+
+
+def publish_query_interpreter() -> QueryInterpreter:
+    """Leave the interpreter where the search page can find it.
+
+    Same route and same reason as :func:`publish_semantic_search`:
+    ``mailarc-ui`` may not import ``app``, and building a client from
+    configuration is this module's alone.
+    """
+    services = service_registry()
+    interpreter = query_interpreter()
+    if services.has(QueryInterpreter) and services.get(QueryInterpreter) is interpreter:
+        return interpreter
+    services.register_as(QueryInterpreter, interpreter)
+    return interpreter
+
+
 async def _reindex() -> int:
     """Rebuild the vector index at the configured length. See :mod:`app.reindex`."""
     from app.reindex import reindex
@@ -804,149 +995,3 @@ def publish_provider_registry() -> ProviderRegistry:
         return registry
     services.register_as(ProviderRegistry, registry)
     return registry
-
-
-WORKER_COMMAND = (sys.executable, "-m", "app.worker")
-"""How the worker is started: a fresh interpreter, not a thread of this one.
-
-An import runs for hours and holds a graph session; sharing an event loop with
-the web application would make every page wait on it. ``-m app.worker`` rather
-than an import, because that module is the worker's own entry point and its
-process has no business holding Reflex.
-"""
-
-STARTUP_GRACE_SECONDS = 0.5
-"""How long a start waits to see whether the child dies on the spot.
-
-A worker that cannot import its dependencies is gone in milliseconds, and a
-start that never looks would leave the application silently jobless.
-"""
-
-TERMINATE_GRACE_SECONDS = 10.0
-"""Between SIGTERM and SIGKILL. The worker puts its job down on SIGTERM."""
-
-
-class WorkerProcess:
-    """The sync worker as a child of the application that started it.
-
-    Same shape as :class:`~mailarc_core.graph.server.FalkorDBServer`, for the
-    same reason: idempotent start and stop so a lifespan may fire twice, and a
-    startup failure kept as text instead of thrown away, so the caller decides
-    what a missing worker means.
-
-    ``command`` is a parameter so a test can drive these mechanics against a
-    child it controls; nothing in the application passes it.
-    """
-
-    def __init__(self, command: Sequence[str] = WORKER_COMMAND) -> None:
-        self._command = tuple(command)
-        self._process: subprocess.Popen[bytes] | None = None
-        self._startup_error: str | None = None
-
-    @property
-    def running(self) -> bool:
-        """Whether the child is alive right now."""
-        return self._process is not None and self._process.poll() is None
-
-    @property
-    def startup_error(self) -> str | None:
-        """Why the last start failed, if it did."""
-        return self._startup_error
-
-    def start(self) -> None:
-        """Start the worker unless it is already running."""
-        if self.running:
-            logger.debug("The sync worker is already running")
-            return
-        try:
-            self._spawn()
-        except Exception as exc:
-            self._startup_error = str(exc)
-            raise
-        else:
-            self._startup_error = None
-
-    def stop(self) -> None:
-        """Ask the worker to finish, and insist if it will not."""
-        process = self._process
-        self._process = None
-        if process is None or process.poll() is not None:
-            return
-
-        logger.info("Stopping the sync worker (pid %d)", process.pid)
-        self._signal_group(process, signal.SIGTERM)
-        try:
-            process.wait(timeout=TERMINATE_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            logger.warning("The sync worker ignored SIGTERM, sending SIGKILL")
-            self._signal_group(process, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=TERMINATE_GRACE_SECONDS)
-
-    async def start_async(self) -> None:
-        """:meth:`start` off the event loop; starting a process blocks."""
-        await asyncio.to_thread(self.start)
-
-    async def stop_async(self) -> None:
-        """:meth:`stop` off the event loop; reaping a process blocks."""
-        await asyncio.to_thread(self.stop)
-
-    def _spawn(self) -> None:
-        logger.info("Starting the sync worker: %s", " ".join(self._command))
-        # The command is this interpreter plus a module name from our own
-        # source; no user input reaches it. `start_new_session` gives the
-        # worker its own process group, so `stop` takes down whatever it
-        # started along with it.
-        process = subprocess.Popen(self._command, start_new_session=True)  # noqa: S603
-        self._process = process
-        try:
-            process.wait(timeout=STARTUP_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            return
-        raise RuntimeError(
-            f"the sync worker exited immediately with code {process.returncode}"
-        )
-
-    @staticmethod
-    def _signal_group(process: subprocess.Popen[bytes], sig: int) -> None:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(process.pid), sig)
-
-
-@lru_cache(maxsize=1)
-def sync_worker() -> WorkerProcess:
-    """The one worker child this application supervises.
-
-    Cached for the reason :func:`graph_server` is: a second handle would be a
-    second child claiming the same jobs.
-    """
-    return WorkerProcess()
-
-
-@contextlib.asynccontextmanager
-async def sync_worker_lifespan() -> AsyncIterator[None]:
-    """ASGI lifespan hook: own the sync worker for as long as the app runs.
-
-    Policy only, and the same policy the graph server gets: a failed start is
-    logged and swallowed rather than killing the application — the pages that
-    show what the archive holds keep working without a worker, and a job simply
-    waits in the queue until one exists.
-
-    ``sync.supervise_worker`` turns this off where somebody else already runs
-    the worker: under Docker or systemd it is its own unit, and a second copy
-    started here would claim the same jobs.
-    """
-    if not sync_config().supervise_worker:
-        logger.info("Not supervising the sync worker — something else owns it")
-        yield
-        return
-
-    worker = sync_worker()
-    try:
-        await worker.start_async()
-    except Exception:
-        logger.exception("Could not start the sync worker")
-    try:
-        yield
-    finally:
-        await worker.stop_async()

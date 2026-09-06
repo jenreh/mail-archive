@@ -12,6 +12,7 @@ of the stored original and that is the part worth proving: the strip lists
 names, and the bytes are fetched only when somebody presses one.
 """
 
+import base64
 from collections.abc import Iterator
 from typing import cast
 
@@ -37,19 +38,27 @@ from mailarc_ui.message_detail import (
     MessageDetailState,
     PreviewKind,
     attachment_panel,
+    calendar_preview,
+    contact_preview,
     data_uri,
     message_pane,
     pretty_json,
     preview_kind,
     preview_of,
 )
+from mailarc_ui.message_detail.invite import EVENT_LIMIT
 from mailarc_ui.message_detail.preview import (
+    CARDS_CUT,
     EMPTY_PART,
+    EVENTS_CUT,
     NOT_PREVIEWABLE,
+    OLD_OFFICE,
     PREVIEW_FAILED,
     TEXT_CUT,
     TOO_LARGE,
+    encoded_bytes,
 )
+from mailarc_ui.message_detail.vcard import CARD_LIMIT
 
 PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -57,6 +66,33 @@ PNG = (
 )
 """The first bytes of a real PNG. Nothing decodes it — what matters is that
 the projection carries bytes through untouched."""
+
+
+ICS = "\r\n".join(
+    [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "METHOD:REQUEST",
+        "BEGIN:VEVENT",
+        "SUMMARY:Sprint Review",
+        "DTSTART:20260910T120000Z",
+        "DTEND:20260910T130000Z",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+)
+"""One real invitation — the file this feature exists for."""
+
+VCF = "\r\n".join(
+    [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        "FN:Anna Bauer",
+        "EMAIL:anna@example.com",
+        "END:VCARD",
+    ]
+)
+"""One real contact card."""
 
 
 def attachment(**fields: object) -> ParsedAttachment:
@@ -82,7 +118,7 @@ class TestWhichShapeAFileTakes:
             ("text/plain", PreviewKind.TEXT),
             ("text/csv", PreviewKind.TEXT),
             ("application/json", PreviewKind.TEXT),
-            ("text/calendar", PreviewKind.TEXT),
+            ("text/calendar", PreviewKind.CALENDAR),
             ("message/rfc822", PreviewKind.TEXT),
             ("application/vnd.ms-excel", PreviewKind.NONE),
             ("application/zip", PreviewKind.NONE),
@@ -96,9 +132,13 @@ class TestWhichShapeAFileTakes:
 
     def test_two_families_that_share_a_glyph_can_still_differ_here(self) -> None:
         """The reason there are two enums: a CSV and an XLSX are both
-        spreadsheet-shaped to a reader and only one of them can be drawn."""
+        spreadsheet-shaped to a reader and they are drawn by different things.
+
+        A CSV is printed as text — it is text — and an XLSX goes to a
+        workbook renderer that would make nonsense of a CSV.
+        """
         assert PREVIEW_OF_KIND[FileKind.TABLE] is PreviewKind.TEXT
-        assert PREVIEW_OF_KIND[FileKind.SPREADSHEET] is PreviewKind.NONE
+        assert PREVIEW_OF_KIND[FileKind.SPREADSHEET] is PreviewKind.SPREADSHEET
 
     def test_every_family_can_say_what_it_draws(self) -> None:
         """A map keyed by an enum in another module rots in silence: nothing
@@ -125,6 +165,163 @@ class TestTurningBytesIntoSomethingAnAttributeCanHold:
         assert pretty_json("id;total\n1;9,90") == "id;total\n1;9,90"
 
 
+OOXML = {
+    PreviewKind.DOCUMENT: (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Vertrag.docx",
+    ),
+    PreviewKind.SPREADSHEET: (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Umsatz.xlsx",
+    ),
+    PreviewKind.SLIDES: (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "Pitch.pptx",
+    ),
+}
+"""One real content type and name per Office shape, so a test can say which
+renderer it means without repeating a forty-character MIME string."""
+
+
+class TestTheOfficeFormatsAViewerCanOpen:
+    """The three families that used to land on a sentence and now do not.
+
+    The narrowing is the whole of what is interesting here: the family table
+    says ``SLIDES``, and only a file that is really OOXML gets a renderer.
+    """
+
+    @pytest.mark.parametrize("expected", sorted(OOXML))
+    def test_a_modern_office_file_reaches_its_renderer(
+        self, expected: PreviewKind
+    ) -> None:
+        content_type, filename = OOXML[expected]
+        found = preview_of(
+            attachment(
+                filename=filename, content_type=content_type, payload=b"PK\x03\x04"
+            )
+        )
+        assert found.kind == expected.value
+        assert base64.b64decode(found.encoded) == b"PK\x03\x04"
+
+    @pytest.mark.parametrize(
+        ("content_type", "filename"),
+        [
+            ("application/msword", "Vertrag.doc"),
+            ("application/vnd.ms-excel", "Umsatz.xls"),
+            ("application/vnd.ms-powerpoint", "Pitch.ppt"),
+            ("application/vnd.oasis.opendocument.text", "Brief.odt"),
+            ("application/octet-stream", "Keynote.key"),
+            ("application/octet-stream", "Brief.pages"),
+        ],
+    )
+    def test_an_office_family_that_is_not_ooxml_gets_no_renderer(
+        self, content_type: str, filename: str
+    ) -> None:
+        """The bug this narrowing exists to prevent.
+
+        Every one of these lands on an Office *family*, and handing any of
+        them to a parser that reads zipped OOXML would fail somewhere inside
+        a WebAssembly module rather than on this page.
+        """
+        found = preview_of(
+            attachment(
+                filename=filename, content_type=content_type, payload=b"\xd0\xcf"
+            )
+        )
+        assert found.kind == PreviewKind.NONE.value
+        assert found.note == OLD_OFFICE
+        assert found.encoded == ""
+
+    @pytest.mark.parametrize("kind", sorted(OOXML))
+    def test_an_office_file_over_the_limit_carries_no_bytes(
+        self, kind: PreviewKind
+    ) -> None:
+        """The cost control, asserted for the kinds that made it matter.
+
+        These four renderers are the reason the limit is load-bearing rather
+        than a nicety: a workbook decodes into a WebAssembly heap that copies
+        it again, so the bytes that never leave the server are the cheapest
+        ones in the system.
+        """
+        content_type, filename = OOXML[kind]
+        found = preview_of(
+            attachment(
+                filename=filename,
+                content_type=content_type,
+                payload=b"\x00" * (PREVIEW_LIMIT + 1),
+            )
+        )
+        assert (found.kind, found.note) == (PreviewKind.NONE.value, TOO_LARGE)
+        assert found.encoded == ""
+
+
+class TestExactlyOneWayOfHoldingContent:
+    """The rule :class:`AttachmentPreview` states in prose and nothing checked.
+
+    Six fields, one filled. It is what lets the panel be a chain of
+    ``rx.cond`` over one string instead of a chain guarding against absence,
+    and a kind that filled two of them would break the panel in the browser
+    and nowhere else.
+    """
+
+    CONTENT = ("source", "document", "text", "encoded", "events", "contacts")
+
+    @pytest.mark.parametrize(
+        ("content_type", "filename"),
+        [
+            ("image/png", "bild.png"),
+            ("application/pdf", "Rechnung.pdf"),
+            ("text/html", "seite.html"),
+            ("text/plain", "notiz.txt"),
+            *OOXML.values(),
+        ],
+    )
+    def test_one_field_and_only_one_carries_the_file(
+        self, content_type: str, filename: str
+    ) -> None:
+        found = preview_of(
+            attachment(
+                filename=filename, content_type=content_type, payload=b"PK\x03\x04"
+            )
+        )
+        filled = [name for name in self.CONTENT if getattr(found, name)]
+        assert len(filled) == 1, f"{filename} filled {filled}"
+
+    @pytest.mark.parametrize(
+        ("content_type", "filename", "payload"),
+        [("text/calendar", "Termin.ics", ICS), ("text/vcard", "Anna.vcf", VCF)],
+    )
+    def test_a_record_kind_fills_its_list_and_nothing_else(
+        self, content_type: str, filename: str, payload: str
+    ) -> None:
+        """The two shapes that are read rather than rendered obey the same
+        rule, and it is easier to break here: they decode the bytes to text on
+        the way and could plausibly keep it."""
+        found = preview_of(
+            attachment(
+                filename=filename,
+                content_type=content_type,
+                payload=payload.encode(),
+            )
+        )
+        filled = [name for name in self.CONTENT if getattr(found, name)]
+        assert len(filled) == 1, f"{filename} filled {filled}"
+
+    def test_a_file_that_cannot_be_drawn_carries_nothing(self) -> None:
+        found = preview_of(
+            attachment(
+                filename="Belege.zip", content_type="application/zip", payload=b"PK"
+            )
+        )
+        assert [name for name in self.CONTENT if getattr(found, name)] == []
+
+    @pytest.mark.parametrize("payload", [b"", b"\x00\xff\xfe", b"a", b"ab", b"abc"])
+    def test_the_bytes_survive_the_round_trip(self, payload: bytes) -> None:
+        """Padding and high bytes both, because base64 gets exactly those two
+        things wrong when somebody reaches for a text codec."""
+        assert base64.b64decode(encoded_bytes(payload)) == payload
+
+
 class TestWhatThePanelIsHanded:
     """:func:`preview_of` — one attachment, projected."""
 
@@ -136,7 +333,7 @@ class TestWhatThePanelIsHanded:
         assert found.source.startswith("data:image/png;base64,")
         assert found.document == found.text == ""
 
-    def test_a_pdf_arrives_as_a_source_too(self) -> None:
+    def test_a_pdf_arrives_as_encoded_bytes(self) -> None:
         found = preview_of(
             attachment(
                 filename="Rechnung.pdf",
@@ -145,7 +342,8 @@ class TestWhatThePanelIsHanded:
             )
         )
         assert found.kind == PreviewKind.PDF.value
-        assert found.source.startswith("data:application/pdf;base64,")
+        assert base64.b64decode(found.encoded) == b"%PDF-1.4"
+        assert found.source == "", "the viewer takes bytes; a URI would double them"
 
     def test_html_arrives_framed_under_the_policy_that_blocks_the_network(
         self,
@@ -189,18 +387,36 @@ class TestWhatThePanelIsHanded:
         assert found.icon == FILE_ICONS[FileKind.SPREADSHEET]
         assert found.icon != FILE_ICONS[FileKind.OTHER]
 
-    def test_a_file_nothing_can_draw_says_so_and_still_names_itself(self) -> None:
+    def test_an_older_office_file_is_told_which_formats_do_work(self) -> None:
+        """A Word 97 or Excel 5 file is the one undrawable case a reader can
+        do something about, so it gets the sentence naming the three that
+        work rather than the flat "no way to show this"."""
         found = preview_of(
             attachment(
-                filename="Umsatz.xlsx",
+                filename="Umsatz.xls",
                 content_type="application/vnd.ms-excel",
+                size=2048,
+                payload=b"\xd0\xcf\x11\xe0",
+            )
+        )
+        assert found.kind == PreviewKind.NONE.value
+        assert found.note == OLD_OFFICE
+        assert (found.filename, found.size_label) == ("Umsatz.xls", "2.0 KB")
+
+    def test_a_file_nothing_can_draw_says_so_and_still_names_itself(self) -> None:
+        """A zip is not an old Office file: nothing about its format is going
+        to change, so it keeps the flat sentence."""
+        found = preview_of(
+            attachment(
+                filename="Belege.zip",
+                content_type="application/zip",
                 size=2048,
                 payload=b"PK\x03\x04",
             )
         )
         assert found.kind == PreviewKind.NONE.value
         assert found.note == NOT_PREVIEWABLE
-        assert (found.filename, found.size_label) == ("Umsatz.xlsx", "2.0 KB")
+        assert (found.filename, found.size_label) == ("Belege.zip", "2.0 KB")
 
     def test_a_nameless_part_is_called_the_same_thing_the_strip_calls_it(
         self,
@@ -307,6 +523,140 @@ async def opened(published: ArchiveReader, digest: str) -> OtherDetailState:
     return state
 
 
+class TestTheTwoFilesThatAreReadRatherThanRendered:
+    """A ``.ics`` and a ``.vcf`` reach the panel as records.
+
+    What each reader makes of a file belongs to ``test_ui_message_invite`` and
+    ``test_ui_message_vcard``; this asks only what this module owns — that the
+    projection routes the file to one, hands the panel the records, and prints
+    the file instead when there is nothing to hand over.
+    """
+
+    def test_an_invitation_arrives_as_an_event_and_not_as_its_own_lines(self) -> None:
+        found = preview_of(
+            attachment(
+                filename="Termin.ics",
+                content_type="text/calendar",
+                payload=ICS.encode(),
+            )
+        )
+        assert found.kind == PreviewKind.CALENDAR.value
+        assert [one.summary for one in found.events] == ["Sprint Review"]
+        assert found.text == ""
+
+    def test_a_contact_card_arrives_as_a_person(self) -> None:
+        found = preview_of(
+            attachment(
+                filename="Anna.vcf", content_type="text/vcard", payload=VCF.encode()
+            )
+        )
+        assert found.kind == PreviewKind.CONTACT.value
+        assert [one.name for one in found.contacts] == ["Anna Bauer"]
+
+    def test_a_calendar_with_no_event_in_it_is_printed_instead(self) -> None:
+        """The fallback that makes the whole feature safe to have: a file this
+        cannot read is still a file the reader can read."""
+        text = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Milch\r\nEND:VTODO"
+        found = preview_of(
+            attachment(
+                filename="Liste.ics",
+                content_type="text/calendar",
+                payload=text.encode(),
+            )
+        )
+        assert found.kind == PreviewKind.TEXT.value
+        assert "VTODO" in found.text
+        assert found.events == []
+
+    def test_a_vcf_that_is_not_one_is_printed_instead(self) -> None:
+        found = preview_of(
+            attachment(
+                filename="Notiz.vcf",
+                content_type="text/vcard",
+                payload=b"Sehr geehrte Damen und Herren",
+            )
+        )
+        assert found.kind == PreviewKind.TEXT.value
+        assert found.text == "Sehr geehrte Damen und Herren"
+
+    def test_an_exported_calendar_says_that_it_was_cut(self) -> None:
+        events = [
+            line
+            for index in range(EVENT_LIMIT + 2)
+            for line in ("BEGIN:VEVENT", f"SUMMARY:{index}", "END:VEVENT")
+        ]
+        text = "\r\n".join(["BEGIN:VCALENDAR", *events, "END:VCALENDAR"])
+        found = preview_of(
+            attachment(
+                filename="Kalender.ics",
+                content_type="text/calendar",
+                payload=text.encode(),
+            )
+        )
+        assert len(found.events) == EVENT_LIMIT
+        assert found.note == EVENTS_CUT
+
+    def test_an_exported_address_book_says_the_same(self) -> None:
+        cards = [
+            line
+            for index in range(CARD_LIMIT + 2)
+            for line in ("BEGIN:VCARD", f"FN:P{index}", "END:VCARD")
+        ]
+        found = preview_of(
+            attachment(
+                filename="Adressbuch.vcf",
+                content_type="text/vcard",
+                payload="\r\n".join(cards).encode(),
+            )
+        )
+        assert len(found.contacts) == CARD_LIMIT
+        assert found.note == CARDS_CUT
+
+    def test_a_calendar_that_fits_says_nothing(self) -> None:
+        found = preview_of(
+            attachment(
+                filename="Termin.ics",
+                content_type="text/calendar",
+                payload=ICS.encode(),
+            )
+        )
+        assert found.note == ""
+
+    def test_a_card_written_in_windows_1252_keeps_its_umlaut(self) -> None:
+        """The bug a screenshot found: ``Gesch\ufffdftsleitung`` in the panel,
+        because every attachment was decoded as UTF-8 with replacement."""
+        text = VCF.replace("FN:Anna Bauer", "FN:Anna Bauer\r\nTITLE:Geschäftsleitung")
+        found = preview_of(
+            attachment(
+                filename="Anna.vcf",
+                content_type="text/x-vcard",
+                charset="iso-8859-1",
+                payload=text.encode("cp1252"),
+            )
+        )
+        assert found.contacts[0].title == "Geschäftsleitung"
+
+    def test_a_card_that_names_no_charset_at_all_keeps_it_too(self) -> None:
+        """Which is the common case: the part carried no ``charset``."""
+        text = VCF.replace("FN:Anna Bauer", "FN:Anna Bauer\r\nTITLE:Geschäftsleitung")
+        found = preview_of(
+            attachment(
+                filename="Anna.vcf",
+                content_type="text/x-vcard",
+                payload=text.encode("cp1252"),
+            )
+        )
+        assert found.contacts[0].title == "Geschäftsleitung"
+
+    def test_an_email_row_becomes_something_a_reader_can_press(self) -> None:
+        found = preview_of(
+            attachment(
+                filename="Anna.vcf", content_type="text/vcard", payload=VCF.encode()
+            )
+        )
+        assert found.contacts[0].emails[0].href == "mailto:anna@example.com"
+
+
 class TestOpeningOneFile:
     async def test_the_strip_lists_the_files_without_carrying_their_bytes(
         self, opened: OtherDetailState
@@ -329,7 +679,7 @@ class TestOpeningOneFile:
         assert opened.preview_open
         assert opened.preview.filename == "Rechnung.pdf"
         assert opened.preview.kind == PreviewKind.PDF.value
-        assert opened.preview.source.startswith("data:application/pdf;base64,")
+        assert base64.b64decode(opened.preview.encoded).startswith(b"%PDF")
         assert not opened.preview_loading
 
     async def test_a_text_file_comes_back_readable(
@@ -338,6 +688,42 @@ class TestOpeningOneFile:
         await opened.show_attachment(0)
         assert opened.preview.kind == PreviewKind.TEXT.value
         assert "Kaffee;9,90" in opened.preview.text
+
+    async def test_a_second_file_does_not_read_the_original_again(
+        self, opened: OtherDetailState, published: ArchiveReader, monkeypatch
+    ) -> None:
+        """Opening two files on one message is one read, not two.
+
+        The parse is the expensive half: ``render_message`` decodes *every*
+        attachment's bytes, so re-running it per card decoded both files twice
+        to keep one each time.
+        """
+        reads = 0
+        original = published.raw_message
+
+        def counted(digest: str) -> bytes | None:
+            nonlocal reads
+            reads += 1
+            return original(digest)
+
+        monkeypatch.setattr(published, "raw_message", counted)
+        await opened.show_attachment(0)
+        await opened.show_attachment(1)
+
+        assert reads == 1
+        assert opened.preview.filename == "Rechnung.pdf"
+
+    async def test_the_files_are_let_go_when_another_message_opens(
+        self, opened: OtherDetailState, digest: str
+    ) -> None:
+        """The cache lives exactly as long as the message on screen, so a
+        reader moving down a list does not accumulate everyone's attachments."""
+        await opened.show_attachment(0)
+        assert opened._attachments
+
+        await opened._open_message("m2", digest)
+
+        assert opened._attachments == []
 
     async def test_an_index_from_nowhere_opens_nothing(
         self, opened: OtherDetailState
@@ -370,7 +756,7 @@ class TestOpeningOneFile:
         opened.eml_sha256 = blobs.put(b"Subject: leer\r\n\r\n", BlobKind.MESSAGE)
         await opened.show_attachment(1)
         assert opened.preview.note == PREVIEW_FAILED
-        assert opened.preview.source == ""
+        assert (opened.preview.source, opened.preview.encoded) == ("", "")
 
     async def test_a_read_that_throws_is_a_sentence_too(
         self, opened: OtherDetailState, published: ArchiveReader, monkeypatch
@@ -417,6 +803,35 @@ class TestOpeningOneFile:
         assert not opened.preview_note_shown
         opened.preview = opened.preview.model_copy(update={"note": TOO_LARGE})
         assert opened.preview_note_shown
+
+
+class TestTheRecordComponents:
+    """That the two record shapes build at all, against any state.
+
+    A component is built once at compile time out of the state class's Vars, so
+    the thing that breaks here is a field that does not exist or a ``foreach``
+    over something Reflex cannot resolve — and both of those are silent until a
+    page is compiled. Each of these walks two levels of ``foreach``, the outer
+    over the records and the inner over an event's attendees or a card's
+    numbers, which is where a list Reflex cannot type shows up as
+    ``Sequence[NoReturn]`` and raises.
+    """
+
+    def test_a_calendar_panel_builds(self) -> None:
+        """Against a concrete state, because a mixin's fields are not ``Var``s
+        until Reflex has copied them into one — the panel would build out of
+        the *values* and ``rx.foreach`` would refuse the empty list."""
+        assert calendar_preview(OtherDetailState) is not None
+
+    def test_a_contact_panel_builds(self) -> None:
+        assert contact_preview(OtherDetailState) is not None
+
+    def test_the_body_draws_every_shape_there_is(self) -> None:
+        """The chain in ``_preview_body`` is folded from a table, and a shape
+        left out of that table is a shape that silently falls through to
+        *No preview*."""
+        drawn = str(message_pane(OtherDetailState))
+        assert all(one.value in drawn for one in PreviewKind)
 
 
 class TestThePanelItself:

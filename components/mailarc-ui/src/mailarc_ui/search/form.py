@@ -37,6 +37,7 @@ from mailarc_ui.search.model import (
     ATTACH_WITHOUT,
     MATCH_ALL,
     MATCH_ANY,
+    NATURAL_IS_INTERPRETED,
     SEMANTIC_IS_TEXT_ONLY,
 )
 from mailarc_ui.search.state import MailSearchState
@@ -106,11 +107,21 @@ def _question() -> rx.Component:
 
 
 def _mode() -> rx.Component:
-    """Which path answers, and what is off about the one that cannot.
+    """Which path answers, and what is off about the ones that cannot.
 
     ``data`` is a computed var rather than a constant: only the state knows
-    whether an embedder exists, and the semantic segment is ``disabled``
-    until one does.
+    whether an embedder and an interpreter exist, and each of the two optional
+    segments is ``disabled`` until its own does.
+
+    Four notes under one control, and they say different kinds of thing. The
+    two ``*_note`` vars name a setting that is missing. :data:`SEMANTIC_IS_TEXT_ONLY`
+    and :data:`NATURAL_IS_INTERPRETED` describe what the chosen segment does to
+    the fields below — one stops honouring them, the other fills them in — and
+    they are opposite promises, so neither may be inferred from the other.
+    :attr:`~mailarc_ui.search.state.MailSearchState.understood` is the only one
+    that is about a *question* rather than about the form, which is why it is a
+    var of its own and not the answer's ``notice``: it has to survive **Load
+    more**.
     """
     return mn.stack(
         segmented_field(
@@ -121,6 +132,9 @@ def _mode() -> rx.Component:
         ),
         _note(MailSearchState.semantic_note != "", MailSearchState.semantic_note),
         _note(MailSearchState.semantic_chosen, SEMANTIC_IS_TEXT_ONLY),
+        _note(MailSearchState.llm_note != "", MailSearchState.llm_note),
+        _note(MailSearchState.natural_chosen, NATURAL_IS_INTERPRETED),
+        _note(MailSearchState.understood != "", MailSearchState.understood),
         gap=LABEL_GAP,
     )
 

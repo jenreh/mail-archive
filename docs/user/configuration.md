@@ -356,6 +356,45 @@ error, no log line — so the embed job reads the live index's dimension before 
 writes anything and refuses a mismatch by name. Changing it needs a new graph
 migration and a full re-embed.
 
+### Interpreter — `app.llm` / `APP_LLM_`
+
+Off by default, and off is a complete state: the search page's **Natural**
+segment is greyed out with a sentence naming this setting, and everything else
+works. See
+[Natural-language search](./natural-language-search.md) for what it does with a
+question.
+
+**Its own block rather than a setting on `app.semantic`,** because the two
+models differ in what leaves the machine. Embedding uploads every message body
+once; interpreting uploads the sentence somebody typed and nothing else — the
+archive's own addresses are matched against the answer locally, so no
+correspondent of yours is ever sent anywhere. An installation may reasonably
+want either one without the other.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `provider` | `none` | `none`, `ollama` (local, no account), `openai` or `azure_openai` (both upload the question, never a message) |
+| `model` | `""` | Empty means the provider's own — `qwen2.5:7b-instruct` or `gpt-4o-mini`. On Azure it is the deployment name and is **required** |
+| `base_url` | `""` | Empty means the provider's own; a setting so tests can point at a local server. **Required** on Azure, and only its `/openai/v1` root works |
+| `api_key` | unset | Both paid providers need one; Ollama ignores it. A `SecretStr`, sent as Azure's `api-key` header rather than a bearer token |
+| `request_timeout` | `60.0` | Half the embedder's, because somebody is waiting behind the Search button rather than a job |
+| `max_output_tokens` | `512` | A hard limit. An answer cut off here is truncated JSON, and the failure names this setting |
+| `temperature` | `0.0` | The same question should give the same filter. Set it to nothing for a reasoning model, which rejects any value but its own |
+| `max_question_chars` | `500` | What stops a pasted mail thread from becoming the prompt |
+| `max_resolved_addresses` | `5` | Past this many, a name counts as unmatched rather than filling the **From** picker with thirty addresses |
+
+**The settings page wins**, exactly as it does for the embedder: both models
+are on `/admin/embedder`, and once the interpreter section there has been saved
+the stored row is laid over this block. Its **Use the configuration file**
+button clears that row and hands this half back — and touches nothing of the
+embedder's.
+
+Structured output is required rather than preferred: a model too old for it is
+refused with a message naming `app_llm_model`, and the request is never quietly
+downgraded to an unconstrained one. A downgrade would keep working while no
+longer honouring the schema, and the first sign would be a filter with a field
+nobody defined.
+
 ### Database — `app.database`
 
 ```yaml

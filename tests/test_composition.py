@@ -4,14 +4,16 @@ import functools
 import importlib
 import logging
 import sys
+import time
 
 import pytest
 from appkit_commons.database.configuration import DatabaseConfig
 from appkit_commons.registry import service_registry
 
-from app import composition
+from app import composition, supervisors
 from app.configuration import configure
 from mailarc_analytics import AnalyticsConfig, AnalyticsReader, GraphReader
+from mailarc_analytics.nlq import LlmConfig, QueryInterpreter
 from mailarc_analytics.semantic import SemanticConfig, SemanticProvider, SemanticSearch
 from mailarc_core import (
     ArchiveConfig,
@@ -21,6 +23,7 @@ from mailarc_core import (
     GraphServerMode,
     TagStore,
 )
+from mailarc_core.graph import server as graph_server_module
 from mailarc_core.graph.health import GraphHealth
 from mailarc_core.mail.config import MailConfig
 from mailarc_core.storage import StorageReader
@@ -39,6 +42,7 @@ GETTERS: dict[type, str] = {
     ArchiveConfig: "archive_config",
     AnalyticsConfig: "analytics_config",
     SemanticConfig: "semantic_config",
+    LlmConfig: "llm_config",
     MailConfig: "mail_config",
     GmailConfig: "google_config",
     ImapConfig: "imap_config",
@@ -64,6 +68,14 @@ SLEEPER = (sys.executable, "-c", "import time; time.sleep(30)")
 DIES = (sys.executable, "-c", "raise SystemExit(3)")
 """A child that is gone before the start returns."""
 
+DEAF = (
+    sys.executable,
+    "-c",
+    "import signal, time; signal.signal(signal.SIGTERM, lambda *a: None);"
+    " time.sleep(30)",
+)
+"""A child that hears SIGTERM and carries on — a real worker inside a rebuild."""
+
 
 def _getter(config: type):
     return getattr(composition, GETTERS[config])
@@ -75,6 +87,8 @@ MEMOISED = (
     "provider_registry",
     "archive_reader",
     "analytics_reader",
+    "chat_client",
+    "query_interpreter",
     "semantic_embedder",
     "semantic_search",
     "storage_reader",
@@ -209,63 +223,10 @@ async def test_graph_status_reads_the_configured_server(monkeypatch) -> None:
         seen.append(cfg)
         return "status"
 
-    monkeypatch.setattr(composition, "read_status_async", fake_read)
+    monkeypatch.setattr(supervisors, "read_status_async", fake_read)
 
     assert await composition.graph_status() == "status"
     assert seen == [config]
-
-
-class TestLifespan:
-    @staticmethod
-    def _recording_server(monkeypatch) -> list[str]:
-        events: list[str] = []
-
-        class Recording:
-            async def start_async(self) -> None:
-                events.append("start")
-
-            async def stop_async(self) -> None:
-                events.append("stop")
-
-        recorder = Recording()
-        monkeypatch.setattr(composition, "graph_server", lambda: recorder)
-        return events
-
-    async def test_starts_on_entry_and_stops_on_exit(self, monkeypatch) -> None:
-        events = self._recording_server(monkeypatch)
-
-        async with composition.graph_server_lifespan():
-            assert events == ["start"]
-
-        assert events == ["start", "stop"]
-
-    async def test_a_failed_start_does_not_take_the_app_down(self, monkeypatch) -> None:
-        """The page whose job is reporting server state is more useful up."""
-        events: list[str] = []
-
-        class Broken:
-            async def start_async(self) -> None:
-                raise RuntimeError("run `task tauri:vendor`")
-
-            async def stop_async(self) -> None:
-                events.append("stop")
-
-        broken = Broken()
-        monkeypatch.setattr(composition, "graph_server", lambda: broken)
-
-        async with composition.graph_server_lifespan():
-            pass
-
-        assert events == ["stop"]
-
-    async def test_stops_even_when_the_app_body_raises(self, monkeypatch) -> None:
-        events = self._recording_server(monkeypatch)
-
-        with pytest.raises(ValueError):
-            async with composition.graph_server_lifespan():
-                raise ValueError("app blew up")
-
-        assert events == ["start", "stop"]
 
 
 def test_the_reader_is_built_on_the_configured_stores(monkeypatch, tmp_path) -> None:
@@ -612,6 +573,66 @@ class TestTheSearch:
         assert caplog.records == []
 
 
+class TestTheQueryInterpreter:
+    """Published whether or not a model is configured — that is the whole rule."""
+
+    def test_no_provider_still_publishes_one(self, monkeypatch) -> None:
+        """ "No interpreter configured" is an ordinary state with a one-line
+        remedy. Publishing only when a provider exists would make the search
+        page show the half-wired-build sentence for it — a developer's error in
+        front of a user, naming a fix that is not theirs to make."""
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        assert composition.query_interpreter().available is False
+
+    def test_a_configured_provider_makes_it_available(self, monkeypatch) -> None:
+        monkeypatch.setenv("app_llm_provider", "ollama")
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+        registry = service_registry()
+        saved = registry.snapshot()
+        registry.register_as(LlmConfig, LlmConfig())
+        try:
+            composition.chat_client.cache_clear()
+            composition.query_interpreter.cache_clear()
+            assert composition.query_interpreter().available is True
+        finally:
+            registry.restore(saved)
+            composition.chat_client.cache_clear()
+            composition.query_interpreter.cache_clear()
+
+    def test_it_reads_its_own_block_and_not_the_embedders(self, monkeypatch) -> None:
+        """The two models differ in what leaves the machine, so an installation
+        may reasonably want either without the other."""
+        monkeypatch.setenv("app_semantic_provider", "ollama")
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        assert composition.llm_config().provider.value == "none"
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_the_ui_finds_it_without_importing_the_app(self) -> None:
+        published = composition.publish_query_interpreter()
+
+        assert published is composition.query_interpreter()
+        assert service_registry().get(QueryInterpreter) is published
+
+    @pytest.mark.usefixtures("_published_registry")
+    def test_publishing_it_twice_leaves_one(self, caplog) -> None:
+        first = composition.publish_query_interpreter()
+
+        with caplog.at_level(logging.WARNING, logger=REGISTRY_LOGGER):
+            assert composition.publish_query_interpreter() is first
+
+        assert service_registry().get(QueryInterpreter) is first
+        assert caplog.records == []
+
+    def test_the_client_is_a_singleton(self, monkeypatch) -> None:
+        """The adapters hold an ``httpx`` pool: a second one would pay a fresh
+        handshake per question and never be closed."""
+        _use_config(monkeypatch, GraphServerMode.REMOTE)
+
+        assert composition.chat_client() is composition.chat_client()
+
+
 def test_the_worker_handle_is_a_singleton() -> None:
     """A second handle would be a second child claiming the same jobs."""
     assert composition.sync_worker() is composition.sync_worker()
@@ -649,6 +670,78 @@ class TestWorkerProcess:
         """A lifespan whose start failed still runs its finally."""
         composition.WorkerProcess(SLEEPER).stop()
 
+    def test_asking_it_to_stop_does_not_wait_for_it(self) -> None:
+        """The half the shutdown does first, for both children, before it waits
+        for either. A request that blocked would be the whole defect again."""
+        worker = composition.WorkerProcess(SLEEPER)
+        worker.start()
+        child = worker._process
+        assert child is not None
+
+        began = time.monotonic()
+        worker.request_stop()
+        asked_in = time.monotonic() - began
+
+        assert asked_in < composition.TERMINATE_GRACE_SECONDS
+        assert child.wait(timeout=10) is not None
+        worker.stop()
+
+    def test_asking_one_that_never_started_is_allowed(self) -> None:
+        composition.WorkerProcess(SLEEPER).request_stop()
+
+    def test_starting_one_that_is_already_running_is_a_no_op(self) -> None:
+        """A lifespan can fire twice on reload; a second child would claim the
+        same jobs."""
+        worker = composition.WorkerProcess(SLEEPER)
+        worker.start()
+        child = worker._process
+
+        worker.start()
+
+        assert worker._process is child
+        worker.stop()
+
+    def test_a_child_that_ignores_sigterm_is_killed_inside_the_budget(self) -> None:
+        """The escalation carries the guarantee: whatever the child does, the
+        stop is over well before granian kills this process at two seconds."""
+        worker = composition.WorkerProcess(DEAF)
+        worker.start()
+        child = worker._process
+        assert child is not None
+
+        began = time.monotonic()
+        worker.stop()
+        took = time.monotonic() - began
+
+        assert child.poll() is not None, "the child outlived the stop"
+        assert took < 2 * composition.TERMINATE_GRACE_SECONDS + 0.5
+
+    def test_a_stop_after_a_request_still_reaps_the_child(self) -> None:
+        """The order the lifespan uses: ask both, then reap both."""
+        worker = composition.WorkerProcess(SLEEPER)
+        worker.start()
+        child = worker._process
+
+        worker.request_stop()
+        worker.stop()
+
+        assert child is not None
+        assert child.poll() is not None, "the child outlived the stop"
+        assert not worker.running
+
+    def test_the_grace_period_fits_the_supervisor_that_kills_this_process(
+        self,
+    ) -> None:
+        """Granian gives the whole shutdown two seconds — this child and the
+        graph server together — and kills what is left. A grace period longer
+        than that budget is how both used to be orphaned."""
+        budget = (
+            composition.TERMINATE_GRACE_SECONDS
+            + graph_server_module._TERMINATE_GRACE_SECONDS
+        )
+
+        assert budget < 2.0
+
     def test_the_command_names_a_module_that_can_be_run(self) -> None:
         """`task sync:worker` runs the same module by hand — a typo here would
         only show up as a child that dies at every application start."""
@@ -657,67 +750,142 @@ class TestWorkerProcess:
         assert callable(module.main)
 
 
-class TestSyncWorkerLifespan:
-    @staticmethod
-    def _supervised(monkeypatch, supervise: bool = True) -> list[str]:
+class TestSupervisedChildrenLifespan:
+    """One hook owns both children, and the shutdown order is the point.
+
+    Granian kills the worker running this lifespan two seconds after asking it
+    to stop, so a shutdown that reaped one child before signalling the other
+    could spend the whole budget on the first and orphan the second. Both are
+    asked, then both are reaped.
+    """
+
+    class _Recorder:
+        """Stands in for either child and writes what was called down."""
+
+        def __init__(self, events: list[str], name: str) -> None:
+            self._events = events
+            self._name = name
+
+        async def start_async(self) -> None:
+            self._events.append(f"{self._name}:start")
+
+        def request_stop(self) -> None:
+            self._events.append(f"{self._name}:asked")
+
+        async def stop_async(self) -> None:
+            self._events.append(f"{self._name}:reaped")
+
+    def _both(self, monkeypatch, supervise: bool = True) -> list[str]:
         monkeypatch.setattr(
             composition, "sync_config", lambda: SyncConfig(supervise_worker=supervise)
         )
         events: list[str] = []
-
-        class Recording:
-            async def start_async(self) -> None:
-                events.append("start")
-
-            async def stop_async(self) -> None:
-                events.append("stop")
-
-        recorder = Recording()
-        monkeypatch.setattr(composition, "sync_worker", lambda: recorder)
+        monkeypatch.setattr(
+            supervisors, "graph_server", lambda: self._Recorder(events, "graph")
+        )
+        monkeypatch.setattr(
+            supervisors, "sync_worker", lambda: self._Recorder(events, "worker")
+        )
         return events
 
-    async def test_starts_on_entry_and_stops_on_exit(self, monkeypatch) -> None:
-        events = self._supervised(monkeypatch)
+    async def test_starts_both_on_entry_and_stops_both_on_exit(
+        self, monkeypatch
+    ) -> None:
+        events = self._both(monkeypatch)
 
-        async with composition.sync_worker_lifespan():
-            assert events == ["start"]
+        async with composition.supervised_children_lifespan():
+            assert events == ["graph:start", "worker:start"]
 
-        assert events == ["start", "stop"]
+        assert events[2:] == [
+            "worker:asked",
+            "graph:asked",
+            "worker:reaped",
+            "graph:reaped",
+        ]
 
-    async def test_a_failed_start_does_not_take_the_app_down(self, monkeypatch) -> None:
+    async def test_the_graph_comes_up_before_the_worker(self, monkeypatch) -> None:
+        """The worker opens a session against it as soon as it claims a job."""
+        events = self._both(monkeypatch)
+
+        async with composition.supervised_children_lifespan():
+            pass
+
+        assert events.index("graph:start") < events.index("worker:start")
+
+    async def test_both_children_are_asked_before_either_is_reaped(
+        self, monkeypatch
+    ) -> None:
+        """The regression test for the leak: a shutdown cut off after the first
+        reap must still have signalled the second child. Measured before this
+        was true — a hot reload left a `redis-server` holding the archive's
+        port with nothing left in the system that would stop it."""
+        events = self._both(monkeypatch)
+
+        async with composition.supervised_children_lifespan():
+            pass
+
+        last_asked = max(i for i, e in enumerate(events) if e.endswith(":asked"))
+        first_reaped = min(i for i, e in enumerate(events) if e.endswith(":reaped"))
+        assert last_asked < first_reaped
+
+    async def test_a_failed_graph_start_does_not_take_the_app_down(
+        self, monkeypatch
+    ) -> None:
+        """The page whose job is reporting server state is more useful up."""
+        events = self._both(monkeypatch)
+
+        class Broken(self._Recorder):
+            async def start_async(self) -> None:
+                raise RuntimeError("run `task tauri:vendor`")
+
+        monkeypatch.setattr(
+            supervisors, "graph_server", lambda: Broken(events, "graph")
+        )
+
+        async with composition.supervised_children_lifespan():
+            pass
+
+        assert "worker:start" in events
+        assert events[-1] == "graph:reaped"
+
+    async def test_a_failed_worker_start_does_not_take_the_app_down(
+        self, monkeypatch
+    ) -> None:
         """A job simply waits in the queue; the archive is readable meanwhile."""
-        monkeypatch.setattr(composition, "sync_config", SyncConfig)
-        events: list[str] = []
+        events = self._both(monkeypatch)
 
-        class Broken:
+        class Broken(self._Recorder):
             async def start_async(self) -> None:
                 raise RuntimeError("the sync worker exited immediately")
 
-            async def stop_async(self) -> None:
-                events.append("stop")
+        monkeypatch.setattr(
+            supervisors, "sync_worker", lambda: Broken(events, "worker")
+        )
 
-        broken = Broken()
-        monkeypatch.setattr(composition, "sync_worker", lambda: broken)
-
-        async with composition.sync_worker_lifespan():
+        async with composition.supervised_children_lifespan():
             pass
 
-        assert events == ["stop"]
+        assert "worker:reaped" in events
+        assert "graph:reaped" in events
 
-    async def test_stops_even_when_the_app_body_raises(self, monkeypatch) -> None:
-        events = self._supervised(monkeypatch)
+    async def test_stops_both_even_when_the_app_body_raises(self, monkeypatch) -> None:
+        events = self._both(monkeypatch)
 
         with pytest.raises(ValueError):
-            async with composition.sync_worker_lifespan():
+            async with composition.supervised_children_lifespan():
                 raise ValueError("app blew up")
 
-        assert events == ["start", "stop"]
+        assert events[-2:] == ["worker:reaped", "graph:reaped"]
 
-    async def test_supervision_can_be_handed_to_docker(self, monkeypatch) -> None:
-        """Off under systemd: a second copy would claim the same jobs."""
-        events = self._supervised(monkeypatch, supervise=False)
+    async def test_worker_supervision_can_be_handed_to_docker(
+        self, monkeypatch
+    ) -> None:
+        """Off under systemd: a second copy would claim the same jobs. The
+        graph server is still this process's, and still stopped."""
+        events = self._both(monkeypatch, supervise=False)
 
-        async with composition.sync_worker_lifespan():
+        async with composition.supervised_children_lifespan():
             pass
 
-        assert events == []
+        assert not any(event.startswith("worker:") for event in events)
+        assert events == ["graph:start", "graph:asked", "graph:reaped"]

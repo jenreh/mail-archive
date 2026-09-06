@@ -16,6 +16,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from mailarc_core.graph import ownership
 from mailarc_core.graph.admin import is_serving
 from mailarc_core.graph.config import GraphConfig
 from mailarc_core.graph.model import GraphServerMode
@@ -28,7 +29,19 @@ logger = logging.getLogger(__name__)
 _LOG_TAIL_LINES = 50
 
 #: Grace period between SIGTERM and SIGKILL when stopping the process group.
-_TERMINATE_GRACE_SECONDS = 5.0
+#:
+#: Under a second, and that is not a preference: on the desktop this server is
+#: stopped from an ASGI lifespan inside a granian worker, and granian sends
+#: that worker SIGKILL two seconds after SIGTERM (``workers_kill_timeout=2``,
+#: which Reflex hardcodes). The whole shutdown — this server *and* the sync
+#: worker — has to fit inside those two seconds or the shutdown is cut off
+#: mid-way and whatever had not been reaped yet is orphaned. Measured: at the
+#: five seconds this used to be, a reload left a ``redis-server`` behind every
+#: time the sync worker was not instantly reapable.
+_TERMINATE_GRACE_SECONDS = 0.8
+
+#: How often :meth:`FalkorDBServer._reaped` looks at a server it did not spawn.
+_REAP_POLL_INTERVAL_SECONDS = 0.02
 
 _READY_POLL_INTERVAL_SECONDS = 0.1
 
@@ -48,9 +61,11 @@ class FalkorDBServer:
     def __init__(self, config: GraphConfig) -> None:
         self._config = config
         self._process: subprocess.Popen[bytes] | None = None
+        self._pid: int | None = None
         self._output_tail: deque[str] = deque(maxlen=_LOG_TAIL_LINES)
         self._owned = False
         self._startup_error: str | None = None
+        self._asked_to_stop = False
 
     @property
     def endpoint(self) -> str:
@@ -101,25 +116,52 @@ class FalkorDBServer:
         else:
             self._startup_error = None
 
-    def stop(self) -> None:
-        """Stop the server if this process started it."""
-        process = self._process
-        self._process = None
-        if process is None or not self._owned:
+    def request_stop(self) -> None:
+        """Ask the server to exit, and return without waiting for it to.
+
+        Split out of :meth:`stop` because the shutdown budget belongs to *both*
+        of the application's children together: granian kills the worker that
+        runs the lifespan two seconds after asking it to stop, and a shutdown
+        that reaps one child before so much as signalling the other spends that
+        budget serially. Asked first and reaped afterwards, a server that is
+        never reaped has still been told to go.
+
+        Idempotent, like everything else here: a second SIGTERM to a process
+        that has already taken the first is not an error, and one to a process
+        that has exited is suppressed.
+        """
+        if self._pid is None or not self._owned or self._asked_to_stop:
             return
-        if process.poll() is not None:
+        if self._exited():
+            return
+        self._asked_to_stop = True
+        logger.info("Stopping FalkorDB (pid %d)", self._pid)
+        self._signal_group(self._pid, signal.SIGTERM)
+
+    def stop(self) -> None:
+        """Stop the server if this process owns it, and insist if it will not.
+
+        Owning it covers two cases: one this process spawned, and one a
+        previous run left behind that :meth:`_start_local` took over. The
+        second has no :class:`~subprocess.Popen` to wait on, which is why the
+        reaping below goes through the pid.
+        """
+        pid = self._pid
+        if pid is None or not self._owned:
+            self._process = None
+            self._pid = None
             return
 
-        logger.info("Stopping FalkorDB (pid %d)", process.pid)
-        self._signal_group(process, signal.SIGTERM)
-        try:
-            process.wait(timeout=_TERMINATE_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
+        self.request_stop()
+        if not self._reaped(_TERMINATE_GRACE_SECONDS):
             logger.warning("FalkorDB ignored SIGTERM, sending SIGKILL")
-            self._signal_group(process, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=_TERMINATE_GRACE_SECONDS)
+            self._signal_group(pid, signal.SIGKILL)
+            self._reaped(_TERMINATE_GRACE_SECONDS)
+        ownership.forget(self._data_dir())
         self._owned = False
+        self._process = None
+        self._pid = None
+        self._asked_to_stop = False
 
     async def start_async(self) -> None:
         """:meth:`start` off the event loop; starting a process blocks.
@@ -134,17 +176,21 @@ class FalkorDBServer:
         await asyncio.to_thread(self.stop)
 
     def _start_local(self) -> None:
-        if self._process is not None and self._process.poll() is None:
-            logger.debug("FalkorDB already started by this process")
+        if self._owned and self._pid is not None and not self._exited():
+            # Ours already — spawned here or taken over from a run that ended.
+            # The check covers both, and it has to: a start that fell through
+            # to the adoption below would find its own server listening, read
+            # its own record, see a supervisor that is alive because it is
+            # *this* process, and hand back the ownership it already had.
+            logger.debug("FalkorDB already owned by this process")
             return
 
         if is_serving(self._config.host, self._config.port):
-            logger.info("Adopting the FalkorDB already listening on %s", self.endpoint)
-            self._owned = False
+            self._adopt()
             return
 
         runtime = FalkorDBRuntime.resolve(self._config.runtime_dir)
-        data_dir = Path(self._config.data_dir).expanduser().resolve()
+        data_dir = self._data_dir()
         data_dir.mkdir(parents=True, exist_ok=True)
         # The graph persists a parsed rendering of private mail. An explicit
         # chmod rather than a mkdir mode, so a permissive umask cannot leave
@@ -180,9 +226,75 @@ class FalkorDBServer:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        self._pid = self._process.pid
         self._owned = True
+        self._asked_to_stop = False
+        # Written before the readiness wait rather than after it: a start that
+        # times out leaves `stop` to clean up, and a start interrupted between
+        # the two would otherwise leave a server no later run could recognise.
+        ownership.record(data_dir, self._pid, self._config.port)
         self._drain_output_in_background()
         self._await_ready()
+
+    def _adopt(self) -> None:
+        """Take on a server that was already listening when this start ran.
+
+        Two different situations reach this, and telling them apart is the
+        whole point of :mod:`mailarc_core.graph.ownership`. A server whose
+        supervisor is still alive belongs to that supervisor — a second
+        application instance must not stop it, and this is the behaviour that
+        was here before. A server whose supervisor is gone is an orphan of a
+        run that is over, and adopting *that* one un-owned is what used to make
+        a single leaked server permanent: every later start declined to stop
+        it, so it held the port until somebody killed it by hand.
+        """
+        orphan = ownership.orphan_pid(self._data_dir(), self._config.port)
+        if orphan is None:
+            logger.info("Adopting the FalkorDB already listening on %s", self.endpoint)
+            self._owned = False
+            self._pid = None
+            return
+
+        logger.warning(
+            "Taking over the orphaned FalkorDB on %s (pid %d) — its supervisor is gone",
+            self.endpoint,
+            orphan,
+        )
+        self._pid = orphan
+        self._owned = True
+        self._asked_to_stop = False
+        ownership.record(self._data_dir(), orphan, self._config.port)
+
+    def _data_dir(self) -> Path:
+        """Where this server keeps its dump, and its ownership record with it."""
+        return Path(self._config.data_dir).expanduser().resolve()
+
+    def _exited(self) -> bool:
+        """Whether the server this handle points at has already gone."""
+        if self._process is not None:
+            return self._process.poll() is not None
+        return self._pid is not None and not ownership.alive(self._pid)
+
+    def _reaped(self, timeout: float) -> bool:
+        """Wait up to *timeout* for the server to exit; say whether it did.
+
+        A server this process spawned is waited on, so it leaves no zombie
+        behind. One taken over from a previous run is not ours to wait on —
+        it was never our child — so its exit is polled for instead.
+        """
+        if self._process is not None:
+            try:
+                self._process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return False
+            return True
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._exited():
+                return True
+            time.sleep(_REAP_POLL_INTERVAL_SECONDS)
+        return self._exited()
 
     def _await_ready(self) -> None:
         deadline = time.monotonic() + self._config.startup_timeout
@@ -217,6 +329,11 @@ class FalkorDBServer:
         threading.Thread(target=drain, daemon=True, name="falkordb-log").start()
 
     @staticmethod
-    def _signal_group(process: subprocess.Popen[bytes], sig: int) -> None:
+    def _signal_group(pid: int, sig: int) -> None:
+        """Signal the whole session the server was started in.
+
+        By pid rather than by handle, because a server taken over from a
+        previous run has no handle here — it is not this process's child.
+        """
         with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(process.pid), sig)
+            os.killpg(os.getpgid(pid), sig)

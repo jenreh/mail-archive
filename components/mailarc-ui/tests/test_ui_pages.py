@@ -23,6 +23,8 @@ import reflex as rx
 from pydantic import BaseModel, ConfigDict
 from reflex.page import DECORATED_PAGES
 
+from mailarc_analytics.nlq import CONFIGURE_LLM
+from mailarc_analytics.nlq import SETTINGS_PAGE as LLM_SETTINGS_PAGE
 from mailarc_analytics.semantic import SETTINGS_PAGE, dimension_mismatch
 from mailarc_ui.embedder import embedder_panel
 from mailarc_ui.kit import PAGE_INSET
@@ -108,9 +110,12 @@ PAGES: tuple[PageSpec, ...] = (
     PageSpec(
         name="embedder",
         page=embedder.embedder_page,
+        # The route keeps its old name although the page no longer does: it is
+        # quoted in every remedy sentence semantic search shows, pinned against
+        # `SETTINGS_PAGE` below, and in anybody's bookmarks.
         route=routes.EMBEDDER,
-        title="Embedder",
-        primes=("EmbedderSettingsState.load",),
+        title="Models",
+        primes=("EmbedderSettingsState.load", "InterpreterSettingsState.load"),
     ),
     PageSpec(
         name="status",
@@ -334,3 +339,18 @@ def test_every_remedy_that_names_the_embedder_page_names_its_route() -> None:
     )
 
     assert routes.EMBEDDER in advice
+
+
+def test_the_interpreter_remedy_names_a_route_that_exists() -> None:
+    """The same drift, for the other model on the same page.
+
+    Both halves live at ``/admin/embedder``, so both constants have to keep
+    naming it — and a sentence that sent a reader to a route nothing serves
+    would be worse than one that named no page at all.
+
+    Its own test rather than an extra line in the one above, because the two
+    constants come from two components that cannot see each other: only a test
+    module legitimately sees both sides.
+    """
+    assert LLM_SETTINGS_PAGE == routes.EMBEDDER
+    assert routes.EMBEDDER in CONFIGURE_LLM

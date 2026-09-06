@@ -393,6 +393,6 @@ task graph:repair-conversations  # one repair, no queue, no worker
 ```
 
 Under the desktop app it is a child of the web application, started by
-`sync_worker_lifespan`. Under Docker or systemd it is its own unit — set
+`supervised_children_lifespan`. Under Docker or systemd it is its own unit — set
 `sync.supervise_worker: false`, or the application starts a second one and the
 two race for the same jobs.

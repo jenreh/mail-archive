@@ -8,13 +8,25 @@ writing the code and easy to lose the moment phase 6 adds one, so it is checked
 by reading the imports rather than by remembering.
 
 Phase 6 added one, which is what :data:`EXEMPT` is. The claim did not get
-weaker, it got a boundary: ``semantic/`` is where a model is allowed and every
-other module in the package still may not name one. That boundary is worth more
-than the blanket ban was — a blanket ban over a package that contains an
-embedder is a test that has to be deleted, and a deleted test protects nothing.
-The top-level ``__init__`` is *not* exempt: the semantic surface is reached as
-``from mailarc_analytics.semantic import …``, so the package's own docstring and
-re-exports stay free of it and A1-A3 remain what a bare
+weaker, it got a boundary: the exempt directories are where a model is allowed
+and every other module in the package still may not name one. That boundary is
+worth more than the blanket ban was — a blanket ban over a package that
+contains an embedder is a test that has to be deleted, and a deleted test
+protects nothing.
+
+There are two exempt directories now, and the second one is worth stating
+rather than counting. ``semantic/`` holds a model that **writes**: it puts a
+vector on a node, which is why ``ABOUT.method`` has to distinguish an embedding
+cluster from an exact one. ``nlq/`` holds a model that writes nothing at all —
+it reads a question and hands back a filter, and every value in that filter is
+one the archive itself supplied. So the rule the ban really protects, that no
+finding in this graph may rest on a guess, is untouched by it: there is no
+finding, only a search form somebody can see and correct.
+
+The top-level ``__init__`` is *not* exempt, and that is what keeps both
+surfaces opt-in: each is reached as ``from mailarc_analytics.semantic import …``
+or ``from mailarc_analytics.nlq import …``, so the package's own docstring and
+re-exports stay free of them and A1-A3 remain what a bare
 ``import mailarc_analytics`` gets you.
 """
 
@@ -37,12 +49,18 @@ timestamps is the first sign that something semantic has been let in.
 """
 
 
-EXEMPT = ("semantic/",)
-"""The one directory a model is allowed in — phase 6's embedder and KNN.
+EXEMPT = ("semantic/", "nlq/")
+"""The two directories a model is allowed in.
 
-A path prefix and not a module list, so a new file under ``semantic/`` is
-covered by the same decision that let the package exist, while a new file
-anywhere else is not.
+``semantic/`` is phase 6's embedder and KNN. ``nlq/`` is the interpreter that
+reads a natural-language question into a search filter — and it is a separate
+decision rather than the same one widened: it writes nothing to the graph, so
+the property this ban exists to protect (that every finding is defensible from
+a header or a hash) is not in its reach at all.
+
+Path prefixes and not module lists, so a new file under either is covered by
+the decision that let the directory exist, while a new file anywhere else is
+not.
 """
 
 DETERMINISTIC = ("mailarc_analytics.derived", "mailarc_analytics.queries")
@@ -132,6 +150,56 @@ def test_no_module_in_the_package_imports_anything_semantic() -> None:
         )
         for path in sorted(SOURCE.rglob("*.py"))
         if not path.relative_to(SOURCE).as_posix().startswith(EXEMPT)
+    }
+
+    assert {path: names for path, names in offenders.items() if names} == {}
+
+
+NLQ_MAY_NOT_TOUCH = (
+    "runic",
+    "mailarc_ui",
+    "sqlalchemy",
+    "appkit_commons.registry",
+    "appkit_commons.database",
+)
+"""What the interpreter is not allowed to reach for, and why each one.
+
+``runic`` and ``sqlalchemy`` are the claim in :data:`EXEMPT` made checkable:
+``nlq/`` is exempt from the model ban *because it writes nothing*, and a
+package that cannot open a session cannot write. Without this the exemption
+would be an argument in a docstring rather than a property of the code.
+
+``mailarc_ui`` is §6's layering, and it is a live risk here rather than a
+theoretical one: the file families the resolver matches against are defined in
+``mailarc_ui.search.files``, so the shortest way to write this feature is the
+one import that would drag Reflex into a component that must stay usable from a
+CLI. The vocabulary is passed in as data instead.
+
+The two ``appkit_commons`` entries are narrow on purpose.
+``appkit_commons.configuration`` is *allowed* — ``LlmConfig`` is a
+``BaseConfig`` exactly as every other component config is, and declaring
+settings is not reading them. The registry and the database are not: a
+component that looked itself up or opened a session would be building itself
+from configuration, which §4.1 puts in the composition root alone and which is
+what keeps the interpreter constructible in a test with no application around
+it.
+"""
+
+
+def test_the_interpreter_writes_nothing_and_cannot_see_the_ui() -> None:
+    """The two properties ``nlq/``'s exemption from the model ban rests on.
+
+    The exemption is argued rather than assumed — a model that only *reads* a
+    question cannot put a guess into the graph — so the argument is pinned
+    here. If this package ever opens a graph session, the reasoning behind
+    :data:`EXEMPT` stops holding and the boundary has to be re-decided rather
+    than quietly extended.
+    """
+    offenders = {
+        path.relative_to(SOURCE).as_posix(): sorted(
+            name for name in _imported(path) if name.startswith(NLQ_MAY_NOT_TOUCH)
+        )
+        for path in sorted((SOURCE / "nlq").rglob("*.py"))
     }
 
     assert {path: names for path, names in offenders.items() if names} == {}

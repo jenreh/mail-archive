@@ -60,15 +60,46 @@ semantic/
                       (needs an embedder, an index and a completed job).
   indexing.py         the embed job's half: page the archive, embed, write the
                       vectors back beside the ground truth.
+nlq/
+  config.py           LlmConfig — provider (default `none`), model, base URL,
+                      key, timeout, output limit. Its own block, never a field
+                      on SemanticConfig: the two models differ in what leaves
+                      the machine.
+  ports.py            ChatPort. The second port here, and it earns its place
+                      the same way: three implementations from day one.
+  chat.py             OllamaChat, OpenAIChat and AzureOpenAIChat over httpx,
+                      plus build_chat_client() and intent_json(), which reads
+                      an object out of whatever a model actually sent.
+  prompt.py           the instruction. Constant except for one date — nothing
+                      from the archive is ever put in it.
+  model.py            frozen values: what the model read, what the archive made
+                      of it, and strict_schema(), the one schema all three
+                      adapters send. No I/O.
+  errors.py           the sentences a user reads when a question cannot be
+                      turned into a filter.
+  resolve.py          pure: a name to archived addresses, a word to a file
+                      family, a named period to two dates. Where the German
+                      cases live, and none of them needs a model.
+  interpreter.py      QueryInterpreter — the sequence, and the error boundary
+                      that keeps mailarc-core's mail taxonomy off a search page.
 ```
 
 Every analysis is a **pure compute half and a thin write half**: the compute
 half is a function over `MessageFacts` that touches no graph, so what decides
 whether an analysis is right is tested without a server.
 
-`semantic/` is reached by name — `from mailarc_analytics.semantic import …` —
-and is deliberately not re-exported at the package root, so everything a bare
-`import mailarc_analytics` offers is still exact.
+`semantic/` and `nlq/` are reached by name — `from mailarc_analytics.semantic
+import …` — and are deliberately not re-exported at the package root, so
+everything a bare `import mailarc_analytics` offers is still exact.
+
+The two are the only directories here a model is allowed in, and they are
+allowed for different reasons. `semantic/` holds a model that **writes**: it
+puts a vector on a node, which is why `ABOUT.method` has to distinguish an
+embedding cluster from an exact one. `nlq/` holds a model that writes nothing —
+it reads a question and hands back a filter, and every value in that filter is
+one the archive itself supplied. `tests/test_analytics_package.py` enforces
+both the boundary and, for `nlq/`, the claim it rests on: that package may not
+import runic, SQLAlchemy, the registry or `mailarc_ui`.
 
 ## Embeddings are optional, and saying so is a feature
 

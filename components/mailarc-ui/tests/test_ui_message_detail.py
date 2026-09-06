@@ -372,13 +372,45 @@ class TestTheFrameDocument:
 
 
 class TestDecodingTheRaw:
+    """UTF-8, then what the part said, then Windows-1252 with replacement.
+
+    The middle step and the order it sits in are new, and they are the fix for
+    a real screenshot: a contact card written by a German mail program read
+    ``Gesch�ftsleitung`` in the panel, because every attachment used to be
+    decoded as UTF-8 with replacement and nothing else was tried.
+    """
+
     def test_utf8_comes_through_whole(self) -> None:
         assert decode_raw("Grüße".encode()) == ("Grüße", False)
 
-    def test_a_mislabelled_byte_is_replaced_not_fatal(self) -> None:
-        text, truncated = decode_raw(b"Gr\xfc\xdfe")
+    def test_a_single_byte_encoding_is_read_rather_than_replaced(self) -> None:
+        """``Gr��e`` is what this used to return."""
+        assert decode_raw("Grüße".encode("cp1252")) == ("Grüße", False)
 
-        assert text == "Gr��e"
+    def test_what_the_part_said_is_believed_when_utf8_fails(self) -> None:
+        text, _ = decode_raw("Ελλάδα".encode("iso-8859-7"), charset="iso-8859-7")
+
+        assert text == "Ελλάδα"
+
+    def test_utf8_wins_over_a_label_that_disagrees_with_it(self) -> None:
+        """Latin-1 accepts every byte, so a UTF-8 file labelled ``iso-8859-1``
+        would decode without error into ``GrÃ¼ÃŸe`` and nothing would
+        notice. Trusting the label first is how that gets archived."""
+        text, _ = decode_raw("Grüße".encode(), charset="iso-8859-1")
+
+        assert text == "Grüße"
+
+    def test_a_charset_no_codec_has_falls_through_rather_than_raising(self) -> None:
+        text, _ = decode_raw("Grüße".encode(), charset="x-mac-erfunden")
+
+        assert text == "Grüße"
+
+    def test_a_byte_that_is_in_no_encoding_at_all_is_still_not_fatal(self) -> None:
+        """0x81 is unassigned in Windows-1252 too, so this is the floor: a
+        replacement character, and never an exception."""
+        text, truncated = decode_raw(b"Gr\x81\xdfe")
+
+        assert text == "Gr�ße"
         assert truncated is False
 
     def test_a_long_original_is_cut_after_decoding(self) -> None:

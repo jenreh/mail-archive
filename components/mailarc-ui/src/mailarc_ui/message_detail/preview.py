@@ -9,7 +9,16 @@ Pure functions and one frozen value object, like the rest of this package: the
 state reads the original off disk and hands the parsed attachment here, and
 everything below is checkable without an archive.
 
-Three decisions are worth stating, because each of them is a road not taken.
+Four decisions are worth stating, because each of them is a road not taken.
+
+**Two kinds of file are read rather than rendered.** A ``.ics`` and a ``.vcf``
+are the only attachments a mail carries that are *already* structured — a
+meeting and a person, written down in a grammar — and showing them the way
+everything else here is shown means printing that grammar at a reader. So they
+go through :mod:`mailarc_ui.message_detail.invite` and
+:mod:`mailarc_ui.message_detail.vcard` and arrive as records the panel lays
+out. The cost is a parser per format and the honesty that goes with one: both
+fall back to printing the file when they cannot read it.
 
 **The bytes travel as a ``data:`` URI, not from an endpoint.** The obvious
 alternative is an HTTP route that streams one attachment, and it would be
@@ -33,11 +42,13 @@ the page around it, which is the property that mattered about the sandbox.
 :data:`PREVIEW_OF_KIND` says what can be drawn for each family. This module
 decides only how to draw it.
 
-**Text is decoded as UTF-8 with replacement.** A part's charset is not one of
-the things :class:`~mailarc_core.mail.model.ParsedAttachment` keeps, so a
-latin-1 CSV shows a replacement character where an umlaut was. That is a
-visible flaw in the right direction: the reader sees the file with one
-character wrong rather than an error where the file should be.
+**Text is decoded by trying, not by believing.** UTF-8 first, then whatever
+the part said its charset was, then Windows-1252 with replacement so that there
+is always a string — see
+:func:`~mailarc_ui.message_detail.model.decode_raw`, which explains why the
+sender's own statement is asked second rather than first. This used to be a
+plain UTF-8 decode with replacement, and a contact card written by a German
+mail program read ``Gesch�ftsleitung``.
 """
 
 from __future__ import annotations
@@ -52,23 +63,38 @@ from types import MappingProxyType
 from pydantic import BaseModel, ConfigDict
 
 from mailarc_core.mail.model import ParsedAttachment
-from mailarc_ui.message_detail.filetype import FILE_ICONS, FileKind, file_kind
+from mailarc_ui.message_detail.filetype import (
+    FILE_ICONS,
+    FileKind,
+    file_kind,
+    is_ooxml,
+)
+from mailarc_ui.message_detail.invite import CalendarEvent, read_invite
 from mailarc_ui.message_detail.model import (
     NO_FILENAME,
     decode_raw,
     frame_document,
     size_label,
 )
+from mailarc_ui.message_detail.vcard import ContactCard, read_contacts
 
 logger = logging.getLogger(__name__)
 
-PREVIEW_LIMIT = 8 * 1024 * 1024
+PREVIEW_LIMIT = 30 * 1024 * 1024
 """The largest attachment shown at all, in bytes.
 
 Every previewable kind reaches the browser inline — base64 through the state
 socket — so this is the point past which showing a file costs more than not
-showing it. Eight megabytes is roughly eleven of base64, which a local socket
-delivers in well under a second and a scanned twenty-page invoice fits inside.
+showing it.
+
+Thirty megabytes is roughly forty of base64. That is a lot to put on a socket,
+and it is the right number anyway: the figure this started at, eight, was set
+when the only things drawn here were a picture and a PDF frame, and a real
+deck with photographs on its slides is routinely three or four times that. A
+limit that refuses the documents people actually send is not protecting
+anything — it is just the feature not working. The socket is local in the
+desktop shell and on the same host in the web one, and the decode happens once
+per opened file.
 """
 
 TEXT_LIMIT = 128 * 1024
@@ -82,16 +108,34 @@ find out what a file is lives at the top of it; the rest is on disk either way.
 class PreviewKind(StrEnum):
     """How an attachment is put on screen — one per way of showing it.
 
-    ``NONE`` is not a failure. Most of what arrives on mail is a spreadsheet,
-    an archive or a Word document, and a browser cannot render any of them; the
+    ``NONE`` is not a failure. An archive, a video, a Word 97 document — the
     panel then says what the file is and how big it is, which is the whole of
     what is honestly known.
+
+    The three Office members are named after the families they serve rather
+    than after a file extension. They are not interchangeable: each is a
+    different renderer with a different prop surface, which is why they are
+    three members and not one ``OFFICE`` with a format beside it.
+
+    ``CALENDAR`` and ``CONTACT`` are the two shapes that are not the file
+    itself. Everything else here puts the bytes on screen and lets the reader
+    read them, because the bytes are already something a person reads. A
+    ``.ics`` and a ``.vcf`` are forms filled in for a machine, and printing one
+    verbatim — which is what this did until
+    :mod:`mailarc_ui.message_detail.invite` and
+    :mod:`mailarc_ui.message_detail.vcard` were written — asks a person to find
+    ``DTSTART`` in eighty lines to learn when the meeting is.
     """
 
     IMAGE = "image"
     PDF = "pdf"
     HTML = "html"
     TEXT = "text"
+    CALENDAR = "calendar"
+    CONTACT = "contact"
+    DOCUMENT = "document"
+    SPREADSHEET = "spreadsheet"
+    SLIDES = "slides"
     NONE = "none"
 
 
@@ -104,10 +148,11 @@ PREVIEW_OF_KIND: Mapping[FileKind, PreviewKind] = MappingProxyType(
         FileKind.DATA: PreviewKind.TEXT,
         FileKind.TABLE: PreviewKind.TEXT,
         FileKind.MAIL: PreviewKind.TEXT,
-        FileKind.CALENDAR: PreviewKind.TEXT,
-        FileKind.SPREADSHEET: PreviewKind.NONE,
-        FileKind.DOCUMENT: PreviewKind.NONE,
-        FileKind.SLIDES: PreviewKind.NONE,
+        FileKind.CALENDAR: PreviewKind.CALENDAR,
+        FileKind.CONTACT: PreviewKind.CONTACT,
+        FileKind.SPREADSHEET: PreviewKind.SPREADSHEET,
+        FileKind.DOCUMENT: PreviewKind.DOCUMENT,
+        FileKind.SLIDES: PreviewKind.SLIDES,
         FileKind.ARCHIVE: PreviewKind.NONE,
         FileKind.AUDIO: PreviewKind.NONE,
         FileKind.VIDEO: PreviewKind.NONE,
@@ -117,11 +162,27 @@ PREVIEW_OF_KIND: Mapping[FileKind, PreviewKind] = MappingProxyType(
 """What can be drawn for each family — the whole of this module's classifying.
 
 A total map rather than a second set of rules, so the card and the panel can
-never disagree about one file. Note the two places where families that share a
-glyph part company: a ``.csv`` is a table this can print and an ``.xlsx`` is a
-spreadsheet it cannot, and a ``.ics`` invite is text while a ``.pptx`` is not.
-That split is exactly why :class:`~mailarc_ui.message_detail.filetype.FileKind`
-has more members than :class:`PreviewKind`.
+never disagree about one file. Note where families that share a glyph part
+company: a ``.csv`` is a table this prints as text and an ``.xlsx`` goes to a
+spreadsheet renderer, and a ``.ics`` invite is read into an event while a
+``.pptx`` is a deck. That split is why
+:class:`~mailarc_ui.message_detail.filetype.FileKind` still has more members
+than :class:`PreviewKind`.
+
+**Nor is it the last word on a calendar or a contact.** ``CALENDAR`` and
+``CONTACT`` say that the file *claims* to be one; :func:`_content` then reads
+it, and a file with nothing in it — a ``VTODO``, a free/busy publication, a
+download that stopped halfway, a ``.vcf`` that is really a note — falls back to
+``TEXT`` and is printed. A reader is better served by the lines of a file
+nothing could parse than by an empty card saying a meeting has no title, no
+time and nobody on it.
+
+**This map is not the last word on the three Office families.** It says which
+renderer a ``DOCUMENT`` would go to; :func:`preview_kind` then asks
+:func:`~mailarc_ui.message_detail.filetype.is_ooxml` whether this particular
+file is one that renderer can parse, and sends a ``.doc`` or a ``.pages`` back
+to ``NONE``. Keeping the map total and the narrowing separate is what lets the
+map stay a table anyone can read.
 
 ``AUDIO`` and ``VIDEO`` are ``NONE`` on purpose rather than for want of a
 player. Every previewable kind here travels to the browser inline, and a media
@@ -132,21 +193,24 @@ watch it.
 
 TOO_LARGE = "This file is too large to show here; the original is in the archive."
 NOT_PREVIEWABLE = "There is no way to show this kind of file in a browser."
+OLD_OFFICE = "Only the modern .docx, .xlsx and .pptx formats can be shown here."
 EMPTY_PART = "The stored message carries no content for this attachment."
 TEXT_CUT = "Only the beginning is shown."
 PREVIEW_FAILED = "The original could not be read again to show this file."
+EVENTS_CUT = "This calendar holds more events; only the first are shown."
+CARDS_CUT = "This file holds more contacts; only the first are shown."
 
 
 class AttachmentPreview(BaseModel):
-    """One attachment as the slide-in panel shows it — all strings.
+    """One attachment as the slide-in panel shows it.
 
-    Four ways of holding content and exactly one of them is filled, chosen by
-    :attr:`kind`. Separate fields rather than one ``content``, because what the
-    panel does with them differs in kind: :attr:`source` is an ``src``,
-    :attr:`document` is an ``srcdoc``, :attr:`text` is a text node. A single
-    field would only push the distinction into an ``rx.cond`` anyway, and
-    typing it away is what keeps the panel from putting a data URI in a
-    paragraph.
+    Several ways of holding content and exactly one of them is filled, chosen
+    by :attr:`kind`. Separate fields rather than one ``content``, because what
+    the panel does with them differs in kind: :attr:`source` is an ``src``,
+    :attr:`document` is an ``srcdoc``, :attr:`text` is a text node,
+    :attr:`events` is a list something iterates. A single field would only push
+    the distinction into an ``rx.cond`` anyway, and typing it away is what
+    keeps the panel from putting a data URI in a paragraph.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -160,25 +224,76 @@ class AttachmentPreview(BaseModel):
     it in the browser."""
 
     source: str = ""
-    """The ``data:`` URI an image or a PDF frame loads."""
+    """The ``data:`` URI an image loads."""
+
+    encoded: str = ""
+    """The bytes as base64 with no ``data:`` envelope — what a viewer decodes
+    into an ``ArrayBuffer``.
+
+    A fifth way of holding content rather than a reuse of :attr:`source`, for
+    the reason this class's docstring gives about the other four: what the
+    panel does with it differs in kind. ``source`` is an ``src``; this is a
+    React prop, and handing a viewer a ``data:`` URI to slice a prefix off
+    would put the one rule about how bytes are framed inside a JSX file, where
+    nothing in Python can check it.
+    """
 
     document: str = ""
     """The whole framed document an HTML attachment is shown in."""
 
     text: str = ""
+
+    events: list[CalendarEvent] = []
+    contacts: list[ContactCard] = []
+    """What a ``.ics`` or a ``.vcf`` turned out to be about.
+
+    The two fields here that are not strings, and they earn it: an event has
+    seven parts a panel draws in seven places and a contact card has nine, and
+    flattening either into one block of text would be the raw file again with
+    better spacing. Reflex serialises a ``BaseModel``, so ``rx.foreach``
+    resolves ``event.summary`` in the browser the way the header's attachment
+    strip already resolves a row.
+    """
+
     note: str = ""
     """One quiet sentence about the file — why there is no preview, or that
     what is shown was cut. Never an error the page has to handle."""
 
 
+OFFICE_KINDS = frozenset(
+    {PreviewKind.DOCUMENT, PreviewKind.SPREADSHEET, PreviewKind.SLIDES}
+)
+"""The three shapes whose renderers read OOXML and nothing else."""
+
+
 def preview_kind(content_type: str, filename: str | None) -> PreviewKind:
-    """How this file should be shown — classified once, mapped once.
+    """How this file should be shown — classified once, mapped once, narrowed
+    once.
 
     A thin call, and deliberately still a function: the panel asks *what can I
     draw*, and letting it walk the family table itself would be the second
     classifier this module exists to not have.
+
+    The narrowing is the one step the table cannot express.
+    :data:`PREVIEW_OF_KIND` is keyed by family, and a family is a coarser thing
+    than a renderer can be: ``SLIDES`` holds a ``.pptx`` and a ``.key``, and
+    only the first of them is a zip full of OOXML. So an Office shape is asked
+    one more question before it is believed.
     """
-    return PREVIEW_OF_KIND[file_kind(content_type, filename)]
+    kind = PREVIEW_OF_KIND[file_kind(content_type, filename)]
+    if kind in OFFICE_KINDS and not is_ooxml(content_type, filename):
+        return PreviewKind.NONE
+    return kind
+
+
+def encoded_bytes(payload: bytes) -> str:
+    """The bytes as base64 — the one place this module spells that.
+
+    ASCII rather than UTF-8 on the decode because base64 is ASCII by
+    definition, and saying so is what makes a non-ASCII byte here an error
+    rather than a silently different string.
+    """
+    return base64.b64encode(payload).decode("ascii")
 
 
 def data_uri(content_type: str, payload: bytes) -> str:
@@ -188,8 +303,8 @@ def data_uri(content_type: str, payload: bytes) -> str:
     the browser is the one deciding what to do with it, and second-guessing a
     sender who said ``image/jpg`` would only make a picture stop rendering.
     """
-    encoded = base64.b64encode(payload).decode("ascii")
-    return f"data:{content_type or 'application/octet-stream'};base64,{encoded}"
+    kind = content_type or "application/octet-stream"
+    return f"data:{kind};base64,{encoded_bytes(payload)}"
 
 
 def pretty_json(text: str) -> str:
@@ -215,7 +330,7 @@ def preview_of(attachment: ParsedAttachment) -> AttachmentPreview:
     instead of a chain guarding against absence.
     """
     family = file_kind(attachment.content_type, attachment.filename)
-    kind = PREVIEW_OF_KIND[family]
+    kind = preview_kind(attachment.content_type, attachment.filename)
     header = AttachmentPreview(
         filename=attachment.filename or NO_FILENAME,
         content_type=attachment.content_type,
@@ -229,24 +344,99 @@ def preview_of(attachment: ParsedAttachment) -> AttachmentPreview:
     return header.model_copy(update=_content(kind, attachment))
 
 
-def _content(kind: PreviewKind, attachment: ParsedAttachment) -> dict[str, str]:
-    """The one field this kind fills, and the note that goes with it."""
+VIEWER_KINDS = frozenset(
+    {
+        PreviewKind.PDF,
+        PreviewKind.DOCUMENT,
+        PreviewKind.SPREADSHEET,
+        PreviewKind.SLIDES,
+    }
+)
+"""The shapes drawn by a renderer that takes bytes rather than a URL.
+
+A PDF is on this list and did not used to be: it was an ``<iframe src>`` at a
+``data:`` URI, pointed at the browser's own plugin. The viewer that replaced
+that takes an ``ArrayBuffer``, so carrying the URI as well would put eight
+megabytes on the socket twice.
+"""
+
+
+def _no_preview_note(attachment: ParsedAttachment) -> str:
+    """Why there is no preview, said as precisely as the file allows.
+
+    A reader holding a ``.doc`` is told the format is the problem and which
+    ones are not, because that is something they can act on — re-save it, or
+    ask the sender. The generic sentence is kept for a zip or a video, where
+    the format is not the point and there is nothing to do about it.
+    """
+    family = file_kind(attachment.content_type, attachment.filename)
+    if PREVIEW_OF_KIND[family] in OFFICE_KINDS:
+        return OLD_OFFICE
+    return NOT_PREVIEWABLE
+
+
+def _content(
+    kind: PreviewKind, attachment: ParsedAttachment
+) -> dict[str, str | list[CalendarEvent] | list[ContactCard]]:
+    """The one field this kind fills, and the note that goes with it.
+
+    Text is the floor rather than one branch among several: a calendar with no
+    event and a contact file with no card both fall through to it, and the raw
+    lines of a file this could not read are a better answer than a card with
+    nothing on it.
+    """
     if kind is PreviewKind.NONE:
-        return {"note": NOT_PREVIEWABLE}
-    if kind in (PreviewKind.IMAGE, PreviewKind.PDF):
+        return {"note": _no_preview_note(attachment)}
+    if kind is PreviewKind.IMAGE:
         return {
             "kind": kind.value,
             "source": data_uri(attachment.content_type, attachment.payload),
         }
-    text, cut = decode_raw(attachment.payload, TEXT_LIMIT)
+    if kind in VIEWER_KINDS:
+        return {"kind": kind.value, "encoded": encoded_bytes(attachment.payload)}
+    text, cut = decode_raw(attachment.payload, TEXT_LIMIT, attachment.charset)
     if kind is PreviewKind.HTML:
         return {
             "kind": kind.value,
             "document": frame_document(text),
             "note": TEXT_CUT if cut else "",
         }
+    if kind is PreviewKind.CALENDAR:
+        invite = read_invite(text)
+        if invite.events:
+            return {
+                "kind": kind.value,
+                "events": invite.events,
+                "note": _record_note(
+                    invite.total, len(invite.events), EVENTS_CUT, cut=cut
+                ),
+            }
+    if kind is PreviewKind.CONTACT:
+        contacts = read_contacts(text)
+        if contacts.cards:
+            return {
+                "kind": kind.value,
+                "contacts": contacts.cards,
+                "note": _record_note(
+                    contacts.total, len(contacts.cards), CARDS_CUT, cut=cut
+                ),
+            }
     return {
-        "kind": kind.value,
+        "kind": PreviewKind.TEXT.value,
         "text": pretty_json(text) if not cut else text,
         "note": TEXT_CUT if cut else "",
     }
+
+
+def _record_note(total: int, shown: int, cut_note: str, *, cut: bool) -> str:
+    """Which of the two ways a read file can be incomplete happened, if either.
+
+    The record count is asked first because it is the one a reader can act on —
+    an exported calendar or address book is a file they can open in a program
+    that handles the whole of it. A cut is the rarer case by far:
+    :data:`TEXT_LIMIT` is a hundred and twenty-eight kilobytes and a meeting
+    invitation is two.
+    """
+    if total > shown:
+        return cut_note
+    return TEXT_CUT if cut else ""

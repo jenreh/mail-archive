@@ -8,8 +8,10 @@ render unstyled.
 """
 
 import json
+from pathlib import Path
 from typing import Any, get_args
 
+import pytest
 import reflex as rx
 
 from mailarc_ui.kit import (
@@ -21,6 +23,7 @@ from mailarc_ui.kit import (
     avatar_initials,
     count_chip,
     date_field,
+    docx_viewer,
     dot_badge,
     empty_panel,
     field_label,
@@ -37,9 +40,11 @@ from mailarc_ui.kit import (
     multi_select_field,
     number_field,
     password_field,
+    pdf_viewer,
     pill_action,
     pill_icon_action,
     placeholder_block,
+    pptx_viewer,
     primary_button,
     quiet_button,
     range_select,
@@ -54,6 +59,8 @@ from mailarc_ui.kit import (
     status_badge,
     toast,
     toned_message,
+    viewer_assets,
+    xlsx_viewer,
 )
 from mailarc_ui.kit.toast import DURATION_MS, LEVELS, POSITION
 from mailarc_ui.search.state import MailSearchState
@@ -754,3 +761,157 @@ class TestGraphCanvas:
         assert "onBackground" in _rendered(
             graph_canvas(on_background=rx.console_log("cleared"))
         )
+
+
+class TestTheDocumentViewers:
+    """The three wrapped Office renderers, and their contract with the JSX.
+
+    Nothing here renders a document — that is the browser's business, and the
+    browser check is where a rendered slide is confirmed. What a test can hold
+    is everything the two halves have to agree on and nothing enforces: the
+    box each is sized by, the local asset each is loaded from, the exact npm
+    version each is pinned to, and the names the props arrive under.
+
+    The pins are asserted one by one rather than as a set. A renderer's
+    defaults *are* the design, so a range that silently took a minor release
+    would re-lay every document in the archive, and the test that would notice
+    is this one.
+    """
+
+    VIEWERS = {
+        "docx": (docx_viewer, "DocxViewer", "@extend-ai/react-docx@0.9.1"),
+        "xlsx": (xlsx_viewer, "XlsxViewer_", "@extend-ai/react-xlsx@0.16.3"),
+        "pptx": (pptx_viewer, "PptxViewer", "@extend-ai/react-pptx@0.2.0"),
+        "pdf": (pdf_viewer, "PdfViewer", "@embedpdf/pdfium@2.15.0"),
+    }
+
+    def _viewer(self, name: str, **props: Any) -> Any:
+        """The wrapped component inside the sized box the builder returns."""
+        return self.VIEWERS[name][0](**props).children[0]
+
+    @pytest.mark.parametrize("name", sorted(VIEWERS))
+    def test_the_builder_is_a_sized_box_wearing_its_class(self, name: str) -> None:
+        """Each renderer measures its container once, at mount. A box with no
+        height draws a document nought pixels tall and reports nothing wrong —
+        the same trap ``graph_canvas`` documents."""
+        box = self.VIEWERS[name][0]()
+
+        assert "ma-viewer" in _class_of(box)
+        assert "height" in json.dumps(box.render()["props"], default=str)
+
+    @pytest.mark.parametrize("name", sorted(VIEWERS))
+    def test_it_draws_the_wrapped_component(self, name: str) -> None:
+        tag = self.VIEWERS[name][1]
+
+        assert tag in _rendered(self.VIEWERS[name][0]())
+
+    @pytest.mark.parametrize("name", sorted(VIEWERS))
+    def test_it_is_loaded_from_the_local_jsx_asset(self, name: str) -> None:
+        """All three from one folder, which is what lets them share
+        ``viewer_shell.jsx`` and ``viewer_bytes.js``. ``rx.asset`` keys the
+        folder on the *calling* module, so registering them anywhere but
+        ``viewer_assets.py`` would scatter them and break those imports."""
+        library = self._viewer(name).library
+
+        assert library.startswith("$/public/")
+        assert library.endswith(f"viewer_assets/viewer_{name}.jsx")
+
+    @pytest.mark.parametrize("name", sorted(VIEWERS))
+    def test_it_declares_the_lazy_loading_imports(self, name: str) -> None:
+        """A ``NoSSRComponent`` is compiled into a dynamic import written
+        against ``ClientSide``; without these two the page references a name
+        nothing defines, and only the browser says so."""
+        found = self._viewer(name).add_imports()
+
+        assert "lazy" in found["react"]
+        assert any(one.endswith("/context") for one in found)
+
+    @pytest.mark.parametrize("name", sorted(VIEWERS))
+    def test_the_renderer_arrives_as_a_pinned_dependency(self, name: str) -> None:
+        assert self.VIEWERS[name][2] in self._viewer(name).lib_dependencies
+
+    @pytest.mark.parametrize("name", sorted(VIEWERS))
+    def test_every_prop_reaches_the_jsx_camel_cased(self, name: str) -> None:
+        """``file_name`` reaches the JSX as ``fileName``. A wrapper written
+        against the Python spelling receives ``undefined`` and says nothing."""
+        drawn = _rendered(
+            self.VIEWERS[name][0](encoded="UEsDBA==", file_name="Bericht.docx")
+        )
+
+        assert "fileName:" in drawn
+        assert "encoded:" in drawn
+        assert "file_name" not in drawn
+
+    def test_the_pdf_registers_every_plugin_its_header_offers(self) -> None:
+        """embedpdf is headless — a capability the header shows and no plugin
+        provides is a dead button, and one registered for nothing is weight in
+        a desktop bundle. The header offers page navigation, zoom, rotation
+        and a rail, so those four plugins and their three foundations are the
+        whole list."""
+        found = set(self._viewer("pdf").lib_dependencies)
+
+        assert found == {
+            "@embedpdf/core@2.15.0",
+            "@embedpdf/engines@2.15.0",
+            "@embedpdf/models@2.15.0",
+            "@embedpdf/pdfium@2.15.0",
+            "@embedpdf/plugin-document-manager@2.15.0",
+            "@embedpdf/plugin-interaction-manager@2.15.0",
+            "@embedpdf/plugin-render@2.15.0",
+            "@embedpdf/plugin-rotate@2.15.0",
+            "@embedpdf/plugin-scroll@2.15.0",
+            "@embedpdf/plugin-thumbnail@2.15.0",
+            "@embedpdf/plugin-viewport@2.15.0",
+            "@embedpdf/plugin-zoom@2.15.0",
+        }
+
+    def test_only_the_workbook_is_told_which_way_the_theme_goes(self) -> None:
+        """A spreadsheet paints its own grid and its own cell fills, so left
+        to a default it is a white sheet in a dark panel. A document and a
+        deck draw paper, which is white in either theme."""
+        assert "isDark:" in _rendered(xlsx_viewer(is_dark=True))
+        assert not hasattr(self._viewer("docx"), "is_dark")
+        assert not hasattr(self._viewer("pptx"), "is_dark")
+
+    def test_the_pdf_overrides_both_of_its_cdn_defaults(self) -> None:
+        """The two lines that keep the offline bundle working.
+
+        ``usePdfiumEngine`` defaults to fetching its WebAssembly from
+        ``cdn.jsdelivr.net`` and its fallback typefaces from the same place.
+        That default constant is still compiled into the bundle — it is the
+        library's, and unreachable — so the absence of a URL in *our* source
+        is not on its own proof. What is proof is that both defaults are
+        overridden at the call site, which is what this asserts.
+
+        Removing either is invisible on a developer machine with internet and
+        renders blank pages in the desktop bundle.
+        """
+        source = (Path(viewer_assets.__file__).parent / "viewer_pdf.jsx").read_text(
+            encoding="utf-8"
+        )
+
+        assert "wasmUrl: pdfiumWasmUrl" in source
+        assert "fontFallback: null" in source
+        assert 'from "@embedpdf/pdfium/pdfium.wasm?url"' in source
+
+    def test_no_viewer_reaches_for_a_cdn(self) -> None:
+        """The archive's posture is that the browser never fetches anything.
+
+        Every renderer here resolves WebAssembly, and one of the families this
+        feature draws on defaults to pulling it from a public CDN — which
+        would be invisible on a developer machine with internet and fatal in
+        the offline desktop bundle. So the JSX is read as text and any
+        absolute URL in it fails, which is a rule a dependency bump cannot
+        quietly undo.
+        """
+        folder = Path(viewer_assets.__file__).parent
+        offenders = {
+            path.name: [
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if "http://" in line or "https://" in line
+            ]
+            for path in sorted(folder.glob("viewer_*.js*"))
+        }
+
+        assert {name: found for name, found in offenders.items() if found} == {}

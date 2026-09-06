@@ -44,6 +44,18 @@ the repository root on ``sys.path`` today: ``pythonpath = ["."]`` is applied in
 ``Config._preparse`` immediately *before* ``-p`` plugins are imported, so the
 root is there either way.
 
+Being imported that early has one cost, and it is a silent one: ``pytest-cov``
+starts measuring in ``pytest_load_initial_conftests``, which is a step *later*.
+So **this module must not import a measured package at module level**. Doing it
+once — a ``mailarc_core.graph.runtime`` constant, held in a module-level
+``RUNTIME_DIR`` — put the whole of ``mailarc_core.graph`` and its imports into
+``sys.modules`` before the first line was counted and dropped reported coverage
+from 98.1 % to 92.4 %, with the gate still green and nothing else to see. The
+one import that needs it is deferred into :func:`runtime_dir`, and
+``test_the_plugin_imports_nothing_that_coverage_measures`` keeps it that way.
+``appkit_commons`` stays at the top and may: it is a dependency, not a
+``[tool.coverage.run] source``.
+
 Four mechanisms, because each closes a hole the others cannot reach:
 
 **Redirection.** Every ``app_*`` environment variable the components read is
@@ -100,13 +112,24 @@ import pytest
 from appkit_commons.configuration.base import BaseConfig
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
-from mailarc_core.graph.runtime import DEFAULT_RUNTIME_DIR
-
 REAL_STATE = Path(__file__).resolve().parent.parent / ".state"
 """The live archive this file exists to keep tests away from."""
 
-RUNTIME_DIR = Path(DEFAULT_RUNTIME_DIR).resolve()
-"""Where ``task tauri:vendor`` puts the FalkorDB module the graph tests need."""
+
+def runtime_dir() -> Path:
+    """Where ``task tauri:vendor`` puts the FalkorDB module the graph tests need.
+
+    A function, and the ``mailarc_core`` import inside it, because this module
+    is imported *before* ``pytest-cov`` starts measuring — see the header. As a
+    module-level constant it cost six points of reported coverage: the whole of
+    ``mailarc_core.graph`` and everything it pulls in was already in
+    ``sys.modules`` when the first line was counted, so every module-level
+    statement in that tree read as never executed.
+    """
+    from mailarc_core.graph.runtime import DEFAULT_RUNTIME_DIR
+
+    return Path(DEFAULT_RUNTIME_DIR).resolve()
+
 
 SANDBOX = Path(tempfile.mkdtemp(prefix="mailarc-tests-")).resolve()
 """Where a test's default-built configuration lands instead.
@@ -312,10 +335,11 @@ def pytest_collection_modifyitems(
         return
     if not any(one.get_closest_marker("graph_local") for one in items):
         return
-    if (RUNTIME_DIR / "falkordb.so").is_file():
+    runtime = runtime_dir()
+    if (runtime / "falkordb.so").is_file():
         return
     raise pytest.UsageError(
-        f"the vendored FalkorDB runtime is missing from {RUNTIME_DIR}, so every "
+        f"the vendored FalkorDB runtime is missing from {runtime}, so every "
         "graph_local test would skip and the run would still report green. Run "
         "`task tauri:vendor`, or pass --allow-missing-runtime to accept the gap."
     )

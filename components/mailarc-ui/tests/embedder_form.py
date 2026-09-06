@@ -31,6 +31,12 @@ from appkit_commons.registry import service_registry
 from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from mailarc_analytics.nlq import (
+    LlmConfig,
+    LlmControl,
+    LlmOverrides,
+    LlmProvider,
+)
 from mailarc_analytics.semantic import (
     SemanticConfig,
     SemanticControl,
@@ -39,11 +45,18 @@ from mailarc_analytics.semantic import (
     SemanticSearch,
     VectorCoverage,
 )
-from mailarc_core.database.entities import SEMANTIC_SETTINGS_ID, SemanticSettingsEntity
-from mailarc_ui.embedder import EmbedderSettingsState
+from mailarc_core.database.entities import (
+    LLM_SETTINGS_ID,
+    SEMANTIC_SETTINGS_ID,
+    LlmSettingsEntity,
+    SemanticSettingsEntity,
+)
+from mailarc_ui.embedder import EmbedderSettingsState, InterpreterSettingsState
 
 STATE_MODULE = "mailarc_ui.embedder.state"
 READS_MODULE = "mailarc_ui.embedder.reads"
+INTERPRETER_MODULE = "mailarc_ui.embedder.interpreter"
+INTERPRETER_READS = "mailarc_ui.embedder.interpreter_reads"
 """Both halves of the page open sessions, so both are pointed at the test's.
 
 ``mailarc_ui.embedder.reads`` holds the writes and the graph read;
@@ -206,6 +219,10 @@ async def sessions(tmp_path: Path, keyed: None) -> AsyncIterator[Sessions]:
     with (
         patch(f"{STATE_MODULE}.get_asyncdb_session", opened),
         patch(f"{READS_MODULE}.get_asyncdb_session", opened),
+        # The interpreter half opens sessions in its reads module and nowhere
+        # else: its state class goes through that seam for every write, so
+        # there is no second factory here to redirect.
+        patch(f"{INTERPRETER_READS}.get_asyncdb_session", opened),
     ):
         yield opened
     await engine.dispose()
@@ -297,3 +314,92 @@ def everything_the_browser_would_see(state: EmbedderSettingsState) -> str:
         {name: getattr(state, name, None) for name in EmbedderSettingsState.vars},
         default=str,
     )
+
+
+class InterpreterComposition:
+    """:class:`Composition` for the other model, and the real merge again.
+
+    ``LlmOverrides.applied_to`` rather than a recorded call, for
+    :class:`Composition`'s reason: what these tests are about is what the
+    archive ends up reading questions with after somebody presses Save, and a
+    double that only remembered the last write would prove nothing about
+    precedence.
+
+    No ``reindex``. Nothing this model produces is stored, so there is nothing
+    to rebuild — which is the whole difference between the two halves of the
+    page.
+    """
+
+    def __init__(self, configured: LlmConfig, sessions: Sessions) -> None:
+        self._configured = configured
+        self._sessions = sessions
+        self.effective = configured
+        self.reloads = 0
+        self.breaks = False
+
+    def current(self) -> LlmConfig:
+        return self.effective
+
+    async def reload(self) -> LlmConfig:
+        self.reloads += 1
+        if self.breaks:
+            raise ConnectionError("the model host did not answer")
+        async with self._sessions() as session:
+            stored = await session.get(LlmSettingsEntity, LLM_SETTINGS_ID)
+            overrides = (
+                LlmOverrides()
+                if stored is None
+                else LlmOverrides(
+                    provider=stored.provider,
+                    model=stored.model,
+                    base_url=stored.base_url,
+                    api_key=stored.api_key,
+                )
+            )
+        self.effective = overrides.applied_to(self._configured)
+        return self.effective
+
+
+@pytest.fixture
+def llm_configured() -> LlmConfig:
+    """What the configuration file says on a default installation: nothing.
+
+    Explicit keyword arguments rather than the environment, for
+    :func:`configured`'s reason — the fresh-installation case is about the
+    *defaults*, and a developer's ``.env`` must not be able to move them.
+    """
+    return LlmConfig(provider=LlmProvider.NONE, model="", base_url="")
+
+
+@pytest.fixture
+def llm_composition(
+    llm_configured: LlmConfig, sessions: Sessions
+) -> Iterator[InterpreterComposition]:
+    """The composition root's two verbs, left where the state looks for them."""
+    root = InterpreterComposition(llm_configured, sessions)
+    services = service_registry()
+    saved = services.snapshot()
+    services.register_as(
+        LlmControl, LlmControl(current=root.current, reload=root.reload)
+    )
+    yield root
+    services.restore(saved)
+
+
+@pytest.fixture
+def interpreter_state(
+    llm_composition: InterpreterComposition,
+) -> InterpreterSettingsState:
+    """The interpreter form as a page opens it, against the composed fixtures."""
+    return InterpreterSettingsState()
+
+
+async def drive_interpreter(handler: Any, state: InterpreterSettingsState) -> None:
+    """Drive a background handler without Reflex's state lock under it."""
+    with (
+        patch.object(InterpreterSettingsState, "__aenter__", AsyncMock()),
+        patch.object(
+            InterpreterSettingsState, "__aexit__", AsyncMock(return_value=False)
+        ),
+    ):
+        await handler.fn(state)

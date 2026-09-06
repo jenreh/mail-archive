@@ -36,6 +36,14 @@ PROVIDER_ID_LENGTH = 255
 SEMANTIC_SETTINGS_ID = 1
 """The only primary key ``semantic_settings`` may ever hold. See the entity."""
 
+LLM_SETTINGS_ID = 1
+"""The only primary key ``llm_settings`` may ever hold.
+
+Its own constant rather than :data:`SEMANTIC_SETTINGS_ID` reused, although both
+are 1. They are singleton keys for two different tables, and sharing the name
+would make a copy-paste between the two repositories compile.
+"""
+
 BASE_URL_LENGTH = 1024
 """Generous for a hostname and a path, short of what a database will not index."""
 
@@ -287,4 +295,40 @@ class SemanticSettingsEntity(Entity, Base):
     # Fernet-encrypted by the type, not by the DDL — the key is read at write
     # time, so this is a plain VARCHAR in the schema, exactly like
     # `mail_credentials.secret`.
+    api_key: Mapped[str | None] = mapped_column(EncryptedString)
+
+
+class LlmSettingsEntity(Entity, Base):
+    """The question-reading model as a human set it, over the configuration file.
+
+    :class:`SemanticSettingsEntity`'s twin, and every argument that class makes
+    applies unchanged: one row enforced by ``CHECK (id = 1)``, every column
+    nullable with ``NULL`` meaning "not set, let the file answer", typed columns
+    rather than key/value because ``api_key`` has to be an ``EncryptedString``,
+    and a key that is write-only by construction rather than by convention.
+
+    **A second table rather than three more columns on the first**, for the
+    reason the interpreter has its own configuration block: these are two
+    models, not two settings of one. They differ in what leaves the machine —
+    embedding uploads message bodies, interpreting uploads the sentence
+    somebody typed — and an installation may reasonably have either without the
+    other. Sharing a row would also make "the embedder was changed" and "the
+    interpreter was changed" one timestamp, so saving one would silently
+    invalidate the other's concurrency baseline.
+
+    No ``dimension``. Nothing here produces a vector, so there is no length for
+    an index to disagree with — which is also why changing this model costs the
+    next question and never a rebuild.
+    """
+
+    __tablename__ = "llm_settings"
+    __table_args__ = (
+        CheckConstraint(f"id = {LLM_SETTINGS_ID}", name="ck_llm_settings_singleton"),
+    )
+
+    provider: Mapped[str | None] = mapped_column(String(32))
+    model: Mapped[str | None] = mapped_column(String(255))
+    base_url: Mapped[str | None] = mapped_column(String(BASE_URL_LENGTH))
+    # Fernet-encrypted by the type, exactly as `semantic_settings.api_key` is —
+    # a plain VARCHAR in the schema, with the encryption applied at write time.
     api_key: Mapped[str | None] = mapped_column(EncryptedString)

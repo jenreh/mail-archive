@@ -90,3 +90,32 @@ app:
     client_secret: secret:mn-m365-client-secret
     delta_folder: allitems
     default_tenant: common
+
+  # The model that reads a natural-language question into a search filter —
+  # the search page's third **Mode** segment. Off by default, exactly as the
+  # embedder above is, and for the same reason: the desktop application is
+  # meant to need nothing installed.
+  #
+  # It is deliberately NOT a setting on `app.semantic`. The two models differ
+  # in what leaves this machine. Embedding uploads every message body once;
+  # interpreting uploads the sentence you typed and nothing else — the archive's
+  # own addresses are matched against the answer locally, so no correspondent
+  # of yours is ever sent anywhere. An installation may reasonably want either
+  # one without the other, which one shared `provider` could not express.
+  #
+  # `ollama` is listed first because it is the only one of the three that needs
+  # no account, and therefore the only one a desktop installation can turn on
+  # by editing this file. `openai` needs `api_key`. `azure_openai` needs
+  # `api_key`, `base_url` — your resource's **v1** root, ending `/openai/v1` —
+  # and `model`, which there is the deployment name rather than the model's.
+  #
+  # Every value below is the default; uncomment a line only to change it.
+  #
+  #llm:
+  #  provider: none          # none | ollama | openai | azure_openai
+  #  model: ""               # "" = the provider's own; on Azure the deployment
+  #  base_url: ""            # "" = the provider's own; Azure has none
+  #  api_key: ""             # OpenAI and Azure need one; Ollama ignores it
+  #  request_timeout: 60     # seconds — somebody is waiting behind the button
+  #  max_output_tokens: 512  # a cut-off answer is truncated JSON, not a filter
+  #  temperature: 0.0        # the same question should give the same filter

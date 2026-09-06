@@ -10,6 +10,7 @@ from appkit_commons.registry import service_registry
 from pydantic import Field
 
 from mailarc_analytics import AnalyticsConfig
+from mailarc_analytics.nlq import LlmConfig
 from mailarc_analytics.semantic import SemanticConfig
 from mailarc_core import ArchiveConfig, GraphConfig
 from mailarc_core.database import sqlite
@@ -35,6 +36,21 @@ class AppConfig(ApplicationConfig):
     block in ``configuration/config.yaml`` — the documented way every other
     component on this list is configured — reached nothing at all while this
     field was missing, and was dropped without a word.
+    """
+
+    llm: LlmConfig = Field(default_factory=LlmConfig)
+    """The model that reads a question into a search filter, if there is one.
+
+    Off by default, exactly as ``semantic`` is and for the same reason (§7.4).
+    Its own block rather than a setting on that one because the two models
+    differ in what leaves the machine: embedding uploads message bodies once,
+    interpreting uploads the sentence somebody typed — so an installation may
+    reasonably want either without the other.
+
+    Carried here for the reason ``semantic`` records above and nothing weaker:
+    ``model_config['extra']`` is ``ignore``, so an ``app.llm.provider: ollama``
+    block in ``configuration/config.yaml`` would reach nothing at all without
+    this field, and would be dropped without a word.
     """
 
     mail: MailConfig = Field(default_factory=MailConfig)

@@ -33,6 +33,7 @@ SERVICES: tuple[tuple[str, str, str], ...] = (
     ("analytics_reader", "mailarc_analytics", "AnalyticsReader"),
     ("semantic_search", "mailarc_analytics.semantic", "SemanticSearch"),
     ("semantic_control", "mailarc_analytics.semantic", "SemanticControl"),
+    ("query_interpreter", "mailarc_analytics.nlq", "QueryInterpreter"),
     ("graph_health", "mailarc_core.graph", "GraphHealth"),
     ("storage_reader", "mailarc_core.storage", "StorageReader"),
 )

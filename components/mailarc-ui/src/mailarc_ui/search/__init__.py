@@ -10,6 +10,9 @@
 ``state``
     ``MailSearchState`` — the filled form, the page of results and, through
     ``mailarc_ui.message_detail``'s mixin, the message a row opens.
+``ordering``
+    The one rule every picker on the page keeps: options are offered
+    alphabetically, by the word a person reads.
 ``form``
     The left column: the question, the path, and the fields that narrow it.
 ``components``
@@ -27,8 +30,10 @@ from mailarc_ui.search.model import (
     ATTACH_WITH,
     ATTACH_WITHOUT,
     MODE_FULLTEXT,
+    MODE_NATURAL,
     MODE_SEMANTIC,
     SEARCH_FAILED,
+    NATURAL_IS_INTERPRETED,
     SEMANTIC_IS_TEXT_ONLY,
     Grouping,
     ResultRow,
@@ -39,7 +44,8 @@ from mailarc_ui.search.model import (
     percent_label,
     relative_label,
 )
-from mailarc_ui.search.state import PAGE_SIZE, SEMANTIC_HITS, MailSearchState
+from mailarc_ui.search.answers import PAGE_SIZE, SEMANTIC_HITS
+from mailarc_ui.search.state import MailSearchState
 
 __all__ = [
     "ATTACH_ANY",
@@ -48,7 +54,9 @@ __all__ = [
     "FORM_WIDTH",
     "LIST_WIDTH",
     "MODE_FULLTEXT",
+    "MODE_NATURAL",
     "MODE_SEMANTIC",
+    "NATURAL_IS_INTERPRETED",
     "PAGE_SIZE",
     "SEARCH_FAILED",
     "SEMANTIC_HITS",

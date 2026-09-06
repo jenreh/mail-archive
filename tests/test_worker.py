@@ -55,7 +55,13 @@ from mailarc_sync.engine import (
 )
 from mailarc_sync.engine.config import SyncConfig
 from mailarc_sync.engine.engine import GraphSessionFactory
-from mailarc_sync.jobs import JobHandler, JobKind, JobQueue, SessionFactory
+from mailarc_sync.jobs import (
+    JobHandler,
+    JobKind,
+    JobQueue,
+    JobWorker,
+    SessionFactory,
+)
 from tests.worker_doubles import (
     ADDRESS,
     MAILBOX,
@@ -199,6 +205,85 @@ async def test_the_loop_takes_its_timings_from_the_configuration(monkeypatch) ->
     assert seen["lease_seconds"] == config.lease_seconds
     assert seen["heartbeat_seconds"] == config.heartbeat_interval
     assert seen["poll_seconds"] == config.poll_interval
+
+
+class TestTheOrphanWatch:
+    """The third loop: what a worker does when the app that started it is gone.
+
+    It exists because nothing else would notice. This process is started with
+    ``start_new_session``, so a supervisor that is killed rather than asked to
+    stop sends it nothing at all — and one was measured on a developer machine
+    hours later, still claiming jobs and still holding the real
+    ``mail-archive.db`` open as a writer beside the worker the next start
+    brought up.
+    """
+
+    class RecordingWorker:
+        """Records the stop request, which is all the watch is allowed to do."""
+
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def request_stop(self) -> None:
+            self.stopped = True
+
+    async def test_a_worker_under_systemd_watches_nothing(self, monkeypatch) -> None:
+        """Started as its own unit the parent is pid 1 from the first moment,
+        and the unit's supervisor keeps its usual authority."""
+        monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+        recorder = self.RecordingWorker()
+
+        await worker._stop_when_orphaned(cast(JobWorker, recorder))
+
+        assert recorder.stopped is False
+
+    async def test_it_waits_while_the_supervisor_is_there(self, monkeypatch) -> None:
+        monkeypatch.setattr(worker.os, "getppid", lambda: 4242)
+        monkeypatch.setattr(worker, "ORPHAN_POLL_SECONDS", 0.01)
+        recorder = self.RecordingWorker()
+
+        watching = asyncio.create_task(
+            worker._stop_when_orphaned(cast(JobWorker, recorder))
+        )
+        await asyncio.sleep(0.05)
+        watching.cancel()
+
+        assert recorder.stopped is False
+
+    async def test_a_reparented_worker_is_asked_to_stop(self, monkeypatch) -> None:
+        """Reparenting to pid 1 is the only signal there is that the
+        application is gone: no signal arrives, and the socket it was reached
+        on was never this process's."""
+        parents = iter([4242, 4242, 1, 1, 1])
+        monkeypatch.setattr(worker.os, "getppid", lambda: next(parents))
+        monkeypatch.setattr(worker, "ORPHAN_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(worker, "ORPHAN_EXIT_GRACE_SECONDS", 30.0)
+        recorder = self.RecordingWorker()
+
+        watching = asyncio.create_task(
+            worker._stop_when_orphaned(cast(JobWorker, recorder))
+        )
+        await asyncio.sleep(0.1)
+        watching.cancel()
+
+        assert recorder.stopped is True
+
+    async def test_an_orphan_that_will_not_stop_exits_where_it_stands(
+        self, monkeypatch
+    ) -> None:
+        """A job wedged in a thread would otherwise hold the archive open for
+        the five minutes `asyncio.run` waits for an executor at exit."""
+        parents = iter([4242, 1])
+        monkeypatch.setattr(worker.os, "getppid", lambda: next(parents, 1))
+        monkeypatch.setattr(worker, "ORPHAN_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(worker, "ORPHAN_EXIT_GRACE_SECONDS", 0.01)
+        exits: list[int] = []
+        monkeypatch.setattr(worker.os, "_exit", exits.append)
+        recorder = self.RecordingWorker()
+
+        await worker._stop_when_orphaned(cast(JobWorker, recorder))
+
+        assert exits == [1]
 
 
 class TestTheSchedule:

@@ -48,15 +48,42 @@ from mailarc_core.archive.model import (
 from mailarc_core.archive.search import SearchFilters
 from mailarc_ui.insights.model import short_key
 from mailarc_ui.message_detail.model import NO_SUBJECT, LabelChip
+from mailarc_ui.search.ordering import by_label
 
 MODE_FULLTEXT = SearchKind.FULLTEXT.value
 MODE_SEMANTIC = SearchKind.SEMANTIC.value
-"""The two ways of asking, named off the enum the archive answers under.
+"""The two ways of asking that name an *index*, spelled as it spells them.
 
-Spelled as the analytics component spells them rather than as two literals of
-our own: the string reaches
-:class:`~mailarc_analytics.semantic.model.SearchRequest` unchanged, and a
-third path cannot appear in one place and not the other.
+:class:`~mailarc_analytics.semantic.model.SearchKind` owns this vocabulary
+because it owns the answer: its own docstring is "which of the two search paths
+answered", and one of these two strings is what a caller of that component
+hands it.
+"""
+
+MODE_NATURAL = "natural"
+"""The third segment, and deliberately **not** a third
+:class:`~mailarc_analytics.semantic.model.SearchKind`.
+
+The asymmetry above is the point rather than an oversight. The other two name
+which index answers; this one names how a question was *composed*. An
+interpreted question is answered by the ordinary full-text or structured path —
+:mod:`mailarc_analytics.nlq` produces a
+:class:`~mailarc_core.archive.search.SearchFilters` and nothing else — so there
+is no third path for the enum to grow, and adding a member would make
+:attr:`~mailarc_analytics.semantic.model.SearchResult.kind` able to report one
+that no code in that component can produce.
+
+Three more things would quietly break if it were a member.
+:attr:`~mailarc_analytics.semantic.model.SearchHit.score` is documented as
+comparable only within one kind, and this mode has no score of its own.
+:meth:`~mailarc_analytics.semantic.SemanticSearch.search` dispatches
+``SEMANTIC`` and otherwise full text, so a third member would fall through
+silently. And the MCP server's ``search_messages`` takes a ``semantic: bool``,
+which is a boolean over exactly this two-valued question and would become wrong
+without anything failing.
+
+``test_ui_search_model.py`` pins this, so a later reader meeting the asymmetry
+finds the argument rather than re-deriving the old rule.
 """
 
 
@@ -81,15 +108,30 @@ class Grouping(StrEnum):
 
 GROUPING_OPTIONS: list[dict[str, str]] = [
     {"label": "None", "value": Grouping.NONE.value},
-    {"label": "Conversation / Thread", "value": Grouping.CONVERSATION.value},
-    {"label": "Topic", "value": Grouping.TOPIC.value},
-    {"label": "Tag", "value": Grouping.TAG.value},
-    {"label": "Recurring group", "value": Grouping.RECURRING.value},
-    {"label": "Subject", "value": Grouping.SUBJECT.value},
-    {"label": "Sender", "value": Grouping.SENDER.value},
-    {"label": "Receiver", "value": Grouping.RECEIVER.value},
+    *by_label(
+        [
+            {"label": "Conversation / Thread", "value": Grouping.CONVERSATION.value},
+            {"label": "Topic", "value": Grouping.TOPIC.value},
+            {"label": "Tag", "value": Grouping.TAG.value},
+            {"label": "Recurring group", "value": Grouping.RECURRING.value},
+            {"label": "Subject", "value": Grouping.SUBJECT.value},
+            {"label": "Sender", "value": Grouping.SENDER.value},
+            {"label": "Receiver", "value": Grouping.RECEIVER.value},
+        ]
+    ),
 ]
-"""What the dropdown offers, in the order it offers it."""
+"""What the dropdown offers: **None**, and then the seven alphabetically.
+
+Sorted through :func:`~mailarc_ui.search.ordering.by_label` rather than written
+in order, so a grouping added later cannot land in the wrong place — the rule
+every picker on this page keeps is enforced here rather than remembered.
+
+**None** is pinned in front of it and is the one exception. It is not a
+grouping a person looks up among the others; it is the off position, the
+default :func:`grouping_of` falls back to, and a list whose *off* switch sits
+between *Conversation* and *Receiver* is a list nobody can turn off at a
+glance.
+"""
 
 READ_GROUPINGS = frozenset(
     {
@@ -194,6 +236,20 @@ SEMANTIC_IS_TEXT_ONLY = (
 Said rather than merely done. The fields are disabled *and* the sentence is
 shown, because a form that quietly stops honouring what is typed in it is the
 one way a search can lie about what it searched.
+"""
+
+NATURAL_IS_INTERPRETED = (
+    "Ask in a sentence and the fields below are filled in from it — check them "
+    "and search again if the reading is wrong."
+)
+"""What the natural segment promises, and it is the opposite promise to
+:data:`SEMANTIC_IS_TEXT_ONLY`'s.
+
+Semantic ignores the structured fields and says so. This one *writes* them, and
+leaves every one of them enabled afterwards. That is the whole reason an
+interpretation is allowed to be wrong: it lands somewhere visible, so a bad
+reading costs a glance and a correction rather than an answer delivered
+confidently to a question nobody asked.
 """
 
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)

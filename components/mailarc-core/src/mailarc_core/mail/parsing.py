@@ -528,6 +528,7 @@ def _attachments(message: EmailMessage) -> tuple[ParsedAttachment, ...]:
             ParsedAttachment(
                 filename=part.get_filename(),
                 content_type=part.get_content_type(),
+                charset=part.get_content_charset() or "",
                 size=len(data),
                 sha256=hashlib.sha256(data).hexdigest(),
                 content_id=content_id.strip("<>") or None,

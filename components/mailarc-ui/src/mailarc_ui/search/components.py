@@ -125,8 +125,9 @@ def _sender_line(line: ListLine) -> rx.Component:
     return mn.group(
         mn.text(
             line.sender,
-            size="md",
-            fw=500,
+            size="sm",
+            fw=300,
+            c="dimmed",
             truncate="end",
             style={"minWidth": 0},
         ),

@@ -58,7 +58,11 @@ __pypackages__/
 /site
 /vectorstore/
 aila-storage/
-assets/external/
+**/# Reflex writes `rx.asset(shared=True)` symlinks relative to the process's
+# cwd, so these trees appear wherever python happened to be run from —
+# not only at the repository root. Anchored, this rule missed every
+# nested copy, and machine-absolute symlinks reached the index.
+**/assets/external/
 build/
 celerybeat-schedule
 celerybeat.pid

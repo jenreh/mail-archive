@@ -31,6 +31,7 @@ pytest ever loaded it, so deleting ``-p tests.sandbox_plugin`` from ``addopts``
 separately, because every other test here would still pass by importing.
 """
 
+import ast
 import os
 import re
 from pathlib import Path
@@ -46,6 +47,9 @@ from mailarc_core.graph.config import GraphConfig
 
 PLUGIN = "tests.sandbox_plugin"
 """The name ``pyproject.toml``'s ``addopts`` registers the sandbox under."""
+
+SANDBOX_SOURCE = Path(__file__).parent / "sandbox_plugin.py"
+"""The plugin as written, which is the only place its imports can be read."""
 
 REAL_STORE = Path(".state/mailstore").resolve()
 REAL_GRAPH_DATA = Path(".state/falkordb").resolve()
@@ -72,6 +76,39 @@ def test_the_plugin_is_registered_under_its_addopts_name(
     """
     assert pytestconfig.pluginmanager.get_plugin(PLUGIN) is not None
     assert f"-p {PLUGIN}" in " ".join(pytestconfig.getini("addopts"))
+
+
+def test_the_plugin_imports_nothing_that_coverage_measures() -> None:
+    """No ``mailarc_*`` import at module level, or the coverage number lies.
+
+    This module is imported in ``Config._preparse``, and ``pytest-cov`` does not
+    start measuring until ``pytest_load_initial_conftests`` — a step later. So
+    anything the sandbox imports at module scope is already in ``sys.modules``
+    when counting begins, and every module-level statement in it reads as never
+    executed. A single ``from mailarc_core.graph.runtime import ...`` cost 5.7
+    points of reported coverage while the 80 % gate stayed green, which is the
+    whole reason this is a test and not a comment.
+
+    Read from the source rather than from ``sys.modules``: by the time a test
+    runs, every one of those packages is imported anyway, so nothing about the
+    live interpreter can tell where the import came from.
+    """
+    tree = ast.parse(Path(SANDBOX_SOURCE).read_text(encoding="utf-8"))
+    imported = {
+        name.split(".")[0]
+        for node in tree.body
+        for name in (
+            [alias.name for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom)
+            else []
+        )
+    }
+
+    assert not {one for one in imported if one.startswith("mailarc")}, (
+        "a measured package is imported at module level; defer it into a function"
+    )
 
 
 class TestADefaultBuiltConfigLandsInTheSandbox:
@@ -389,7 +426,7 @@ class TestTheGraphRuntimeIsNotOptional:
     def test_a_graph_selection_without_the_runtime_ends_the_run(
         self, sandbox: Any, monkeypatch: pytest.MonkeyPatch, request: Any
     ) -> None:
-        monkeypatch.setattr(sandbox, "RUNTIME_DIR", Path("/nowhere/at/all"))
+        monkeypatch.setattr(sandbox, "runtime_dir", _nowhere)
 
         with pytest.raises(pytest.UsageError, match="tauri:vendor"):
             sandbox.pytest_collection_modifyitems(
@@ -401,7 +438,7 @@ class TestTheGraphRuntimeIsNotOptional:
     ) -> None:
         """Said on the command line, so nobody mistakes the result for a
         full pass."""
-        monkeypatch.setattr(sandbox, "RUNTIME_DIR", Path("/nowhere/at/all"))
+        monkeypatch.setattr(sandbox, "runtime_dir", _nowhere)
         allowed = _WithOption(request.config, allow=True)
 
         sandbox.pytest_collection_modifyitems(None, allowed, [_marked("graph_local")])
@@ -411,7 +448,7 @@ class TestTheGraphRuntimeIsNotOptional:
     ) -> None:
         """``pytest tests/test_worker.py`` on a machine with no runtime is a
         legitimate thing to do and loses nothing."""
-        monkeypatch.setattr(sandbox, "RUNTIME_DIR", Path("/nowhere/at/all"))
+        monkeypatch.setattr(sandbox, "runtime_dir", _nowhere)
 
         sandbox.pytest_collection_modifyitems(None, request.config, [_marked(None)])
 
@@ -420,8 +457,13 @@ class TestTheGraphRuntimeIsNotOptional:
     ) -> None:
         """The guard is only worth its message if it reads the real path; a
         constant that had drifted would fail every run on every machine."""
-        assert sandbox.RUNTIME_DIR.name == "falkordb"
-        assert sandbox.RUNTIME_DIR.is_absolute()
+        assert sandbox.runtime_dir().name == "falkordb"
+        assert sandbox.runtime_dir().is_absolute()
+
+
+def _nowhere() -> Path:
+    """A runtime directory that cannot exist, in place of the real answer."""
+    return Path("/nowhere/at/all")
 
 
 class _WithOption:

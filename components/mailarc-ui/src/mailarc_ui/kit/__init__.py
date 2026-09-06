@@ -70,6 +70,12 @@ from mailarc_ui.kit.stat import stat_tile
 from mailarc_ui.kit.table import VISIBLE_ROWS, scroll_table
 from mailarc_ui.kit.toast import toast
 from mailarc_ui.kit.validation import REQUIRED, FieldErrors
+from mailarc_ui.kit.viewer import (
+    docx_viewer,
+    pdf_viewer,
+    pptx_viewer,
+    xlsx_viewer,
+)
 
 __all__ = [
     "COLUMN_GAP",
@@ -92,6 +98,7 @@ __all__ = [
     "column_card",
     "count_chip",
     "date_field",
+    "docx_viewer",
     "dot_badge",
     "empty_panel",
     "field_label",
@@ -111,9 +118,11 @@ __all__ = [
     "number_field",
     "panel_card",
     "password_field",
+    "pdf_viewer",
     "pill_action",
     "pill_icon_action",
     "placeholder_block",
+    "pptx_viewer",
     "primary_button",
     "quiet_button",
     "range_select",
@@ -130,4 +139,5 @@ __all__ = [
     "status_badge",
     "toast",
     "toned_message",
+    "xlsx_viewer",
 ]

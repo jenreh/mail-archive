@@ -25,7 +25,10 @@ from mailarc_ui.message_detail.filetype import (
     DULL_SUBTYPES,
     GENERIC_TYPES,
     LABEL_LENGTH,
+    OOXML_SUFFIXES,
+    OOXML_TYPES,
     TYPE_PREFIXES,
+    is_ooxml,
 )
 
 
@@ -217,3 +220,96 @@ class TestWhatTheStripShows:
         )
         assert row.icon == FILE_ICONS[FileKind.PDF]
         assert row.kind_label == "PDF"
+
+
+class TestWhetherAViewerCanOpenIt:
+    """The narrower question :func:`is_ooxml` answers, and why it exists.
+
+    :class:`FileKind` groups by what a file *is*, which is the right grouping
+    for a glyph and for the search filter: a ``.key`` and a ``.pptx`` are both
+    slides. The viewers group by what a renderer can *parse*, and the three
+    that exist read OOXML only. So this is a second, narrower question over the
+    same inputs — not a second classifier, because it follows the same rule
+    :func:`file_kind` does about types and names.
+    """
+
+    @pytest.mark.parametrize(
+        "content_type",
+        [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ],
+    )
+    def test_a_stated_ooxml_type_is_believed_without_a_name(
+        self, content_type: str
+    ) -> None:
+        """A part that says what it is needs no filename to be opened."""
+        assert is_ooxml(content_type, None) is True
+
+    @pytest.mark.parametrize("suffix", [".docx", ".xlsx", ".pptx"])
+    def test_a_generic_type_falls_back_to_the_extension(self, suffix: str) -> None:
+        """The mail programs that send ``octet-stream`` for everything.
+
+        Without this the common case — an Outlook attachment with no stated
+        type — would never reach a viewer.
+        """
+        assert is_ooxml("application/octet-stream", f"Angebot{suffix}") is True
+
+    @pytest.mark.parametrize(
+        ("content_type", "filename"),
+        [
+            ("application/msword", "Vertrag.doc"),
+            ("application/rtf", "Notiz.rtf"),
+            ("application/vnd.ms-excel", "Umsatz.xls"),
+            ("application/vnd.ms-powerpoint", "Pitch.ppt"),
+            ("application/vnd.oasis.opendocument.text", "Brief.odt"),
+            ("application/vnd.oasis.opendocument.spreadsheet", "Zahlen.ods"),
+            ("application/vnd.oasis.opendocument.presentation", "Vortrag.odp"),
+            ("application/octet-stream", "Keynote.key"),
+            ("application/octet-stream", "Tabelle.numbers"),
+            ("application/octet-stream", "Brief.pages"),
+        ],
+    )
+    def test_the_older_and_foreign_office_formats_are_not(
+        self, content_type: str, filename: str
+    ) -> None:
+        """The whole reason the predicate exists.
+
+        Every one of these is a :class:`FileKind` the viewers now claim —
+        ``DOCUMENT``, ``SPREADSHEET`` or ``SLIDES`` — and not one of them is a
+        zip full of OOXML. Handing a Keynote file to a ``.pptx`` parser is the
+        bug this test is here to keep out.
+        """
+        assert file_kind(content_type, filename) in {
+            FileKind.DOCUMENT,
+            FileKind.SPREADSHEET,
+            FileKind.SLIDES,
+        }
+        assert is_ooxml(content_type, filename) is False
+
+    def test_a_stated_old_type_beats_a_modern_extension(self) -> None:
+        """The tie-break runs the same way round as :func:`file_kind`'s.
+
+        A sender who said ``application/msword`` has said something specific,
+        and a ``.docx`` on the end of the name does not override it — the same
+        reasoning that stops ``Rechnung.pdf`` overriding a stated zip.
+        """
+        assert is_ooxml("application/msword", "Vertrag.docx") is False
+
+    def test_a_name_that_is_a_sentence_is_not_an_exception(self) -> None:
+        """``PurePosixPath`` on ``Re: Fwd. Notes`` returns ``. notes``."""
+        assert is_ooxml("application/octet-stream", "Re: Fwd. Notes") is False
+
+    def test_every_ooxml_type_is_one_the_family_table_knows(self) -> None:
+        """The two tables cannot drift apart.
+
+        :data:`OOXML_TYPES` names three content types that :data:`TYPE_KINDS`
+        must also map, or a file would be openable by a viewer the panel never
+        offers it to.
+        """
+        assert OOXML_TYPES <= set(TYPE_KINDS)
+
+    def test_every_ooxml_suffix_is_one_the_extension_table_knows(self) -> None:
+        """The same guard on the other half of the rule."""
+        assert OOXML_SUFFIXES <= set(EXTENSION_KINDS)

@@ -1,7 +1,7 @@
 [project]
 name = "mailarc-analytics"
 version = "1.0.0"
-description = "Mail archive analytics: derived nodes, analysis queries and embeddings"
+description = "Mail archive analytics: derived nodes, analysis queries, embeddings and natural-language query interpretation"
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "MIT" }

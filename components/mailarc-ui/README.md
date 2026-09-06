@@ -14,7 +14,9 @@ imports/    starting an import and following the job row it queued.
 search/     the front door — the form, the result list, the message.
 message_detail/
             one open message, as a state mixin and a pane that takes the
-            page's own state class.
+            page's own state class. Also the attachment panel, including
+            the two readers that turn a .ics and a .vcf into records rather
+            than printing them (contentline.py is the grammar they share).
 insights/   finding a message, what a rebuild derived, and whether the
             co-addressed edge still agrees with the archive it came from.
 embedder/   configuring the embedder and running a rebuild of the vectors.

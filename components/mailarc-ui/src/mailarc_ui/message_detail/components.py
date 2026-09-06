@@ -19,14 +19,18 @@ import reflex as rx
 from mailarc_ui.kit import (
     attachment_card,
     avatar_initials,
+    docx_viewer,
     empty_panel,
     glyph_action,
     link_chip,
     message,
+    pdf_viewer,
+    pptx_viewer,
     quiet_button,
     slide_over,
     soft_button,
     spinner,
+    xlsx_viewer,
 )
 from mailarc_ui.message_detail.model import (
     GRAPH_GLYPH,
@@ -39,6 +43,7 @@ from mailarc_ui.message_detail.model import (
     MessageChip,
 )
 from mailarc_ui.message_detail.preview import PreviewKind
+from mailarc_ui.message_detail.records import calendar_preview, contact_preview
 from mailarc_ui.message_detail.state import MessageDetailState
 
 ROW_BORDER = "1px solid var(--mantine-color-default-border)"
@@ -440,30 +445,36 @@ def _preview_head(state: type[MessageDetailState]) -> rx.Component:
 
 
 def _preview_body(state: type[MessageDetailState]) -> rx.Component:
-    """The file itself, in whichever of the four shapes it takes.
+    """The file itself, in whichever shape it takes.
 
-    A chain of ``rx.cond`` over one string rather than a lookup, because the
+    Still a chain of ``rx.cond`` over one string and not a lookup, because the
     choice is made in the browser: what crosses is
     :attr:`~mailarc_ui.message_detail.preview.AttachmentPreview.kind` as text,
     and each branch is a different element with different props.
+
+    Written as a table and folded into that chain rather than nested by hand.
+    The hand-nested version was four deep when there were four shapes and eight
+    when there were eight, by which point the last branch sat forty columns in
+    and adding a shape meant re-indenting every one below it. This produces the
+    identical component; what it buys is that the shapes are a list somebody
+    can read down, with ``NONE`` visibly at the end as the one that catches
+    everything else.
     """
-    return rx.cond(
-        state.preview.kind == PreviewKind.IMAGE.value,
-        _preview_image(state),
-        rx.cond(
-            state.preview.kind == PreviewKind.PDF.value,
-            _preview_pdf(state),
-            rx.cond(
-                state.preview.kind == PreviewKind.HTML.value,
-                _preview_html(state),
-                rx.cond(
-                    state.preview.kind == PreviewKind.TEXT.value,
-                    _preview_text(state),
-                    _preview_none(state),
-                ),
-            ),
-        ),
+    shapes = (
+        (PreviewKind.IMAGE, _preview_image),
+        (PreviewKind.PDF, _preview_pdf),
+        (PreviewKind.HTML, _preview_html),
+        (PreviewKind.TEXT, _preview_text),
+        (PreviewKind.CALENDAR, _preview_calendar),
+        (PreviewKind.CONTACT, _preview_contact),
+        (PreviewKind.SLIDES, _preview_slides),
+        (PreviewKind.DOCUMENT, _preview_document),
+        (PreviewKind.SPREADSHEET, _preview_spreadsheet),
     )
+    body = _preview_none(state)
+    for kind, build in reversed(shapes):
+        body = rx.cond(state.preview.kind == kind.value, build(state), body)
+    return body
 
 
 def _preview_image(state: type[MessageDetailState]) -> rx.Component:
@@ -484,20 +495,22 @@ def _preview_image(state: type[MessageDetailState]) -> rx.Component:
 
 
 def _preview_pdf(state: type[MessageDetailState]) -> rx.Component:
-    """A PDF in the browser's own viewer.
+    """A PDF, drawn by pdfium in the page rather than by the browser.
 
-    The one frame in this application without a ``sandbox`` attribute, and it
-    is deliberate: the viewer is a plugin and ``sandbox=""`` blocks plugins,
-    so a sandboxed frame renders a blank rectangle. What the sandbox was for
-    is kept anyway — a ``data:`` URI is an opaque origin, so the document
-    inside cannot reach this page — and see
-    :mod:`mailarc_ui.message_detail.preview` for the whole argument.
+    This used to be an ``<iframe>`` pointed at a ``data:`` URI — the one frame
+    in the application without a ``sandbox`` attribute, because the browser's
+    PDF viewer is a plugin and ``sandbox=""`` blocks plugins. That worked. It
+    was replaced because it was the only one of the four document kinds with
+    no page rail and no shared header, so an invoice opened after a deck was a
+    different viewer.
+
+    The isolation the frame gave is not lost with it: the bytes now go to a
+    WebAssembly parser in this page rather than to a plugin, and nothing about
+    them is fetched or executed. See :mod:`mailarc_ui.kit.viewer_pdf`.
     """
-    return rx.el.iframe(
-        src=state.preview.source,
-        referrer_policy="no-referrer",
-        title=state.preview.filename,
-        style=PREVIEW_FRAME,
+    return pdf_viewer(
+        encoded=state.preview.encoded,
+        file_name=state.preview.filename,
     )
 
 
@@ -522,6 +535,51 @@ def _preview_text(state: type[MessageDetailState]) -> rx.Component:
         ),
         type="hover",
         style=GROW,
+    )
+
+
+def _preview_calendar(state: type[MessageDetailState]) -> rx.Component:
+    """A meeting, laid out rather than printed — see
+    :mod:`mailarc_ui.message_detail.records`."""
+    return calendar_preview(state, style=GROW)
+
+
+def _preview_contact(state: type[MessageDetailState]) -> rx.Component:
+    """A contact card, laid out rather than printed."""
+    return contact_preview(state, style=GROW)
+
+
+def _preview_slides(state: type[MessageDetailState]) -> rx.Component:
+    """A slide deck, drawn from the bytes rather than described.
+
+    Each of these three renderers is a lazy chunk of about a megabyte, fetched
+    only when somebody opens a file of that kind — a reader who never gets a
+    deck never pays for one. See :mod:`mailarc_ui.kit.viewer`.
+    """
+    return pptx_viewer(
+        encoded=state.preview.encoded,
+        file_name=state.preview.filename,
+    )
+
+
+def _preview_document(state: type[MessageDetailState]) -> rx.Component:
+    """A Word document, with a rail of page previews beside it."""
+    return docx_viewer(
+        encoded=state.preview.encoded,
+        file_name=state.preview.filename,
+    )
+
+
+def _preview_spreadsheet(state: type[MessageDetailState]) -> rx.Component:
+    """A workbook, read-only, navigated by its own sheet tabs.
+
+    ``is_dark`` is passed because a spreadsheet paints its own grid: left to
+    the library's default it would be a white sheet in a dark panel.
+    """
+    return xlsx_viewer(
+        encoded=state.preview.encoded,
+        file_name=state.preview.filename,
+        is_dark=rx.color_mode == "dark",
     )
 
 

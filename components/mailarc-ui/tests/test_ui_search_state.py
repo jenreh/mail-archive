@@ -28,6 +28,14 @@ from appkit_commons.database.entities import Base
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from mailarc_analytics import AnalyticsReader, GroupMembershipRow, TopicMembershipRow
+from mailarc_analytics.nlq import (
+    LlmConfig,
+    NlqRefused,
+    NlqUnavailable,
+    QueryInterpreter,
+    ResolvedQuery,
+    Vocabulary,
+)
 from mailarc_analytics.semantic import (
     NO_EMBEDDER,
     SearchHit,
@@ -47,6 +55,8 @@ from mailarc_core.archive.model import (
     TagSummary,
 )
 from mailarc_core.archive.search import (
+    AddressDirectory,
+    AddressEntry,
     KnownAddresses,
     KnownAttachments,
     MessageHit,
@@ -57,6 +67,7 @@ from mailarc_core.database.entities import MailAccountEntity
 from mailarc_core.mail.model import LabelKind
 from mailarc_ui.message_detail import FileKind
 from mailarc_ui.search import memberships, reads
+from mailarc_ui.search.answers import PAGE_SIZE, SEMANTIC_HITS
 from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
@@ -64,6 +75,7 @@ from mailarc_ui.search.model import (
     MATCH_ALL,
     MATCH_ANY,
     MODE_FULLTEXT,
+    MODE_NATURAL,
     MODE_SEMANTIC,
     NO_GROUP,
     READ_GROUPINGS,
@@ -81,7 +93,7 @@ from mailarc_ui.search.model import (
     relative_label,
     topic_label,
 )
-from mailarc_ui.search.state import PAGE_SIZE, SEMANTIC_HITS, MailSearchState
+from mailarc_ui.search.state import MailSearchState
 
 READS_MODULE = "mailarc_ui.search.reads"
 
@@ -170,6 +182,25 @@ class FakeReader(ArchiveReader):
             untyped_names=("Rechnung.pdf", "notizen.md"),
         )
         self.file_error: Exception | None = None
+        self.directory = AddressDirectory(
+            entries=(
+                AddressEntry(address=ANNA, names=("Anna Bauer",), domain="example.com"),
+                AddressEntry(address=CARL, names=("Carl Winter",), domain="firma.de"),
+                AddressEntry(address=BOB, domain="example.com"),
+                AddressEntry(address=DORA, domain="firma.de"),
+            )
+        )
+        """The names behind the addresses — what a question can actually say.
+
+        Anna and Carl sign themselves; Bob and Dora never do. Both cases matter:
+        a name is the only way a question reaches the first pair, and the second
+        pair still has to be reachable by address."""
+        self.directory_error: Exception | None = None
+
+    def address_directory(self) -> AddressDirectory:
+        if self.directory_error is not None:
+            raise self.directory_error
+        return self.directory
 
     def known_addresses(self) -> KnownAddresses:
         if self.address_error is not None:
@@ -318,6 +349,42 @@ def reader() -> FakeReader:
     return FakeReader([summary(one) for one in range(1, 5)])
 
 
+class FakeInterpreter(QueryInterpreter):
+    """One canned reading, or one raise, plus what it was shown.
+
+    ``seen`` is the point of the last field: the promise this feature makes is
+    that no archive data is sent to a model, and the vocabulary is the only
+    argument that could carry any — so a test can assert on exactly what
+    crossed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(LlmConfig())
+        self.answer = ResolvedQuery()
+        self.error: Exception | None = None
+        self.offer = True
+        self.asked: list[str] = []
+        self.seen: list[Vocabulary] = []
+
+    @property
+    def available(self) -> bool:
+        return self.offer
+
+    async def interpret(
+        self, question: str, vocabulary: Vocabulary, *, today: Any = None
+    ) -> ResolvedQuery:
+        self.asked.append(question)
+        self.seen.append(vocabulary)
+        if self.error is not None:
+            raise self.error
+        return self.answer
+
+
+@pytest.fixture
+def interpreter() -> FakeInterpreter:
+    return FakeInterpreter()
+
+
 @pytest.fixture
 def tags() -> FakeTagStore:
     return FakeTagStore()
@@ -335,9 +402,19 @@ def search() -> FakeSearch:
 
 @pytest.fixture
 def published(
-    reader: FakeReader, search: FakeSearch, tags: FakeTagStore, analytics: FakeAnalytics
+    reader: FakeReader,
+    search: FakeSearch,
+    tags: FakeTagStore,
+    analytics: FakeAnalytics,
+    interpreter: FakeInterpreter,
 ) -> Iterator[None]:
-    """All four services where the composition root would leave them."""
+    """All five services where the composition root would leave them.
+
+    The interpreter is registered even where a test does not use it, because
+    that is what the composition root does — it publishes one whether or not a
+    provider is configured, so that "no model set up" stays an ordinary state
+    and never shows the half-wired-build sentence.
+    """
     from appkit_commons.registry import service_registry
 
     registry = service_registry()
@@ -346,6 +423,7 @@ def published(
     registry.register_as(SemanticSearch, search)
     registry.register_as(TagStore, tags)
     registry.register_as(AnalyticsReader, analytics)
+    registry.register_as(QueryInterpreter, interpreter)
     yield
     registry.restore(saved)
 
@@ -596,13 +674,18 @@ class TestTheFileFilter:
     ) -> None:
         """Both halves of the catalogue in one menu: three stated types, and a
         ``notizen.md`` whose sender stated nothing — ``Rechnung.pdf`` adds no
-        option because *PDF* is already there."""
+        option because *PDF* is already there.
+
+        Under the words a person reads — *Archive*, *Image*, *PDF*, *Text* —
+        rather than commonest first, which is the order the archive hands its
+        catalogue over in and the order the families are *chosen* in. See
+        :mod:`mailarc_ui.search.ordering`."""
         await _load(state)
 
         assert [one["value"] for one in state.file_type_options] == [
-            FileKind.PDF.value,
-            FileKind.IMAGE.value,
             FileKind.ARCHIVE.value,
+            FileKind.IMAGE.value,
+            FileKind.PDF.value,
             FileKind.TEXT.value,
         ]
 
@@ -756,9 +839,21 @@ class TestOpeningThePage:
         assert state.accounts == offered
 
     async def test_it_fills_the_two_address_pickers(self, state, reader) -> None:
-        """Role-split, and in the order the archive handed them over — the
-        picker shows a bounded number of options before anybody types, so the
-        busiest-first order is what decides which ones those are."""
+        """Role-split: an address that only ever received mail is not a sender,
+        and offering it under **From** would be a filter that cannot match."""
+        await _load(state)
+
+        assert state.sender_options == [ANNA, CARL]
+        assert state.recipient_options == [BOB, DORA]
+
+    async def test_the_pickers_read_alphabetically_whatever_the_archive_said(
+        self, state, reader
+    ) -> None:
+        """The archive hands both lists over busiest first. An address book is
+        looked up by name, and nobody knows how busy an address is before they
+        have found it — see :mod:`mailarc_ui.search.ordering`."""
+        reader.known = KnownAddresses(senders=(CARL, ANNA), recipients=(DORA, BOB))
+
         await _load(state)
 
         assert state.sender_options == [ANNA, CARL]
@@ -2197,3 +2292,391 @@ class TestGroupingASemanticAnswer:
             "m:m3@example.com",
         ]
         assert state.lines[1].subject == "Rechnung 1"
+
+
+class TestTheNaturalSegment:
+    """Whether it can be offered, and what happens when it cannot."""
+
+    async def test_it_is_dead_until_an_interpreter_exists(
+        self, state, interpreter
+    ) -> None:
+        interpreter.offer = False
+        await _load(state)
+
+        assert state.mode_options[2]["value"] == MODE_NATURAL
+        assert state.mode_options[2]["disabled"] is True
+
+    async def test_it_is_live_once_one_does(self, state, interpreter) -> None:
+        await _load(state)
+
+        assert state.mode_options[2]["disabled"] is False
+        assert state.llm_note == ""
+
+    async def test_it_is_appended_and_never_inserted(self, state) -> None:
+        """A selector whose options move under a reader is a control they stop
+        trusting — and full text stays first because it is the one that always
+        works."""
+        await _load(state)
+
+        assert [one["value"] for one in state.mode_options] == [
+            MODE_FULLTEXT,
+            MODE_SEMANTIC,
+            MODE_NATURAL,
+        ]
+
+    async def test_the_note_names_a_remedy_a_reader_can_act_on(
+        self, state, interpreter
+    ) -> None:
+        """On the desktop bundle there is no shell into the environment, so a
+        sentence whose only remedy was a variable would be one its reader could
+        not act on — which is why it names the page first."""
+        interpreter.offer = False
+        await _load(state)
+
+        assert "no interpreter model is configured" in state.llm_note
+        assert "/admin/embedder" in state.llm_note
+
+    async def test_a_half_wired_build_says_so_instead(self, state) -> None:
+        """The developer's sentence, and it must never be shown for an
+        installation that simply has no model set up — which is why the
+        composition root publishes an interpreter either way.
+
+        The lookup is patched rather than the registry emptied: what is under
+        test is the page's answer when the service is absent, and going through
+        the registry would make the test depend on how that spells "nothing
+        registered" instead.
+        """
+
+        def missing() -> QueryInterpreter:
+            raise RuntimeError(reads.NO_INTERPRETER)
+
+        with patch.object(reads, "query_interpreter", missing):
+            await _load(state)
+
+        assert "app.composition" in state.llm_note
+        assert state.llm_ready is False
+
+    async def test_it_cannot_be_chosen_while_it_is_off(
+        self, state, interpreter
+    ) -> None:
+        interpreter.offer = False
+        await _load(state)
+
+        state.choose_mode(MODE_NATURAL)
+
+        assert state.mode == MODE_FULLTEXT
+
+    async def test_choosing_it_is_allowed_once_it_is_on(self, state) -> None:
+        await _load(state)
+
+        state.choose_mode(MODE_NATURAL)
+
+        assert state.mode == MODE_NATURAL
+        assert state.natural_chosen is True
+
+    async def test_it_does_not_grey_the_fields_out(self, state) -> None:
+        """The opposite of semantic, and the whole design: the reading lands in
+        the fields, so they have to stay editable to be correctable."""
+        await _load(state)
+
+        state.choose_mode(MODE_NATURAL)
+
+        assert state.semantic_chosen is False
+
+    async def test_switching_away_forgets_what_was_understood(self, state) -> None:
+        await _load(state)
+        state.choose_mode(MODE_NATURAL)
+        state.understood = "something about the last question"
+
+        state.choose_mode(MODE_FULLTEXT)
+
+        assert state.understood == ""
+
+    async def test_a_page_load_demotes_a_mode_whose_service_went_away(
+        self, state, interpreter
+    ) -> None:
+        """Left standing it would be a Search button that can never light up,
+        with nothing on screen saying why."""
+        await _load(state)
+        state.choose_mode(MODE_NATURAL)
+        interpreter.offer = False
+
+        await _load(state)
+
+        assert state.mode == MODE_FULLTEXT
+
+    async def test_search_needs_a_sentence_and_an_interpreter(
+        self, state, interpreter
+    ) -> None:
+        await _load(state)
+        state.choose_mode(MODE_NATURAL)
+
+        assert state.can_search is False
+        state.query = "Rechnungen von Anna"
+        assert state.can_search is True
+        interpreter.offer = False
+        state.llm_ready = False
+        assert state.can_search is False
+
+    async def test_a_picked_sender_alone_is_not_a_question(self, state) -> None:
+        """A structured filter is what this mode *produces*, so a form with no
+        sentence in it has nothing to interpret."""
+        await _load(state)
+        state.choose_mode(MODE_NATURAL)
+        state.choose_senders([ANNA])
+
+        assert state.can_search is False
+
+
+class TestReadingAQuestionIntoTheForm:
+    """The step in front of the search, and the one that has to be visible."""
+
+    async def test_the_reading_fills_the_fields_it_resolved(
+        self, state, interpreter, reader
+    ) -> None:
+        interpreter.answer = ResolvedQuery(
+            text="Rechnung",
+            senders=(ANNA,),
+            after="2026-01-01",
+            has_attachments=True,
+        )
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "Rechnungen von Anna Bauer seit Januar"
+
+        await _submit(state)
+
+        assert state.senders == [ANNA]
+        assert state.query == "Rechnung"
+        assert state.date_from == "2026-01-01"
+        assert state.attachments == ATTACH_WITH
+
+    async def test_what_it_filled_in_is_what_was_searched(
+        self, state, interpreter, reader
+    ) -> None:
+        """One filter builder and one search: the form is written first, then
+        ``_asked`` reads it exactly as it would after typing."""
+        interpreter.answer = ResolvedQuery(text="Rechnung", senders=(ANNA,))
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "Rechnungen von Anna"
+
+        await _submit(state)
+
+        asked, _, _ = reader.asked[-1]
+        assert asked.senders == (ANNA,)
+        assert asked.text == "Rechnung"
+
+    async def test_an_address_the_page_never_offered_is_dropped(
+        self, state, interpreter
+    ) -> None:
+        """The guard that matters most. A model invents plausible addresses,
+        and one that is not in the picker's options would not render as a pill
+        — so the reader would see an empty **From** over a search that really
+        had been narrowed."""
+        interpreter.answer = ResolvedQuery(senders=("invented@nowhere.example",))
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "von irgendwem"
+
+        await _submit(state)
+
+        assert state.senders == []
+
+    async def test_a_family_this_archive_has_none_of_is_dropped(
+        self, state, interpreter
+    ) -> None:
+        interpreter.answer = ResolvedQuery(families=("hologram",))
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "mit Hologrammen"
+
+        await _submit(state)
+
+        assert state.file_kinds == []
+
+    async def test_a_mailbox_nobody_offered_is_dropped(
+        self, state, interpreter
+    ) -> None:
+        interpreter.answer = ResolvedQuery(account_id="99")
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "in meinem anderen Postfach"
+
+        await _submit(state)
+
+        assert state.account_id == ""
+
+    async def test_the_whole_form_is_written_and_not_only_part_of_it(
+        self, state, interpreter
+    ) -> None:
+        """A leftover date under a freshly interpreted question would be a
+        filter nobody asked for and nobody could account for."""
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.date_from = "2020-01-01"
+        state.attachments = ATTACH_WITHOUT
+        state.recipient_match = MATCH_ANY
+        state.query = "irgendwas"
+        interpreter.answer = ResolvedQuery(text="irgendwas")
+
+        await _submit(state)
+
+        assert state.date_from == ""
+        assert state.attachments == ATTACH_ANY
+        assert state.recipient_match == MATCH_ALL
+
+    async def test_the_model_is_shown_the_archives_own_vocabulary(
+        self, state, interpreter
+    ) -> None:
+        """Grounding: the interpreter matches names against exactly the options
+        the form can display, so a reading it produces is always one the form
+        can show."""
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "von Anna"
+
+        await _submit(state)
+
+        shown = interpreter.seen[-1]
+        assert [one.address for one in shown.senders] == [ANNA, CARL]
+        assert shown.senders[0].names == ("Anna Bauer",)
+        assert {one.value for one in shown.accounts} == {"1", "2"}
+
+    async def test_a_lost_directory_costs_the_grounding_and_not_the_page(
+        self, state, interpreter, reader
+    ) -> None:
+        """The bargain every optional read on this page strikes."""
+        reader.directory_error = RuntimeError("graph is down")
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "von Anna"
+
+        await _submit(state)
+
+        assert interpreter.seen[-1].senders == ()
+        assert state.error == ""
+
+
+class TestWhatTheReadingCouldNotDo:
+    """``understood``, and why it is not the answer's notice."""
+
+    async def test_an_unresolved_name_is_said_rather_than_dropped(
+        self, state, interpreter
+    ) -> None:
+        interpreter.answer = ResolvedQuery(
+            text="Vertrag Frau Schmidt", unresolved=("Frau Schmidt",)
+        )
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "Vertrag von Frau Schmidt"
+
+        await _submit(state)
+
+        assert "Frau Schmidt" in state.understood
+        assert state.query == "Vertrag Frau Schmidt"
+
+    async def test_a_note_from_the_reading_is_carried_through(
+        self, state, interpreter
+    ) -> None:
+        interpreter.answer = ResolvedQuery(
+            senders=(ANNA,), notes=("Sorted newest first, so 'Aufladung' was dropped.",)
+        )
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "wann war die letzte Aufladung von Anna"
+
+        await _submit(state)
+
+        assert "Aufladung" in state.understood
+
+    async def test_a_clean_reading_says_nothing(self, state, interpreter) -> None:
+        """The filled-in fields already show what was searched, so a sentence
+        restating them is noise a reader learns to skip — and then misses the
+        one time it matters."""
+        interpreter.answer = ResolvedQuery(text="Rechnung", senders=(ANNA,))
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "Rechnungen von Anna"
+
+        await _submit(state)
+
+        assert state.understood == ""
+
+    async def test_it_survives_paging(self, state, interpreter, reader) -> None:
+        """The reason it is its own var. ``notice`` belongs to an answer and
+        ``_apply`` overwrites it on every read, **Load more** included."""
+        interpreter.answer = ResolvedQuery(text="Vertrag", unresolved=("Frau Schmidt",))
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "Vertrag von Frau Schmidt"
+        await _submit(state)
+        said = state.understood
+        state.offset = PAGE_SIZE
+
+        await _load_more(state)
+
+        assert state.understood == said
+        assert said != ""
+
+
+class TestWhenTheQuestionCannotBeRead:
+    """No empty filter may stand in for a failure — it is the whole archive."""
+
+    async def test_a_missing_model_is_a_notice_and_not_a_fault(
+        self, state, interpreter, reader
+    ) -> None:
+        interpreter.error = NlqUnavailable("Natural-language search: no model.")
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "von Anna"
+        before = len(reader.asked)
+
+        await _submit(state)
+
+        assert "no model" in state.notice
+        assert state.error == ""
+        assert len(reader.asked) == before
+
+    async def test_a_model_that_would_not_answer_is_a_notice_too(
+        self, state, interpreter, reader
+    ) -> None:
+        interpreter.error = NlqRefused("the model did not answer with a filter")
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "von Anna"
+        before = len(reader.asked)
+
+        await _submit(state)
+
+        assert "did not answer with a filter" in state.notice
+        assert len(reader.asked) == before
+
+    async def test_nothing_is_searched_and_the_list_stays_empty(
+        self, state, interpreter
+    ) -> None:
+        """The failure this catches: an empty ``SearchFilters`` is not "nothing
+        matched", it is the browse-the-whole-archive read — so a swallowed
+        failure would answer a narrow question with every message there is."""
+        interpreter.error = NlqUnavailable("nope")
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "von Anna"
+
+        await _submit(state)
+
+        assert state.rows == []
+        assert state.searching is False
+
+    async def test_an_unexpected_failure_is_a_fault(self, state, interpreter) -> None:
+        """Never a notice: a notice says what a person can do about it, and
+        this one has no such sentence to offer."""
+        interpreter.error = ZeroDivisionError("something went very wrong")
+        await _load(state)
+        state.mode = MODE_NATURAL
+        state.query = "von Anna"
+
+        await _submit(state)
+
+        assert state.error == SEARCH_FAILED
+        assert state.notice == ""

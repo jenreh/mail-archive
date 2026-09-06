@@ -19,11 +19,23 @@ from typing import Any
 import appkit_mantine as mn
 import reflex as rx
 
-SLIDE_OVER_SIZE = "xl"
+SLIDE_OVER_SIZE = "min(1120px, 94vw)"
 """How wide the panel is.
 
 Wide enough for an A4 page at a readable scale, which is what most of what
 arrives on mail turns out to be. Narrower and a PDF is a column of grey.
+
+Wider than Mantine's ``xl`` since the panel started opening documents rather
+than describing them. A Word document and a PDF each carry a rail of page
+previews, and :mod:`mailarc_ui.kit.viewer_shell` puts that rail beside the
+page only above 768 pixels of *container*: at ``xl`` the panel was about 800
+pixels before its own padding, so every rail was an overlay and the reader had
+to ask for the thing they had just opened the file to see.
+
+The ``vw`` half is what keeps that honest on a laptop — a fixed 1120 would be
+wider than the window, and Mantine would clamp it to 100% with no room left
+for the page behind. Below the breakpoint the rail is still reachable; it is
+one press rather than nothing.
 """
 
 SLIDE_OVER_STYLES = {

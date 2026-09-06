@@ -513,14 +513,57 @@ def frame_document(body_html: str, *, allow_remote: bool = False) -> str:
     )
 
 
-def decode_raw(data: bytes, limit: int = RAW_LIMIT) -> tuple[str, bool]:
+FALLBACK_CHARSET = "cp1252"
+"""What bytes are read as when nothing else worked.
+
+Windows-1252 rather than latin-1, and they are not the same: the range 0x80 to
+0x9F is unassigned in latin-1 and is where 1252 keeps the curly quotes, the en
+dash and the euro sign — the characters a German mail program actually puts in
+a contact card. Read as latin-1 they come out as control codes.
+
+Last, and never first: it decodes almost anything without complaining, which
+makes it a good floor and a terrible guess.
+"""
+
+
+def decode_raw(
+    data: bytes, limit: int = RAW_LIMIT, charset: str = ""
+) -> tuple[str, bool]:
     """Bytes to text for the viewer, and whether the cut was applied.
 
     Lenient on purpose — a replaced character is a fact about the message, a
     decode error would hide the whole of it. The cut lands after decoding so
     a multi-byte character is never split.
+
+    Three attempts, and the order is the interesting part.
+
+    **UTF-8 first, even when the part said otherwise.** UTF-8 validates
+    itself: a sequence of bytes that is not UTF-8 almost never decodes as UTF-8
+    by accident, so a successful strict decode is close to proof. The reverse is
+    not true — latin-1 accepts *every* byte, so a UTF-8 file that a sender
+    labelled ``iso-8859-1`` would decode without error into ``GeschÃ¤ftsleitung``
+    and nothing downstream would ever notice. Trusting the label first is how
+    that mojibake gets archived.
+
+    **Then what the sender said**, which is the right answer for the genuinely
+    single-byte files and is a statement of fact rather than a guess.
+
+    **Then :data:`FALLBACK_CHARSET` with replacement**, so that there is always
+    a string. That is the whole of the failure handling.
     """
-    text = data.decode("utf-8", errors="replace")
+    text = _decoded(data, charset)
     if len(text) <= limit:
         return text, False
     return text[:limit], True
+
+
+def _decoded(data: bytes, charset: str) -> str:
+    """The bytes as text, down the ladder :func:`decode_raw` describes."""
+    for candidate in ("utf-8", charset.strip().lower()):
+        if not candidate:
+            continue
+        try:
+            return data.decode(candidate)
+        except UnicodeDecodeError, LookupError:
+            logger.debug("Attachment is not %s", candidate)
+    return data.decode(FALLBACK_CHARSET, errors="replace")

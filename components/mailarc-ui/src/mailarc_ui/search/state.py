@@ -32,32 +32,34 @@ invites a reader to believe the numbers moved when only the label did.
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 import reflex as rx
 from reflex.event import EventCallback
 
-from mailarc_analytics.semantic import (
-    NO_EMBEDDER,
-    SearchKind,
-    SearchRequest,
-    SemanticError,
-)
-from mailarc_core.archive.search import (
-    KnownAddresses,
-    KnownAttachments,
-    SearchFilters,
-)
+from mailarc_analytics.nlq import ResolvedQuery
+from mailarc_core.archive.search import KnownAddresses, SearchFilters
 from mailarc_ui.graph import ChipGraphState
-from mailarc_ui.search import reads
+from mailarc_ui.search.answers import (
+    PAGE_SIZE,
+    _accounts,
+    _addresses,
+    _answer,
+    _attachment_catalogue,
+    _conversation_rows,
+    _directory,
+    _interpreted,
+    _llm_offer,
+    _memberships_of,
+    _semantic_offer,
+    _whole_conversations,
+)
 from mailarc_ui.search.files import (
     kind_options,
     names_of,
     offered_kinds,
     types_of,
 )
-from mailarc_ui.search.memberships import read_memberships
 from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
@@ -65,9 +67,9 @@ from mailarc_ui.search.model import (
     MATCH_ALL,
     MATCH_ANY,
     MODE_FULLTEXT,
+    MODE_NATURAL,
     MODE_SEMANTIC,
     READ_GROUPINGS,
-    SEARCH_FAILED,
     Grouping,
     ListLine,
     Membership,
@@ -76,18 +78,15 @@ from mailarc_ui.search.model import (
     filters_of,
     grouping_of,
     lines_of,
-    partial_conversations,
 )
+from mailarc_ui.search.natural import (
+    attachment_segment,
+    understood,
+    vocabulary_of,
+)
+from mailarc_ui.search.ordering import alphabetical
 
 logger = logging.getLogger(__name__)
-
-PAGE_SIZE = 50
-"""How many rows one read brings in. The list scrolls; "more" appends a page."""
-
-SEMANTIC_HITS = PAGE_SIZE
-"""How deep the KNN goes. One ranked answer, not a paged one: a nearest-
-neighbour search takes a ``k`` and no offset, so asking again for "the next
-fifty" would mean re-ranking the first fifty to throw them away."""
 
 FIELD_LIMIT = 200
 """How much text one field keeps.
@@ -154,18 +153,18 @@ class MailSearchState(ChipGraphState, rx.State):
 
     file_type_options: list[dict[str, str]] = []
     """What the file picker offers — one entry per family this archive holds
-    a file of, commonest first. Dicts and not plain strings, because a family
+    a file of, alphabetically. Dicts and not plain strings, because a family
     is shown as a word and comes back as its enum value."""
 
     account_id: str = ""
 
     accounts: list[dict[str, str]] = []
-    """What the account picker offers — ``value`` is the account's row id as a
-    string, which is what the graph keys an ``Account`` node under."""
+    """What the account picker offers, by name — ``value`` is the account's row
+    id as a string, which is what the graph keys an ``Account`` node under."""
 
     sender_options: list[str] = []
     recipient_options: list[str] = []
-    """Every address the archive holds in that role, busiest first.
+    """Every address the archive holds in that role, alphabetically.
 
     Plain strings, because for an address the option and its label are the same
     thing — unlike the accounts above, where a row id has to be shown as the
@@ -174,7 +173,9 @@ class MailSearchState(ChipGraphState, rx.State):
     Two lists and not one: an address that only ever received mail is not a
     sender, and offering it under **From** would be offering a filter that
     cannot match. The archive answers both in one read — see
-    :meth:`~mailarc_core.ArchiveReader.known_addresses`.
+    :meth:`~mailarc_core.ArchiveReader.known_addresses`, which hands them over
+    busiest first; :mod:`~mailarc_ui.search.ordering` is where that becomes the
+    order a person reads in.
     """
 
     rows: list[ResultRow] = []
@@ -199,6 +200,26 @@ class MailSearchState(ChipGraphState, rx.State):
     semantic_ready: bool = False
     semantic_note: str = ""
     """Why the semantic segment is off, beside the selector while it is."""
+
+    llm_ready: bool = False
+    llm_note: str = ""
+    """Why the natural segment is off, beside the selector while it is."""
+
+    understood: str = ""
+    """What the last interpreted question was taken to mean.
+
+    Its own var and deliberately not :attr:`notice`. ``notice`` belongs to an
+    *answer* and :meth:`_apply` overwrites it on every read — including the
+    read behind **Load more** — so a sentence about the *question* put there
+    would vanish the moment somebody paged. It is shown under the **Mode**
+    segment beside :attr:`llm_note`, where a statement about how the form got
+    filled in belongs.
+
+    Empty most of the time, because the filled-in fields already say what was
+    searched. It carries only what they cannot show: a name the archive had no
+    address for, a date refused, the words dropped to answer a "wann war die
+    letzte".
+    """
 
     grouping: str = Grouping.CONVERSATION.value
     """What the list is grouped by — the **Group by** dropdown's value.
@@ -241,6 +262,18 @@ class MailSearchState(ChipGraphState, rx.State):
 
     Kept across a grouping toggle: switching the list to messages and back is
     a change of view, not an instruction to forget what was fetched.
+    """
+
+    _drained: bool = False
+    """Whether a **Load more** has already come back with nothing.
+
+    :attr:`has_more` cannot tell a full last page from a full page with more
+    behind it when the answer carries no total, which every ranked full-text
+    answer does. Its arithmetic — an offset that is an exact multiple of
+    :data:`PAGE_SIZE` — then stays true after the empty read as well, because
+    :meth:`_apply` derives the offset from the rows and an empty page adds
+    none. So the button stayed lit and every further press re-issued the same
+    empty read. This remembers the one that came back empty.
     """
 
     _expanding: str = ""
@@ -298,6 +331,8 @@ class MailSearchState(ChipGraphState, rx.State):
         """
         if self.total > 0:
             return self.offset < self.total
+        if self._drained:
+            return False
         return self.offset > 0 and self.offset % PAGE_SIZE == 0
 
     @rx.var
@@ -312,16 +347,32 @@ class MailSearchState(ChipGraphState, rx.State):
 
     @rx.var
     def semantic_chosen(self) -> bool:
-        """Whether the structured half of the form is being ignored."""
+        """Whether the structured half of the form is being ignored.
+
+        Semantic alone. The natural segment is the opposite case — it *writes*
+        those fields and leaves them editable — so it must not join this var,
+        and every ``disabled=`` binding in the form still reads exactly this.
+        """
         return self.mode == MODE_SEMANTIC
 
     @rx.var
+    def natural_chosen(self) -> bool:
+        """Whether the next search reads the question before it runs."""
+        return self.mode == MODE_NATURAL
+
+    @rx.var
     def mode_options(self) -> list[dict[str, str | bool]]:
-        """The two segments, the second dead until an embedder exists.
+        """The three segments, each dead until the thing it needs exists.
 
         Built here rather than in the form because only the state knows
-        whether the semantic path can answer, and an enabled control over a
-        path that always fails is a promise.
+        whether a path can answer, and an enabled control over a path that
+        always fails is a promise.
+
+        **Natural is appended, never inserted.** Full text is first because it
+        is the one that always works, and the other two keep the positions they
+        already had — a form test asserts on the second segment by index, and
+        more to the point a selector whose options move under a reader is a
+        control they stop trusting.
         """
         return [
             {"label": "Fulltext", "value": MODE_FULLTEXT},
@@ -329,6 +380,11 @@ class MailSearchState(ChipGraphState, rx.State):
                 "label": "Semantic",
                 "value": MODE_SEMANTIC,
                 "disabled": not self.semantic_ready,
+            },
+            {
+                "label": "Natural",
+                "value": MODE_NATURAL,
+                "disabled": not self.llm_ready,
             },
         ]
 
@@ -345,6 +401,11 @@ class MailSearchState(ChipGraphState, rx.State):
             return False
         if self.mode == MODE_SEMANTIC:
             return self.semantic_ready and self.query.strip() != ""
+        if self.mode == MODE_NATURAL:
+            # The one field this mode reads. A structured filter is what it
+            # *produces*, so a form with a sender picked and no sentence in it
+            # has nothing to interpret.
+            return self.llm_ready and self.query.strip() != ""
         return bool(
             self.query.strip()
             or self.senders
@@ -442,20 +503,31 @@ class MailSearchState(ChipGraphState, rx.State):
         """Switch path, and drop the answer the other one gave.
 
         The value arrives over the socket, so it is checked rather than
-        trusted — and the semantic path cannot be chosen while it is off,
-        whatever a caller sends. Choosing the path that is already chosen
-        changes nothing, answer included: throwing the rows away is what
+        trusted — and neither of the two optional paths can be chosen while it
+        is off, whatever a caller sends. Anything unrecognised is full text,
+        which is the one that always works. Choosing the path that is already
+        chosen changes nothing, answer included: throwing the rows away is what
         *switching* costs, not what touching the control costs.
         """
-        chosen = (
-            MODE_SEMANTIC
-            if value == MODE_SEMANTIC and self.semantic_ready
-            else MODE_FULLTEXT
-        )
+        chosen = self._offered_mode(value)
         if chosen == self.mode:
             return
         self.mode = chosen
+        self.understood = ""
         self._forget()
+
+    def _offered_mode(self, value: str) -> str:
+        """One mode value narrowed to a path this installation really has.
+
+        The guard every picker on this form keeps, in the one place all three
+        segments meet: a value nobody offered would otherwise leave the form in
+        a mode whose **Search** button can never light up.
+        """
+        if value == MODE_SEMANTIC and self.semantic_ready:
+            return MODE_SEMANTIC
+        if value == MODE_NATURAL and self.llm_ready:
+            return MODE_NATURAL
+        return MODE_FULLTEXT
 
     @rx.event
     def reset_form(self) -> EventCallback[()]:
@@ -529,10 +601,10 @@ class MailSearchState(ChipGraphState, rx.State):
             self._memberships = {}
             self._collapsed = set()
             ids = [row.id for row in self.rows] if wanted in READ_GROUPINGS else []
+            rows = tuple(self.rows)
         if not ids:
             return
         found = await _memberships_of(ids, wanted)
-        rows = tuple(self.rows)
         whole = await asyncio.to_thread(
             _whole_conversations, rows, found, wanted, datetime.now(UTC)
         )
@@ -575,11 +647,12 @@ class MailSearchState(ChipGraphState, rx.State):
     async def load(self) -> None:
         """What this page can offer, and the newest messages. Its ``on_load``.
 
-        Four reads that fail apart: whether the semantic path is available is
-        answered in memory, the account picker comes out of the archive's own
-        database, and the address pickers and the listing come off the graph. A
-        graph that is not running has to leave the form usable, and a database
-        that is not has to leave the listing readable.
+        Reads that fail apart: whether the semantic and natural paths are
+        available is answered in memory, the account picker comes out of the
+        archive's own database, and the address pickers, the directory behind
+        them and the listing come off the graph. A graph that is not running
+        has to leave the form usable, and a database that is not has to leave
+        the listing readable.
 
         The address pickers are filled here and nowhere else. They are two
         traversals of the whole archive, and a list that is re-read while
@@ -595,6 +668,7 @@ class MailSearchState(ChipGraphState, rx.State):
             self._forget_memberships()
             grouping = grouping_of(self.grouping)
         ready, note = _semantic_offer()
+        reads_questions, llm_note = _llm_offer()
         accounts = await _accounts()
         addresses = await _addresses()
         files = await _attachment_catalogue()
@@ -602,17 +676,21 @@ class MailSearchState(ChipGraphState, rx.State):
         async with self:
             self.semantic_ready = ready
             self.semantic_note = note
+            self.llm_ready = reads_questions
+            self.llm_note = llm_note
             self.accounts = accounts
-            self.sender_options = list(addresses.senders)
-            self.recipient_options = list(addresses.recipients)
+            self.sender_options = alphabetical(addresses.senders)
+            self.recipient_options = alphabetical(addresses.recipients)
             self._content_types = list(files.content_types)
             self._untyped_names = list(files.untyped_names)
             self.file_type_options = kind_options(
                 files.content_types, files.untyped_names
             )
             self.file_kinds = offered_kinds(self.file_kinds, self.file_type_options)
-            if not ready and self.mode == MODE_SEMANTIC:
-                self.mode = MODE_FULLTEXT
+            # Demoted rather than left standing: a mode whose service went
+            # away between two page loads is a Search button that can never
+            # light up, and nothing on screen would say why.
+            self.mode = self._offered_mode(self.mode)
             self._apply(answer, append=False)
             self.searching = False
 
@@ -623,6 +701,12 @@ class MailSearchState(ChipGraphState, rx.State):
         The list is emptied before the read rather than after it: a search
         that fails must not leave the previous answer on screen under a form
         that now says something else.
+
+        On the natural path there is a step in front of all of this: the
+        question is read into the form's own fields first, and what runs
+        afterwards is whatever the form then says. So there is one filter
+        builder and one search, and the reading is visible in the controls a
+        person can correct — see :meth:`_fill_in`.
         """
         async with self:
             if self.searching:
@@ -636,6 +720,10 @@ class MailSearchState(ChipGraphState, rx.State):
             self.offset = 0
             self._clear_selection()
             self._forget_memberships()
+            natural, question = self.mode == MODE_NATURAL, self.query
+        if natural and not await self._interpret(question):
+            return
+        async with self:
             mode, filters = self.mode, self._asked()
             grouping = grouping_of(self.grouping)
             self._answered = filters
@@ -689,6 +777,71 @@ class MailSearchState(ChipGraphState, rx.State):
             account_id=self.account_id,
         )
 
+    async def _interpret(self, question: str) -> bool:
+        """Read the question into the form. ``False`` when nothing may run.
+
+        Two awaits outside the lock, which is why this is its own method: the
+        directory is a graph scan and the interpretation is an HTTP round trip
+        to a model that may be cold, and holding this client's state lock
+        across either would freeze the page.
+
+        The directory is read per search rather than kept on the state. It is
+        one scan of the ``Address`` label and the model call beside it costs
+        orders of magnitude more, while keeping every address the archive holds
+        in a Reflex var would be paid for by every session on every page.
+        """
+        directory = await _directory()
+        async with self:
+            vocabulary = vocabulary_of(
+                directory,
+                KnownAddresses(
+                    senders=tuple(self.sender_options),
+                    recipients=tuple(self.recipient_options),
+                ),
+                self.file_type_options,
+                self.accounts,
+            )
+        read = await _interpreted(question, vocabulary)
+        async with self:
+            if isinstance(read, SearchAnswer):
+                self._apply(read, append=False)
+                self.searching = False
+                return False
+            self._fill_in(read)
+            return True
+
+    def _fill_in(self, read: ResolvedQuery) -> None:
+        """Write an interpretation into the form, narrowed exactly as typing is.
+
+        **Every value goes through the guard its own field already keeps.** A
+        model is a second source of values arriving from outside this state,
+        and a worse one than the browser: it invents things that look right. An
+        address that is not in :attr:`sender_options` would not render as a
+        pill in the picker at all — so the reader would see an empty **From**
+        field over a search that really had been narrowed, which is the exact
+        way a form can lie about what it searched.
+
+        The whole form is written, including the fields the reading had no
+        opinion about. A leftover date from the last search sitting under a
+        freshly interpreted question would be a filter nobody asked for and
+        nobody could account for; **all/any** goes back to the form's own
+        default for the same reason.
+        """
+        self.query = _kept(read.text)
+        self.senders = _offered(list(read.senders), self.sender_options)
+        self.recipients = _offered(list(read.recipients), self.recipient_options)
+        self.recipient_match = MATCH_ALL
+        self.date_from = read.after
+        self.date_to = read.before
+        self.attachments = attachment_segment(read.has_attachments)
+        self.file_kinds = offered_kinds(list(read.families), self.file_type_options)
+        self.account_id = (
+            read.account_id
+            if read.account_id in {one["value"] for one in self.accounts}
+            else ""
+        )
+        self.understood = understood(read)
+
     def _apply(self, answer: SearchAnswer, *, append: bool) -> None:
         """One answer, all of it, at once.
 
@@ -700,6 +853,7 @@ class MailSearchState(ChipGraphState, rx.State):
         self.notice = answer.notice
         if answer.error:
             return
+        self._drained = append and not answer.rows
         self.rows = [*self.rows, *answer.rows] if append else list(answer.rows)
         self.total = answer.total
         self.offset = len(self.rows)
@@ -785,237 +939,3 @@ def _offered(values: list[str], options: list[str]) -> list[str]:
         if one in known and one not in kept:
             kept.append(one)
     return kept
-
-
-def _semantic_offer() -> tuple[bool, str]:
-    """Whether the semantic segment can be offered, and why not when it cannot.
-
-    Deliberately touches no graph. Both questions — is there a service, does
-    it have an embedder — are answered in memory, so the page can say
-    "semantic search is off" on an installation whose graph is not even
-    running. The sentence is
-    :data:`~mailarc_analytics.semantic.errors.NO_EMBEDDER`, which names the
-    setting to change.
-    """
-    try:
-        search = reads.semantic_search()
-    except RuntimeError as error:
-        logger.warning("The search page found no search service")
-        return False, str(error)
-    return search.available, "" if search.available else NO_EMBEDDER
-
-
-async def _accounts() -> list[dict[str, str]]:
-    """The account picker's options, or an empty picker.
-
-    A failure here is not a failure of the page: the account filter is one
-    optional field, and losing the database must not cost the listing beside
-    it. Logged with its traceback, shown as nothing.
-    """
-    try:
-        return await reads.account_options()
-    except Exception:
-        logger.exception("Could not read the accounts for the search picker")
-        return []
-
-
-async def _addresses() -> KnownAddresses:
-    """What the two address pickers offer, or two empty pickers.
-
-    The same bargain :func:`_accounts` strikes, for the same reason: the
-    address filters are optional fields, and a graph that cannot answer them
-    must not cost the listing beside them. Blocking, so it goes to a thread.
-    """
-    try:
-        return await asyncio.to_thread(reads.archive_reader().known_addresses)
-    except Exception:
-        logger.exception("Could not read the addresses for the search pickers")
-        return KnownAddresses()
-
-
-async def _attachment_catalogue() -> KnownAttachments:
-    """What the file picker offers, or an empty picker.
-
-    The bargain :func:`_addresses` strikes, for the same reason: the file
-    filter is one optional field, and a graph that cannot answer it must not
-    cost the listing beside it. Blocking, so it goes to a thread.
-
-    Both halves or neither: the picker is built from the two lists together,
-    and half a catalogue would offer families whose files it could not then
-    find.
-    """
-    try:
-        return await asyncio.to_thread(reads.archive_reader().known_attachments)
-    except Exception:
-        logger.exception("Could not read the files for the search picker")
-        return KnownAttachments()
-
-
-async def _answer(
-    mode: str, filters: SearchFilters, offset: int, grouping: Grouping
-) -> SearchAnswer:
-    """One search, with every way it can fail turned into a sentence.
-
-    Two clauses, and they are the taxonomy this page needs. A
-    :class:`~mailarc_analytics.semantic.errors.SemanticError` — or the
-    ``ValueError`` the core's own sanitizer raises for the same reason — was
-    written for the person reading it: it names the setting to change, or says
-    the question holds no searchable words. Those are shown verbatim as a
-    notice, because they are statements about the ask rather than faults.
-    Anything else is a fault: the graph went away, the embedder's host refused
-    the connection, a driver raised. Those are logged with a traceback and
-    shown as :data:`~mailarc_ui.search.model.SEARCH_FAILED`, because a
-    driver's words can name a path inside this installation.
-    """
-    try:
-        if mode == MODE_SEMANTIC:
-            return await _nearest(filters.text, grouping)
-        return await asyncio.to_thread(_filtered, filters, offset, grouping)
-    except (SemanticError, ValueError) as error:
-        logger.info("The archive cannot answer this search: %s", error)
-        return SearchAnswer(notice=str(error))
-    except Exception:
-        logger.exception("The archive could not be searched")
-        return SearchAnswer(error=SEARCH_FAILED)
-
-
-def _filtered(filters: SearchFilters, offset: int, grouping: Grouping) -> SearchAnswer:
-    """One page of whatever the form asked for. Blocking — hence the thread.
-
-    The membership read rides in the same thread as the page, so one frozen
-    answer still crosses the state lock — and it is not made at all for a
-    grouping that needs none. A failure in it is not one this page has to
-    survive specially: it comes out of the same archive the page came out of,
-    so the caller's own handler catches it and the list reports one fault
-    rather than half an answer.
-    """
-    page = reads.archive_reader().search_messages(
-        filters, limit=PAGE_SIZE, offset=offset
-    )
-    memberships = read_memberships([one.summary.id for one in page.hits], grouping)
-    now = datetime.now(UTC)
-    rows = tuple(
-        ResultRow.from_summary(one.summary, now, one.relevance) for one in page.hits
-    )
-    return SearchAnswer(
-        rows=rows,
-        total=page.total or 0,
-        memberships=memberships,
-        whole=_whole_conversations(rows, memberships, grouping, now),
-        grouping=grouping.value,
-    )
-
-
-def _whole_conversations(
-    rows: Sequence[ResultRow],
-    memberships: Mapping[str, Membership],
-    grouping: Grouping,
-    now: datetime,
-) -> dict[str, tuple[ResultRow, ...]]:
-    """The full membership of every conversation this answer cut into.
-
-    **A thread is shown whole or not at all.** A search matches messages, and
-    the half of an exchange a person wrote themselves matches almost nothing
-    they type: their own replies carry neither the sender they filtered on nor,
-    usually, the words they searched for. Grouping the remainder under a
-    heading that says "2 of 3" is true and useless — it names a message the
-    list then refuses to show. So the missing members are read here, in the
-    same thread as the page, and travel with it.
-
-    One read for the page, not one per group: see
-    :meth:`~mailarc_core.ArchiveReader.conversation_members`. Nothing is read
-    when the list is grouped some other way, and nothing when every group is
-    already whole — the common case on an archive nobody has filtered.
-
-    A failure is swallowed, and that is the difference between this read and
-    the page's own: what it adds is completeness, and a list of the messages
-    that *did* match is a worse answer than a whole one but a far better one
-    than a fault. The groups then draw as they used to, chip and button and
-    all.
-    """
-    if grouping != Grouping.CONVERSATION:
-        return {}
-    wanted = partial_conversations(rows, memberships)
-    if not wanted:
-        return {}
-    try:
-        found = reads.archive_reader().conversation_members(wanted)
-    except Exception:
-        logger.exception("Could not read the whole of %d conversations", len(wanted))
-        return {}
-    return {
-        conversation: tuple(ResultRow.from_summary(one, now) for one in members)
-        for conversation, members in found.items()
-    }
-
-
-async def _memberships_of(ids: list[str], grouping: Grouping) -> dict[str, Membership]:
-    """The memberships of rows already on screen — what a switch needs.
-
-    A failure leaves the list in one bucket rather than emptied: the rows are
-    right, only the sections are missing, and a page that threw them away to
-    report a fault would be worse than one that quietly draws what it has.
-    """
-    try:
-        return await asyncio.to_thread(read_memberships, list(ids), grouping)
-    except Exception:
-        logger.exception("Could not read the %s of the result list", grouping.value)
-        return {}
-
-
-async def _conversation_rows(
-    conversation_id: str,
-) -> tuple[tuple[ResultRow, ...], str]:
-    """One whole conversation as rows, or the sentence to show instead.
-
-    The rows carry no relevance: a member the search never returned was not
-    ranked, and printing a score for it would invent one.
-    """
-    try:
-        summaries = await asyncio.to_thread(
-            reads.archive_reader().conversation_messages, conversation_id
-        )
-    except Exception:
-        logger.exception("Could not read conversation %s", conversation_id)
-        return (), SEARCH_FAILED
-    now = datetime.now(UTC)
-    return tuple(ResultRow.from_summary(one, now) for one in summaries), ""
-
-
-async def _nearest(question: str, grouping: Grouping) -> SearchAnswer:
-    """The KNN's ranking, hydrated into rows in exactly that order.
-
-    Two round trips on purpose. The embedding is HTTP and is awaited; the
-    hydration is a graph read and goes to a thread. A message the ranking
-    names but the graph no longer holds is left out rather than answered with
-    a hole, which is :meth:`~mailarc_core.ArchiveReader.messages_by_ids`'s
-    contract — so the row count can be shorter than the hit count.
-
-    ``notice`` carries the result's coverage sentence: a semantic answer over
-    a half-embedded archive is short for a reason the rows cannot show.
-    """
-    result = await reads.semantic_search().semantic(
-        SearchRequest(text=question, kind=SearchKind.SEMANTIC, limit=SEMANTIC_HITS)
-    )
-    scores = {hit.message_id: hit.score for hit in result.hits}
-    summaries = await asyncio.to_thread(
-        reads.archive_reader().messages_by_ids, list(scores)
-    )
-    memberships = await asyncio.to_thread(
-        read_memberships, [one.id for one in summaries], grouping
-    )
-    now = datetime.now(UTC)
-    rows = tuple(
-        ResultRow.from_summary(one, now, scores.get(one.id)) for one in summaries
-    )
-    whole = await asyncio.to_thread(
-        _whole_conversations, rows, memberships, grouping, now
-    )
-    return SearchAnswer(
-        rows=rows,
-        total=len(rows),
-        memberships=memberships,
-        whole=whole,
-        grouping=grouping.value,
-        notice=result.notice,
-    )

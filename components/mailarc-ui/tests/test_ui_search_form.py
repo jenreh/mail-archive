@@ -49,6 +49,9 @@ from mailarc_ui.search.model import (
     GROUPING_OPTIONS,
     MATCH_ALL,
     MATCH_ANY,
+    MODE_FULLTEXT,
+    MODE_NATURAL,
+    MODE_SEMANTIC,
     ListLine,
 )
 from mailarc_ui.search.state import MailSearchState
@@ -75,6 +78,10 @@ Every field but the question and the path selector — seven — plus the *all /
 any* switch over the recipients, which is not a field but would otherwise be
 a live control over a picker that is dead.
 """
+
+NATURAL_NOTE = "the fields below are filled in from it"
+"""The ASCII head of :data:`NATURAL_IS_INTERPRETED`, for
+:data:`SEMANTIC_NOTE`'s reason — that sentence carries an em dash too."""
 
 SEMANTIC_NOTE = "the sender, date, attachment and account fields do not narrow it"
 """The ASCII tail of :data:`SEMANTIC_IS_TEXT_ONLY`.
@@ -292,9 +299,9 @@ class TestTheTwoAddressPickers:
         assert _props(search_form().render()).count("clearable:true") == 6
 
 
-class TestTheTwoPaths:
+class TestTheThreePaths:
     def test_the_segments_come_from_the_state_rather_than_the_form(self) -> None:
-        """Only the state knows whether an embedder exists."""
+        """Only the state knows whether an embedder or an interpreter exists."""
         assert "mode_options" in _drawn(search_form())
 
     def test_the_semantic_segment_is_dead_until_an_embedder_exists(self) -> None:
@@ -316,10 +323,55 @@ class TestTheTwoPaths:
 
         assert len(disabled) == DISABLED_BY_PATH
 
+    def test_the_natural_segment_is_dead_until_an_interpreter_exists(self) -> None:
+        """Its own segment and its own reason. An installation may have an
+        embedder and no interpreter, or the other way round: they are different
+        models, differing in what leaves the machine."""
+        state = MailSearchState()
+
+        assert state.mode_options[2]["value"] == MODE_NATURAL
+        assert state.mode_options[2]["disabled"] is True
+
+        state.llm_ready = True
+
+        assert state.mode_options[2]["disabled"] is False
+
+    def test_the_natural_segment_is_third_and_stays_third(self) -> None:
+        """The test above reads the second segment by index, and so does
+        ``test_ui_search_state.py`` — but the real reason is the reader: a
+        selector whose options move under them is a control they stop
+        trusting."""
+        assert [one["value"] for one in MailSearchState().mode_options] == [
+            MODE_FULLTEXT,
+            MODE_SEMANTIC,
+            MODE_NATURAL,
+        ]
+
     def test_the_form_says_what_the_semantic_path_ignores(self) -> None:
         """Disabling the fields is not enough — a form that quietly stops
         honouring what is typed in it is how a search lies."""
         assert SEMANTIC_NOTE in _drawn(search_form())
+
+    def test_the_form_says_what_the_natural_path_does_instead(self) -> None:
+        """The opposite promise, and it has to be made out loud too: this one
+        *writes* the fields below rather than ignoring them, and that is the
+        whole reason a wrong reading is survivable."""
+        assert NATURAL_NOTE in _drawn(search_form())
+
+    def test_the_natural_path_leaves_every_field_alive(self) -> None:
+        """The count above is over ``semantic_chosen`` alone, and this is why
+        that must not be generalised into a shared "fields are off" var: an
+        interpretation that landed in fields nobody could edit would be a
+        reading nobody could correct."""
+        drawn = _drawn(search_form())
+
+        assert "natural_chosen" in drawn
+        assert "disabled:natural_chosen" not in _props(search_form().render())
+
+    def test_the_reading_is_shown_where_it_will_not_be_overwritten(self) -> None:
+        """``understood`` is a var of its own rather than the answer's notice,
+        which ``_apply`` overwrites on every read — **Load more** included."""
+        assert "understood" in _drawn(search_form())
 
     def test_the_recipient_switch_goes_dead_with_the_field_it_qualifies(
         self,

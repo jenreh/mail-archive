@@ -29,6 +29,8 @@ from mailarc_core.archive.model import Address, Label, Message
 from mailarc_core.archive.reader import ArchiveReader, GraphSessionFactory
 from mailarc_core.archive.repository import AddressRepository, MessageRepository
 from mailarc_core.archive.search import (
+    AddressDirectory,
+    AddressEntry,
     ScoredId,
     SearchFilters,
     searchable_terms,
@@ -703,3 +705,55 @@ class TestMessagesByIds:
 
         assert reader(session, blobs).messages_by_ids([]) == []
         assert session.statements == []
+
+
+class TestTheAddressDirectory:
+    """The value objects, without a graph.
+
+    Worth testing apart from ``test_archive_search_local.py``: those tests skip
+    silently wherever FalkorDB is not vendored — a worktree, most CI images —
+    and :meth:`AddressDirectory.named` is the one piece of real logic here.
+    """
+
+    def test_a_name_is_optional_and_an_address_is_not(self) -> None:
+        """An address nobody ever put a name to still has to be in the
+        directory, or it becomes unfindable by address as well."""
+        entry = AddressEntry(address="bob@example.com")
+
+        assert entry.names == ()
+        assert entry.domain == ""
+
+    def test_the_join_keeps_the_order_it_was_asked_in(self) -> None:
+        """The role lists are busiest-first and the directory is alphabetical,
+        so the caller's order is the one worth keeping — it is what the picker
+        shows."""
+        directory = AddressDirectory(
+            entries=(
+                AddressEntry(address="anna@example.com", names=("Anna Bauer",)),
+                AddressEntry(address="bob@example.com"),
+            )
+        )
+
+        found = directory.named(("bob@example.com", "anna@example.com"))
+
+        assert [one.address for one in found] == [
+            "bob@example.com",
+            "anna@example.com",
+        ]
+
+    def test_the_join_skips_an_address_it_has_no_entry_for(self) -> None:
+        """Skipped rather than invented. It cannot happen while both lists come
+        off the same graph, and it would be a silent lie if it ever did."""
+        directory = AddressDirectory(entries=(AddressEntry(address="a@b.c"),))
+
+        assert directory.named(("a@b.c", "gone@b.c")) == (
+            AddressEntry(address="a@b.c"),
+        )
+
+    def test_an_empty_directory_joins_to_nothing(self) -> None:
+        assert AddressDirectory().named(("a@b.c",)) == ()
+
+    def test_the_values_are_frozen(self) -> None:
+        """They cross a state lock, so they may not be edited on the way."""
+        assert AddressEntry.model_config["frozen"] is True
+        assert AddressDirectory.model_config["frozen"] is True

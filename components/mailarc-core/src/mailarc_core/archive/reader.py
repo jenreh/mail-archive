@@ -43,6 +43,7 @@ from mailarc_core.archive.repository import (
     ThreadRepository,
 )
 from mailarc_core.archive.search import (
+    AddressDirectory,
     KnownAddresses,
     KnownAttachments,
     MessageHit,
@@ -307,6 +308,26 @@ class ArchiveReader:
                 senders=tuple(repository.find_senders()),
                 recipients=tuple(repository.find_recipients()),
             )
+
+    def address_directory(self) -> AddressDirectory:
+        """Every address the archive holds, with the names it signs itself.
+
+        A different question from :meth:`known_addresses` and a much cheaper
+        one: that is two full traversals of every message, answering "which
+        addresses may this form offer"; this is one scan of the ``Address``
+        label, answering "who is that". A caller needing both — the
+        natural-language reader is the one there is — asks for both on the same
+        page load and joins them with
+        :meth:`~mailarc_core.archive.search.AddressDirectory.named`.
+
+        The names are what make the second question answerable at all. A person
+        asks for mail from *their property manager*, not from
+        ``info@santak-immobilien.de``, and the only place that company's own
+        name appears is in ``display_names``.
+        """
+        with self._graph_session() as graph:
+            entries = AddressRepository(graph).find_directory()
+        return AddressDirectory(entries=tuple(entries))
 
     def known_attachments(self) -> KnownAttachments:
         """Which files this archive carries, commonest first, in two lists.

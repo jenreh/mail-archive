@@ -9,11 +9,18 @@ for. It needs an **embedder**: a model that turns text into a vector. That is
 the one part of this application which is off by default, and this page is
 about turning it on.
 
-Both live on the search page at `/`, as the two halves of its **Mode** switch.
-Semantic reads the question and nothing else, so choosing it greys out the
-sender, date, attachment and account fields and says so — a form that quietly
-stopped honouring what is typed in it would be a search that lies about what it
-searched.
+Both live on the search page at `/`, as two of the three positions of its
+**Mode** switch. Semantic reads the question and nothing else, so choosing it
+greys out the sender, date, attachment and account fields and says so — a form
+that quietly stopped honouring what is typed in it would be a search that lies
+about what it searched.
+
+The third position, [natural-language search](natural-language-search.md), is a
+separate feature with a separate setting, and it makes the opposite trade to
+this one. Semantic search uploads every message body once and gets meaning for
+it. That one uploads the sentence you typed and nothing else, and gets a
+filled-in form. You can run either without the other, and it is worth knowing
+which of the two you turned on.
 
 ## Off is a supported state, not a broken one
 
@@ -64,11 +71,14 @@ rather than sending a request nowhere.
 
 ### From the application
 
-**Embedder**, under **Admin** in the rail (`/admin/embedder`), sets the five
-things a person can answer — provider, model, dimension, base URL and API key —
-and stores them in the archive's own database. They are laid over the
-configuration file, so an installation that never opens the page behaves exactly
-as it did.
+**Models**, under **Admin** in the rail (`/admin/embedder`), holds two
+sections. The first is the embedder, and it sets the five things a person can
+answer — provider, model, dimension, base URL and API key — and stores them in
+the archive's own database. They are laid over the configuration file, so an
+installation that never opens the page behaves exactly as it did. The second
+section is the interpreter that
+[natural-language search](natural-language-search.md) uses; the two are stored
+apart and saved apart, so a change to one leaves the other alone.
 
 Four things about that page are worth knowing before you use it:
 

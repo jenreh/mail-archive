@@ -285,6 +285,8 @@ the file is:
 | A PDF | The document in the browser's own PDF viewer, pageable and zoomable |
 | HTML | The page rendered, in the same sandbox a mail body gets |
 | Text — plain text, CSV, JSON, XML, Markdown, a log, a forwarded `.eml` | The text, monospaced; JSON is laid out over lines on the way |
+| A calendar invitation — `.ics` | The meeting: what it is called, when it is, whether it repeats, where, who organised it, and everybody invited with their answer |
+| A contact card — `.vcf` | The person: their picture or their initials, what they do, and every address, number and link on the card |
 | Anything else — a spreadsheet, an archive, a Word document | Its type and its size, and a line saying a browser cannot draw it |
 
 Closing the panel puts you back exactly where you were: the message stays
@@ -300,14 +302,38 @@ A few things about it are worth knowing:
   attachment may load **nothing remote**, so a tracking pixel in one counts
   the same as one in the mail. There is no *allow* button on the panel — an
   attachment is a file, not a message you are corresponding about.
-- Files over **8 MB** are not shown. Everything in the panel travels inline to
+- Files over **30 MB** are not shown. Everything in the panel travels inline to
   the browser, and past that the wait costs more than the look is worth; a
   long text file is shown from the top and says it was cut.
+- A Word document, a workbook, a slide deck and a PDF open in a viewer with a
+  page rail down the side: press a page preview to jump to it, and use the
+  zoom beside it. Only the modern `.docx`, `.xlsx` and `.pptx` formats can be
+  drawn — a Word 97 `.doc` or a Keynote file says so rather than failing
+  inside a renderer that cannot read it. Everything is read-only; this is an
+  archive.
+- An invitation and a contact card are **read**, not printed. Every other row
+  in that table puts the file itself on screen; those two are forms filled in
+  for a machine, so the panel takes them apart and lays out the facts. A
+  cancelled meeting says *Cancelled* over its title in red, and an invitation
+  that repeats says how often. When a file cannot be read as either — a
+  to-do list saved as `.ics`, a note saved as `.vcf`, a download that stopped
+  halfway — the panel prints its lines instead, which is still the whole truth
+  about what arrived.
+- A contact card's **photograph is shown only when the card carries it**. Some
+  cards point at one on a web server instead; following that would make opening
+  an archived contact fetch from a stranger, so those are dropped and the
+  initials are drawn. An email address and a web address on a card are
+  pressable; a phone number is not, and a web address that is not really one is
+  shown as text rather than turned into a link.
 - The sender's own content type decides what the panel does, and what the card
   calls the file. When they send `application/octet-stream` — which several
   mail programs do for every attachment — the filename's extension decides
   instead. A file with neither is shown as *File*, which is the whole of what
   is honestly known about it.
+- **Umlauts survive.** Text attachments are decoded by trying UTF-8 first, then
+  whatever the message said the encoding was, then Windows-1252 — which is what
+  older mail programs write and what put a `?` in the middle of
+  *Geschäftsleitung* before.
 
 A few things are on purpose:
 

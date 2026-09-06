@@ -13,6 +13,7 @@ in the graph. One module per concern:
 """
 
 from mailarc_core.database.entities import (
+    LLM_SETTINGS_ID,
     SEMANTIC_SETTINGS_ID,
     AccountStatus,
     CredentialKind,
@@ -22,6 +23,7 @@ from mailarc_core.database.entities import (
     MailFailedMessageEntity,
     MailSyncCheckpointEntity,
     MailSyncJobEntity,
+    LlmSettingsEntity,
     SemanticSettingsEntity,
     SyncJobKind,
     SyncJobState,
@@ -34,6 +36,7 @@ from mailarc_core.database.repositories import (
     FailedMessageRepository,
     MailAccountRepository,
     MailCredentialRepository,
+    LlmSettingsRepository,
     SemanticSettingsRepository,
     SyncCheckpointRepository,
     SyncJobRepository,
@@ -47,6 +50,7 @@ from mailarc_core.database.sqlite import (
 )
 
 __all__ = [
+    "LLM_SETTINGS_ID",
     "SEMANTIC_SETTINGS_ID",
     "AccountStatus",
     "ApiKeyNotStored",
@@ -54,6 +58,8 @@ __all__ = [
     "CredentialKind",
     "CredentialNotStored",
     "FailedMessageRepository",
+    "LlmSettingsEntity",
+    "LlmSettingsRepository",
     "MailAccountEntity",
     "MailAccountRepository",
     "MailArchivedMessageEntity",

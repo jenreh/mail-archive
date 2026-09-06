@@ -15,9 +15,21 @@
     it. One table, read by the header card, the preview panel and the search
     form's file filter, so none of the three can disagree about one file.
 ``preview``
-    What one attachment becomes when a reader opens it — the four shapes a
-    browser can draw a file in, and the size past which it draws none. Knows
-    no I/O either.
+    What one attachment becomes when a reader opens it — the shapes a browser
+    can draw a file in, and the size past which it draws none. Knows no I/O
+    either.
+``contentline``
+    The ``NAME;PARAM=value:value`` grammar iCalendar and vCard share, read
+    once for both. Knows nothing about either format's properties.
+``invite``
+    A ``.ics`` read into the meeting it describes — when, where, who, and
+    whether it is still on.
+``vcard``
+    A ``.vcf`` read into the people it describes. Drops a ``PHOTO`` that is a
+    URL rather than fetching one.
+``records``
+    The two of those laid out — the only preview shapes that draw fields
+    rather than the file.
 ``components``
     The pane itself, each function taking the concrete state class as its
     argument — ``message_pane(MailSearchState)`` on the search page.
@@ -98,14 +110,38 @@ from mailarc_ui.message_detail.preview import (
     preview_kind,
     preview_of,
 )
+from mailarc_ui.message_detail.contentline import ContentLine, read_lines, unfold
+from mailarc_ui.message_detail.invite import (
+    ATTENDEE_LIMIT,
+    EVENT_LIMIT,
+    NO_TITLE,
+    CalendarEvent,
+    CalendarInvite,
+    CalendarPerson,
+    read_invite,
+    recurrence_label,
+    when_label,
+)
 from mailarc_ui.message_detail.reads import chips_of
+from mailarc_ui.message_detail.records import calendar_preview, contact_preview
+from mailarc_ui.message_detail.vcard import (
+    CARD_LIMIT,
+    NO_NAME,
+    ContactCard,
+    ContactDetail,
+    ContactFile,
+    read_contacts,
+)
 from mailarc_ui.message_detail.state import MessageDetailState
 
 __all__ = [
+    "ATTENDEE_LIMIT",
+    "CARD_LIMIT",
     "CHIP_ICONS",
     "CHIP_KINDS",
     "COLUMN",
     "DRAWABLE_CHIPS",
+    "EVENT_LIMIT",
     "EXTENSION_KINDS",
     "FILE_ICONS",
     "FILE_LABELS",
@@ -116,7 +152,9 @@ __all__ = [
     "GROW",
     "LABEL_COLORS",
     "NO_FILENAME",
+    "NO_NAME",
     "NO_SUBJECT",
+    "NO_TITLE",
     "PREVIEW_FRAME",
     "PREVIEW_LIMIT",
     "PREVIEW_OF_KIND",
@@ -131,7 +169,14 @@ __all__ = [
     "AddressRow",
     "AttachmentPreview",
     "AttachmentRow",
+    "CalendarEvent",
+    "CalendarInvite",
+    "CalendarPerson",
     "ChipKind",
+    "ContactCard",
+    "ContactDetail",
+    "ContactFile",
+    "ContentLine",
     "FileKind",
     "LabelChip",
     "MessageChip",
@@ -143,8 +188,10 @@ __all__ = [
     "address_suffix",
     "archive_reader",
     "attachment_panel",
+    "calendar_preview",
     "chips_for",
     "chips_of",
+    "contact_preview",
     "data_uri",
     "decode_raw",
     "file_kind",
@@ -161,10 +208,16 @@ __all__ = [
     "preview_kind",
     "preview_of",
     "raw_message_view",
+    "read_contacts",
+    "read_invite",
+    "read_lines",
+    "recurrence_label",
     "remote_content_bar",
     "sender_label",
     "size_label",
     "tag_chip",
     "topic_chip",
     "type_label",
+    "unfold",
+    "when_label",
 ]

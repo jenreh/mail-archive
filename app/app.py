@@ -5,7 +5,7 @@ shell, the pages. What is left here is the five things only the application
 layer can do: set the log levels, hand the composition root's objects to the
 browser half through the service registry, register the archive's Mantine
 theme before ``rx.App`` builds the provider that reads it, name the page
-modules whose import registers them, and own the three background lifespans.
+modules whose import registers them, and own the background lifespans.
 """
 
 import logging
@@ -15,19 +15,21 @@ from appkit_commons.middleware import ForceHTTPSMiddleware
 from starlette.types import ASGIApp
 
 from app.composition import (
-    graph_server_lifespan,
+    llm_settings_lifespan,
     publish_account_eraser,
     publish_analytics_reader,
     publish_archive_reader,
     publish_graph_health,
     publish_graph_reader,
+    publish_llm_control,
     publish_provider_registry,
+    publish_query_interpreter,
     publish_semantic_control,
     publish_semantic_search,
     publish_storage_reader,
     publish_tag_store,
     semantic_settings_lifespan,
-    sync_worker_lifespan,
+    supervised_children_lifespan,
 )
 from mailarc_ui.pages import (  # noqa: F401  # imported for their route registration
     accounts,
@@ -96,6 +98,8 @@ publish_analytics_reader()
 publish_graph_reader()
 publish_semantic_search()
 publish_semantic_control()
+publish_query_interpreter()
+publish_llm_control()
 publish_graph_health()
 publish_storage_reader()
 
@@ -117,13 +121,14 @@ app = rx.App(
 # before there is an event loop to read the settings row with. Registered first
 # so nothing else starts against the configuration it replaces.
 app.register_lifespan_task(semantic_settings_lifespan)
+app.register_lifespan_task(llm_settings_lifespan)
 
-# Own the FalkorDB process for exactly as long as the app runs. In local mode
-# this starts the vendored server on boot and stops it on shutdown; in remote
-# mode both ends are no-ops.
-app.register_lifespan_task(graph_server_lifespan)
-
-# Run the import worker as a child process for as long as the app runs. Off
+# Own the FalkorDB process and the import worker for exactly as long as the app
+# runs. One hook for both, because the two share a shutdown budget: in dev this
+# runs inside a granian worker that is killed two seconds after being asked to
+# stop, and a hook per child spent that budget on the first one and orphaned
+# the second. In local mode this starts the vendored server on boot and stops
+# it on shutdown; in remote mode that half is a no-op. The worker half is off
 # under Docker and systemd via `sync.supervise_worker`, where the worker is its
 # own unit and a second copy would claim the same jobs.
-app.register_lifespan_task(sync_worker_lifespan)
+app.register_lifespan_task(supervised_children_lifespan)

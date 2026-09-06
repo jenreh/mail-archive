@@ -72,10 +72,29 @@ The left edge is a slim icon rail; every icon names itself when you hover it.
 | Search | `/` | The front door. Find a message by sender, recipient, date or words in it, and read it beside the results |
 | Dashboard | `/dashboard` | What the archive holds — how many messages and mailboxes, when it last grew, what is queued and what is importing right now |
 | Insights | `/insights` | What a rebuild derived from the archive, and the cross-check on it |
-| Admin | popover | Three maintenance pages: **Mail accounts** (`/admin/accounts`), **Embedder** (`/admin/embedder`) and **Graph status** (`/admin/status`) |
+| Admin | popover | Three maintenance pages: **Mail accounts** (`/admin/accounts`), **Models** (`/admin/embedder`) and **Graph status** (`/admin/status`) |
 
 Search is the main page because finding a message is what somebody opens a mail
 archive to do; the dashboard is one click away rather than the other way round.
+
+### Three ways to ask
+
+The **Mode** switch at the top of the form decides how your words are read.
+
+- **Fulltext** finds the words you type, in the subject and the body. It needs
+  nothing configured and is the one that always works.
+- **Semantic** finds mail *about* what you asked for, even where the message
+  never uses your word. It needs an embedder — see
+  [Semantic search](semantic-search.md) — and it reads the question and nothing
+  else, so it greys the rest of the form out and says so.
+- **Natural** takes a whole question — *"Nachrichten von meiner Hausverwaltung
+  Santak"* — and **fills the fields below in from it**, then runs the ordinary
+  search. It needs a model configured; see
+  [Natural-language search](natural-language-search.md). The fields stay
+  editable, which is the point: you can see what it understood and correct it.
+
+Each of the last two is greyed out until the thing it needs is set up, with a
+sentence beside the switch naming what to configure.
 
 ### The form asks one question at a time
 
@@ -88,8 +107,10 @@ text boxes, so you cannot ask for a sender no message ever had. Each list is
 searchable — start typing and it narrows — and each offers the addresses in the
 role it is for: **From** lists the addresses that actually sent something,
 **To** the addresses that received it, whether in `To` or in `Cc`. Both lists
-put the addresses you have the most mail from or to at the top. A `Bcc` is not
-offered, because it is what the sender hid.
+are in alphabetical order, like every other dropdown on the page. On a large
+archive only the first hundred addresses are drawn before you type; typing
+searches the whole list, so an address further down is reached by name rather
+than by scrolling. A `Bcc` is not offered, because it is what the sender hid.
 
 Both fields take several addresses, and they read them differently. **From**
 means *any of these* — its label says so — and it can mean nothing else,
@@ -108,7 +129,8 @@ below empties the whole form and goes back to the newest messages.
 ### The result list groups what it found
 
 A **Group by** dropdown above the list decides how the hits are arranged. It
-starts on **Conversation / Thread** and offers eight ways:
+starts on **Conversation / Thread** and offers eight ways. **None** is first in
+the dropdown because it is the off position; the other seven are alphabetical:
 
 - **None** — a flat list. Worth choosing when the ranking of a full-text or
   semantic search is what you want to read straight down.

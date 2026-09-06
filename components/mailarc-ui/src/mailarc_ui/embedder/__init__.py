@@ -32,10 +32,12 @@ from mailarc_ui.embedder.components import (
     embed_card,
     embed_controls,
     embedder_panel,
+    interpreter_panel,
     message_alerts,
     save_controls,
     settings_form,
 )
+from mailarc_ui.embedder.interpreter import InterpreterSettingsState
 from mailarc_ui.embedder.model import (
     REINDEX_FAILED,
     reindexed,
@@ -104,6 +106,7 @@ __all__ = [
     "EmbedJobView",
     "EmbedderReading",
     "EmbedderSettingsState",
+    "InterpreterSettingsState",
     "api_key_field",
     "embed_card",
     "embed_controls",
@@ -112,6 +115,7 @@ __all__ = [
     "host_advice",
     "identity",
     "index_advice",
+    "interpreter_panel",
     "key_status",
     "message_alerts",
     "reindexed",

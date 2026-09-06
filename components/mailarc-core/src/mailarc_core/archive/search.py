@@ -16,6 +16,7 @@ dependency pointing the wrong way; if one twin changes, change the other.
 """
 
 import re
+from collections.abc import Sequence
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
@@ -235,14 +236,77 @@ class KnownAddresses(BaseModel):
     Two lists rather than one, because the two fields ask different questions:
     an address the archive only ever received mail *at* is not a sender, and
     offering it under **From** would be offering a filter that cannot match.
-    Each is ordered busiest first, so a picker showing only its first hundred
-    options shows the hundred a person is most likely to want.
+    Each is ordered busiest first, so a caller that can only show part of a
+    list shows the part most likely to be wanted. What a *form* does with that
+    is the form's own: the search page re-sorts both lists alphabetically,
+    because an address book is looked up by name.
     """
 
     model_config = ConfigDict(frozen=True)
 
     senders: tuple[str, ...] = ()
     recipients: tuple[str, ...] = ()
+
+
+class AddressEntry(BaseModel):
+    """One archived address, with every name it has ever signed itself.
+
+    :class:`KnownAddresses` answers "what may this form offer"; this answers
+    "who is that". They are different questions and only this one needs
+    :attr:`names`, which is why the pickers do not carry it: an address list is
+    read by a person who already knows the address, and a *name* is what
+    somebody has when they do not.
+
+    That is the whole reason this exists. A question can say "meine
+    Hausverwaltung Santak", and Santak appears nowhere in
+    ``info@santak-immobilien.de``'s local part — it is how the sender signs
+    itself. :attr:`SearchFilters.senders` is matched exactly, so without the
+    names such a question could only resolve to nothing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    address: str
+    names: tuple[str, ...] = ()
+    """Every ``display_names`` entry on the node, in the order it stored them."""
+
+    domain: str = ""
+    """The address's own domain, so a question can name a company by its site."""
+
+
+class AddressDirectory(BaseModel):
+    """Every address the archive holds, flat and in a stable order.
+
+    Flat rather than split by role, unlike :class:`KnownAddresses`, and the
+    reason is what it costs. The role lists are two full traversals of every
+    message in the archive; this is one scan of the ``Address`` label. A caller
+    that needs a role already has :class:`KnownAddresses` — it is read on the
+    same page load — and joining the two in memory is free.
+
+    Ordered by address rather than by how much mail each one carries, which is
+    the one thing a scan cannot know without those traversals. Deterministic is
+    what matters here: a caller matching a name against this reads all of it
+    and cuts by score, so the order decides only that two runs over an
+    unchanged archive agree.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    entries: tuple[AddressEntry, ...] = ()
+
+    def named(self, addresses: Sequence[str]) -> tuple[AddressEntry, ...]:
+        """The entries for these addresses, in the order they were asked for.
+
+        The join that turns this flat list back into one role's. An address
+        with no entry is skipped rather than invented — it would be a picker
+        offering something the directory has never seen, which cannot happen
+        while both come off the same graph but would be a silent lie if it
+        ever did.
+        """
+        known = {entry.address: entry for entry in self.entries}
+        return tuple(
+            entry for one in addresses if (entry := known.get(one)) is not None
+        )
 
 
 class ScoredId(BaseModel):

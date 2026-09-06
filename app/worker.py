@@ -13,7 +13,7 @@ both ways), but which accounts it may touch and how often is policy, and policy
 belongs to the composition root — so :func:`run_worker` builds it, starts it
 beside the poll loop and puts it down with it.
 
-Started by :func:`app.composition.sync_worker_lifespan` on the desktop, or as
+Started by :func:`app.composition.supervised_children_lifespan` on the desktop, or as
 its own unit under Docker and systemd, and always as ``python -m app.worker``.
 Deliberately lean: it reaches ``app.configuration``, ``app.composition``,
 ``app.derive`` and ``app.embedding``, and none of the four pulls Reflex in.
@@ -22,6 +22,7 @@ Deliberately lean: it reaches ``app.configuration``, ``app.composition``,
 
 import asyncio
 import logging
+import os
 from collections.abc import Awaitable, Callable, Coroutine
 from functools import partial
 from typing import Any
@@ -114,6 +115,30 @@ number that moves while it runs is how far the cursor got — which is not what
 anybody is waiting for. What a person wants is how many messages were filed,
 and that is known when it is over. A bar built on the other number would sit
 still and then jump; a sentence carrying this one says something.
+"""
+
+ORPHAN_POLL_SECONDS = 2.0
+"""How often the worker checks that the process which started it is still there.
+
+It is asked at all because nothing else would ask. The supervisor is an ASGI
+lifespan inside a granian worker that is killed two seconds after being asked
+to stop, and this process is deliberately started with ``start_new_session``,
+so a killed supervisor sends nothing: without this loop an orphan goes on
+claiming jobs and holding ``mail-archive.db`` open as a writer beside the
+worker the next start brings up. Observed on a developer machine, hours after
+the application it belonged to had gone.
+"""
+
+ORPHAN_EXIT_GRACE_SECONDS = 10.0
+"""How long an orphan is given to stop politely before it exits where it stands.
+
+The polite stop is the loop returning between jobs, which is immediate when
+nothing is claimed. It is not immediate when a rebuild is running: that work
+sits in a thread, and ``asyncio.run`` waits five minutes for one at interpreter
+exit. An orphan is not worth five minutes of a database handle, and abandoning
+the job costs nothing — the lease expires, the job is reclaimed and the next
+start resumes at its checkpoint, which is the ``kill -9`` path this worker is
+built to survive.
 """
 
 STOP_GRACE_SECONDS = 5.0
@@ -211,15 +236,15 @@ def build_handlers(
 
 
 async def run_worker() -> None:
-    """Build everything a worker needs and run its two loops until they stop.
+    """Build everything a worker needs and run its three loops until they stop.
 
-    Two loops, and only one of them is in charge. ``worker.run()`` owns the
-    signal handlers and is what ends this process; the schedule is a strict
-    subordinate, started before it and put down in the ``finally``, whatever
-    ended the loop. An :class:`asyncio.TaskGroup` would invert that — it waits
-    for *every* task it holds, so a schedule sitting out a fifteen-minute
-    interval would keep the process alive a quarter of an hour past its
-    SIGTERM.
+    Three loops, and only one of them is in charge. ``worker.run()`` owns the
+    signal handlers and is what ends this process; the schedule and the orphan
+    watch are strict subordinates, started before it and put down in the
+    ``finally``, whatever ended the loop. An :class:`asyncio.TaskGroup` would
+    invert that — it waits for *every* task it holds, so a schedule sitting out
+    a fifteen-minute interval would keep the process alive a quarter of an hour
+    past its SIGTERM.
 
     Nothing else changes about shutdown: the signal handler sets the worker's
     flag, its loop returns between jobs, and the job that was in flight keeps
@@ -251,11 +276,48 @@ async def run_worker() -> None:
         queue, provider_registry(), interval_seconds=config.incremental_interval
     )
     sweeping = asyncio.create_task(schedule.run())
+    watching = asyncio.create_task(_stop_when_orphaned(worker))
     try:
         await worker.run()
     finally:
+        watching.cancel()
         schedule.request_stop()
         await _stopped(sweeping)
+
+
+async def _stop_when_orphaned(worker: JobWorker) -> None:
+    """Ask the loop to finish once the process that started this one is gone.
+
+    A third subordinate loop, and the only one that can end the process on its
+    own. Started under Docker or systemd there is nothing to watch — the
+    parent is pid 1 from the first moment and stays there — so this returns at
+    once and the unit's own supervisor keeps its usual authority.
+
+    The exit at the end is deliberate and blunt. By then the loop has been
+    asked to stop and has had :data:`ORPHAN_EXIT_GRACE_SECONDS` to do it; what
+    is left is a job wedged in a thread, and an orphan holding the archive open
+    is worse than an abandoned job that the next start resumes.
+    """
+    supervisor = os.getppid()
+    if supervisor == 1:
+        return
+
+    # ASYNC110 wants an `asyncio.Event` rather than a poll, and there is none
+    # to wait on: reparenting is a fact about this process that the kernel
+    # performs and never announces. Polling it is the only way to hear it.
+    while os.getppid() == supervisor:  # noqa: ASYNC110
+        await asyncio.sleep(ORPHAN_POLL_SECONDS)
+
+    logger.warning(
+        "The application that started this worker (pid %d) is gone; stopping",
+        supervisor,
+    )
+    worker.request_stop()
+    await asyncio.sleep(ORPHAN_EXIT_GRACE_SECONDS)
+    logger.error(
+        "Orphaned worker did not stop within %.0fs; exiting", ORPHAN_EXIT_GRACE_SECONDS
+    )
+    os._exit(1)
 
 
 async def _stopped(task: asyncio.Task[None]) -> None:

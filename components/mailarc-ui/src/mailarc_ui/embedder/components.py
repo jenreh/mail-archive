@@ -19,6 +19,15 @@ downwards to the button should meet it on the way.
 import appkit_mantine as mn
 import reflex as rx
 
+from mailarc_ui.embedder.interpreter import (
+    BASE_URL_FIELD as INTERPRETER_BASE_URL,
+)
+from mailarc_ui.embedder.interpreter import (
+    PROVIDER_OPTIONS as INTERPRETER_PROVIDERS,
+)
+from mailarc_ui.embedder.interpreter import (
+    InterpreterSettingsState,
+)
 from mailarc_ui.embedder.model import (
     NO_EMBEDDER_TO_RUN,
     PROVIDER_OPTIONS,
@@ -366,6 +375,219 @@ def embed_card() -> rx.Component:
             ),
             gap="sm",
         ),
+    )
+
+
+def interpreter_alerts() -> rx.Component:
+    """The interpreter half's own error and notice line.
+
+    Its own rather than the embedder's reused, because the two forms save
+    independently: a failure saving one must not be reported over the other,
+    and one shared line would put the last message wherever the reader happened
+    to be looking.
+    """
+    return rx.cond(
+        InterpreterSettingsState.has_message,
+        mn.stack(
+            rx.cond(
+                InterpreterSettingsState.error != "",
+                message(
+                    InterpreterSettingsState.error,
+                    "failure",
+                    title="That did not work",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(
+                InterpreterSettingsState.notice != "",
+                message(InterpreterSettingsState.notice, "success"),
+                rx.fragment(),
+            ),
+            gap="xs",
+            w="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def interpreter_key_field() -> rx.Component:
+    """The key: collected here, never shown here, cleared on its own button.
+
+    :func:`api_key_field`'s three parts and its three reasons — the box is
+    uncontrolled and therefore unable to display a stored key, the line under
+    it says whether one is stored and that an empty box keeps it, and the
+    button beside it is the only way to remove one.
+    """
+    return mn.stack(
+        password_field(
+            label="API key",
+            description=(
+                "Only OpenAI and Azure OpenAI need one. Stored encrypted, "
+                "and never shown again — not here and not anywhere else."
+            ),
+            placeholder="Leave empty to keep the stored key",
+            default_value="",
+            on_change=InterpreterSettingsState.set_api_key,
+            disabled=InterpreterSettingsState.blocked,
+            w="100%",
+        ),
+        mn.group(
+            status_badge(
+                InterpreterSettingsState.key_status,
+                rx.cond(InterpreterSettingsState.api_key_stored, "green", "gray"),
+            ),
+            rx.cond(
+                InterpreterSettingsState.key_pending,
+                status_badge("Saving will replace it", "yellow"),
+                mn.text(""),
+            ),
+            quiet_button(
+                "Clear the stored key",
+                on_click=InterpreterSettingsState.clear_api_key,
+                disabled=~InterpreterSettingsState.can_clear_key,
+                loading=InterpreterSettingsState.saving,
+                color="red",
+                size="xs",
+            ),
+            gap="xs",
+            align="center",
+            wrap="wrap",
+        ),
+        rx.cond(
+            InterpreterSettingsState.key_missing,
+            message(
+                "The selected provider needs a key and none is stored. "
+                "Without one every question answers 401 and nothing is read.",
+                "warning",
+            ),
+            mn.text(""),
+        ),
+        gap="xs",
+        w="100%",
+    )
+
+
+def interpreter_form() -> rx.Component:
+    """Which service reads a question, which model, and where it lives."""
+    return panel_card(
+        mn.stack(
+            mn.text("The interpreter", fw=600, size="sm"),
+            mn.text(
+                "These three settings decide what turns a question into a "
+                "search filter. Only the question you type is sent — never an "
+                "address, a mailbox name or a message. Everything else in the "
+                "archive works without them.",
+                size="xs",
+                c="dimmed",
+            ),
+            select_field(
+                label="Provider",
+                data=INTERPRETER_PROVIDERS,
+                value=InterpreterSettingsState.provider,
+                on_change=InterpreterSettingsState.set_provider,
+                disabled=InterpreterSettingsState.blocked,
+                allow_deselect=False,
+            ),
+            input_field(
+                label="Model",
+                description=(
+                    "Empty means the provider's own default. On Azure this is "
+                    "the deployment name and is required."
+                ),
+                placeholder="qwen2.5:7b-instruct",
+                value=InterpreterSettingsState.model,
+                on_change=InterpreterSettingsState.set_model,
+                disabled=InterpreterSettingsState.blocked,
+            ),
+            input_field(
+                label="Base URL",
+                description=(
+                    "Empty means the provider's own endpoint. Azure needs its "
+                    "v1 root, ending /openai/v1."
+                ),
+                placeholder="http://localhost:11434",
+                value=InterpreterSettingsState.base_url,
+                on_change=InterpreterSettingsState.set_base_url,
+                disabled=InterpreterSettingsState.blocked,
+                error=InterpreterSettingsState.errors[INTERPRETER_BASE_URL],
+            ),
+            interpreter_key_field(),
+            gap=FIELD_GAP,
+        ),
+    )
+
+
+def interpreter_controls() -> rx.Component:
+    """The advice, then the buttons — the order a reader meets them in.
+
+    One advice line rather than the embedder's three, and that is the shape of
+    the difference between the two models: changing this one strands nothing,
+    so the only thing worth saying before a save is where the key would travel.
+    """
+    return mn.stack(
+        _advice(InterpreterSettingsState.host_advice),
+        mn.group(
+            primary_button(
+                "Save",
+                on_click=InterpreterSettingsState.save,
+                loading=InterpreterSettingsState.saving,
+                disabled=~InterpreterSettingsState.can_save,
+                left_section=rx.icon("check", size=14),
+                size="xs",
+            ),
+            quiet_button(
+                "Reload",
+                on_click=InterpreterSettingsState.load,
+                loading=InterpreterSettingsState.loading,
+                left_section=rx.icon("refresh-cw", size=14),
+                size="xs",
+            ),
+            quiet_button(
+                "Use the configuration file",
+                on_click=InterpreterSettingsState.use_configuration_file,
+                disabled=InterpreterSettingsState.blocked,
+                loading=InterpreterSettingsState.saving,
+                left_section=rx.icon("undo-2", size=14),
+                size="xs",
+            ),
+            gap="sm",
+            wrap="wrap",
+        ),
+        mn.text(
+            "Use the configuration file forgets everything stored here, the "
+            "API key included, and hands the archive back to config.yaml and "
+            "the environment.",
+            size="xs",
+            c="dimmed",
+        ),
+        mn.text(
+            "A change takes effect on the next question — nothing stored is "
+            "invalidated by it, so there is nothing to rebuild.",
+            size="xs",
+            c="dimmed",
+        ),
+        gap="sm",
+        w="100%",
+    )
+
+
+def interpreter_panel() -> rx.Component:
+    """The second half of the page: the model that reads a question.
+
+    One column rather than the embedder's two, because there is no rebuild card
+    to put beside it — nothing this model produces is stored, so a change costs
+    the next question and nothing else. Capped at the width the form half of
+    the section above occupies, so the two forms line up rather than one
+    running the full width of the page under the other.
+    """
+    return mn.stack(
+        interpreter_alerts(),
+        mn.box(
+            mn.stack(interpreter_form(), interpreter_controls(), gap="lg"),
+            style={"flex": "2 1 0%", "minWidth": "320px", "maxWidth": "760px"},
+        ),
+        gap="lg",
+        w="100%",
     )
 
 

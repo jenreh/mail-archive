@@ -140,6 +140,9 @@
 
   /* geometry */
   --ma-graph-height: 560px;      /* what the canvas is worth on a 900px page */
+  --ma-viewer-height: 100%;      /* a viewer fills the panel it opened into */
+  --ma-viewer-rail-width: 188px; /* a page preview readable enough to pick by */
+  --ma-viewer-sheet: #ffffff;    /* paper is paper in either scheme */
   --ma-radius-card: 14px;
   --ma-radius-panel: 12px;
   --ma-radius-chip: 8px;
@@ -1285,6 +1288,71 @@ html body,
   font-variant-numeric: tabular-nums;
 }
 
+/* ── A record: the calendar invite and the contact card ──────────────────── */
+
+/* The two attachments the panel reads into fields instead of rendering. One
+ * row per fact behind its own glyph, which only works if the glyphs are quiet
+ * enough to read as a margin — a column of full-strength icons down the left
+ * of a card competes with the thing it is labelling. */
+.ma-record-glyph.ma-record-glyph {
+  color: var(--ma-text-mute);
+  margin-top: 2px;
+}
+
+.ma-record-title.ma-record-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ma-text);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.ma-record-value.ma-record-value {
+  font-size: 13px;
+  color: var(--ma-text);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* The word in front of a value — `Work`, `Mobile`, an attendee's answer. Same
+ * size as the value it qualifies and a step quieter, so the column reads as a
+ * margin rather than as a second value. */
+.ma-record-tag.ma-record-tag {
+  font-size: 13px;
+  color: var(--ma-text-dim);
+  line-height: 1.45;
+  flex-shrink: 0;
+}
+
+/* A description or a note. The one field that arrives carrying its own line
+ * breaks, so it is the one field that keeps them. */
+.ma-record-body.ma-record-body {
+  font-size: 13px;
+  color: var(--ma-text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* An address to write to or a site to open. Set in ink like the values around
+ * it rather than in the browser's blue: a contact card is a list of facts and
+ * two of them happening to be pressable should not make them louder than the
+ * rest. The underline appears on hover, which is where a reader is already
+ * looking when they are deciding whether to click. */
+.ma-record-link.ma-record-link {
+  font-size: 13px;
+  color: var(--ma-text);
+  line-height: 1.45;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  transition: color 120ms ease;
+}
+
+.ma-record-link.ma-record-link:hover {
+  color: var(--ma-accent);
+  text-decoration: underline;
+}
+
 /* ── The reading pane ────────────────────────────────────────────────────── */
 
 /* The header block, in a mail client's order: the subject on top, then the
@@ -1479,4 +1547,349 @@ html body,
 .ma-graph-dot[data-kind="tag"] { background-color: var(--ma-graph-tag); }
 .ma-graph-dot[data-kind="community"] {
   background-color: var(--ma-graph-community);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * The document viewers
+ *
+ * A deck, a workbook, a Word document and a PDF, opened from the attachment
+ * panel. `.ma-viewer` is the box `kit/viewer.py` puts every one of them in;
+ * everything under `.ma-viewer-shell` is the header and page rail that
+ * `viewer_shell.jsx` draws so that four renderers read as one viewer.
+ *
+ * The rail's breakpoint is not here. It is a container measurement — the
+ * panel is a drawer whose width is a fraction of the page — so a
+ * ResizeObserver in the JSX sets `data-rail-mode` and this file only says
+ * what each mode looks like.
+ * ------------------------------------------------------------------------ */
+
+.ma-viewer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--ma-border);
+  border-radius: var(--ma-radius-panel);
+  background: var(--ma-surface);
+}
+
+.ma-viewer-surface {
+  flex: 1 1 0%;
+  min-height: 0;
+}
+
+.ma-viewer-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* What `ViewerBoundary` shows when a vendored parser throws while rendering.
+ * Centred in the panel the viewer would have filled, so a damaged file reads
+ * as an answer about that file rather than as a hole where the panel was. */
+.ma-viewer-broken {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 24px;
+  color: var(--ma-text);
+  text-align: center;
+}
+
+.ma-viewer-broken-detail {
+  max-width: 46ch;
+  color: var(--ma-text-dim);
+  font-size: 0.875rem;
+}
+
+/* The header ---------------------------------------------------------- */
+
+.ma-viewer-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  height: 52px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--ma-border);
+  background: var(--ma-surface);
+}
+
+.ma-viewer-spacer {
+  flex: 1 1 auto;
+}
+
+.ma-viewer-count {
+  margin: 0 0 0 6px;
+  color: var(--ma-text-dim);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.ma-viewer-count b {
+  color: var(--ma-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ma-viewer-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: none;
+  color: var(--ma-text-dim);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.ma-viewer-icon:hover {
+  background: var(--ma-surface-hover);
+  color: var(--ma-text);
+}
+
+/* The rail toggle is the one that stays lit, because it reports a state
+ * rather than performing an action. */
+.ma-viewer-icon[aria-pressed="true"] {
+  border-color: var(--ma-border);
+  background: var(--ma-surface-hover);
+  color: var(--ma-text);
+}
+
+.ma-viewer-divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  background: var(--ma-border);
+}
+
+.ma-viewer-zoom {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ma-viewer-zoom select {
+  height: 32px;
+  padding: 0 26px 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 9px;
+  background: var(--ma-surface);
+  color: var(--ma-text);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  appearance: none;
+}
+
+.ma-viewer-zoom svg {
+  position: absolute;
+  right: 8px;
+  color: var(--ma-text-dim);
+  pointer-events: none;
+}
+
+.ma-viewer-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 9px;
+  color: var(--ma-text-dim);
+}
+
+.ma-viewer-find input {
+  width: 130px;
+  border: none;
+  background: none;
+  color: var(--ma-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.ma-viewer-find button {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ma-viewer-find button:hover {
+  background: var(--ma-surface-hover);
+}
+
+/* The rail and the page ----------------------------------------------- */
+
+.ma-viewer-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 0%;
+  min-height: 0;
+}
+
+.ma-viewer-rail {
+  position: relative;
+  flex: 0 0 var(--ma-viewer-rail-width);
+  width: var(--ma-viewer-rail-width);
+  overflow-y: auto;
+  padding: 16px 14px;
+  border-right: 1px solid var(--ma-border);
+  background: var(--ma-surface);
+}
+
+/* A rail whose contents virtualise themselves. It owns its scrolling and
+ * positions every row absolutely, so a second scroller and a padding box
+ * around it would give it the wrong viewport to measure — which is how five
+ * pages become one. */
+.ma-viewer-rail[data-rail-kind="pane"] {
+  overflow: hidden;
+  /* Sideways only. The pane reserves its own vertical space through
+   * `paddingY` and measures every row's `top` from this box's padding edge,
+   * so a padding-top here would be counted twice and push the last row out of
+   * the scroll it computed. */
+  padding: 0 14px;
+}
+
+/* In pane mode the row's height is the pane's to decide, so the button fills
+ * what it reserved and takes its padding from the same measurement — the
+ * highlight then lands exactly on the row rather than on a box of our own
+ * that would not line up with it. */
+.ma-viewer-rail[data-rail-kind="pane"] .ma-viewer-thumb {
+  height: 100%;
+  margin: 0;
+}
+
+.ma-viewer-rail[data-rail-kind="pane"] .ma-viewer-thumb-page {
+  margin: 0 auto;
+}
+
+.ma-viewer-shell[data-rail-mode="overlay"] .ma-viewer-rail {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  z-index: 2;
+  box-shadow: var(--ma-shadow-card);
+}
+
+.ma-viewer-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: rgb(0 0 0 / 28%);
+}
+
+.ma-viewer-page {
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ma-surface-hover);
+}
+
+/* One sheet of paper. The renderers paint page *content* and nothing else, so
+ * the edge, the ground it sits on and the gap between pages are this file's
+ * to draw — without them a scrolled document is text floating in a void and a
+ * page that has not rasterised yet is invisible rather than blank. */
+.ma-viewer-sheet {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ma-border);
+  border-radius: 2px;
+  background: var(--ma-viewer-sheet);
+  box-shadow: var(--ma-shadow-card);
+}
+
+.ma-viewer-thumb {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  /* Enough that the highlight reads as a panel the page sits on rather than a
+   * box drawn tight against it. Matches the `imagePadding` the PDF pane is
+   * registered with, so the two rails look like one. */
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+/* Hover and selected are the same soft panel behind the whole item — page and
+ * number together — rather than a ring around the preview. A page is a
+ * picture of a document, and an accent drawn on top of one competes with the
+ * content it is meant to be showing; the tint sits behind instead, and the
+ * bold page number underneath is what separates "selected" from "under the
+ * cursor". */
+.ma-viewer-thumb:hover,
+.ma-viewer-thumb[aria-current="true"] {
+  background: var(--ma-surface-hover);
+}
+
+.ma-viewer-thumb-page {
+  display: block;
+  overflow: hidden;
+  /* A4 is only the fallback for a renderer that reports no size. Every viewer
+   * that knows its page shape sets `aspect-ratio` inline — the deck from the
+   * slide size, the Word document per page, the PDF from explicit pixel
+   * dimensions — and that wins over this. A preview whose shape does not
+   * match the page is not a preview of it. */
+  border: 1px solid var(--ma-border);
+  border-radius: 3px;
+  background: var(--ma-viewer-sheet);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+  aspect-ratio: 1 / 1.414;
+}
+
+/* Whatever the renderer puts inside fills the preview rather than sitting in
+ * a corner of it — a canvas the Word viewer paints, an image the PDF pane
+ * produces, or whatever the deck's controller injects into a node we hand it.
+ * The last of those is why this matches any child and not a known tag. */
+.ma-viewer-thumb-canvas,
+.ma-viewer-thumb-page > * {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ma-viewer-thumb-number {
+  display: block;
+  padding: 12px 0 0;
+  color: var(--ma-text-dim);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.ma-viewer-thumb[aria-current="true"] .ma-viewer-thumb-number {
+  color: var(--ma-text);
+  font-weight: 600;
+}
+
+.ma-viewer-state {
+  margin: 0;
+  padding: 24px;
+  color: var(--ma-text-mute);
+  font-size: 13px;
+  text-align: center;
 }

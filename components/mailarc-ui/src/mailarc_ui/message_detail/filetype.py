@@ -53,6 +53,7 @@ class FileKind(StrEnum):
     TABLE = "table"
     MAIL = "mail"
     CALENDAR = "calendar"
+    CONTACT = "contact"
     SPREADSHEET = "spreadsheet"
     DOCUMENT = "document"
     SLIDES = "slides"
@@ -72,6 +73,7 @@ FILE_ICONS: Mapping[FileKind, str] = MappingProxyType(
         FileKind.TABLE: "file-spreadsheet",
         FileKind.MAIL: "mail",
         FileKind.CALENDAR: "calendar",
+        FileKind.CONTACT: "contact",
         FileKind.SPREADSHEET: "file-spreadsheet",
         FileKind.DOCUMENT: "file-text",
         FileKind.SLIDES: "presentation",
@@ -100,6 +102,7 @@ FILE_LABELS: Mapping[FileKind, str] = MappingProxyType(
         FileKind.TABLE: "Table",
         FileKind.MAIL: "Email",
         FileKind.CALENDAR: "Calendar",
+        FileKind.CONTACT: "Contact",
         FileKind.SPREADSHEET: "Spreadsheet",
         FileKind.DOCUMENT: "Document",
         FileKind.SLIDES: "Slides",
@@ -151,9 +154,12 @@ TYPE_KINDS: Mapping[str, FileKind] = MappingProxyType(
         "message/rfc822": FileKind.MAIL,
         "text/calendar": FileKind.CALENDAR,
         "text/csv": FileKind.TABLE,
+        "text/directory": FileKind.CONTACT,
         "text/html": FileKind.WEB,
         "text/rtf": FileKind.DOCUMENT,
         "text/tab-separated-values": FileKind.TABLE,
+        "text/vcard": FileKind.CONTACT,
+        "text/x-vcard": FileKind.CONTACT,
         "text/xml": FileKind.DATA,
     }
 )
@@ -226,6 +232,8 @@ EXTENSION_KINDS: Mapping[str, FileKind] = MappingProxyType(
         ".tiff": FileKind.IMAGE,
         ".tsv": FileKind.TABLE,
         ".txt": FileKind.TEXT,
+        ".vcard": FileKind.CONTACT,
+        ".vcf": FileKind.CONTACT,
         ".wav": FileKind.AUDIO,
         ".webm": FileKind.VIDEO,
         ".webp": FileKind.IMAGE,
@@ -247,6 +255,30 @@ which files the search picker offers **by name** rather than by type, and a
 second copy here would put a file in one family on a card and another in the
 filter. See :data:`~mailarc_core.mail.model.UNTYPED_CONTENT_TYPES`.
 """
+
+OOXML_TYPES = frozenset(
+    {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+)
+"""The three Office formats a browser-side renderer can actually parse.
+
+A narrower question than :class:`FileKind`, and deliberately a separate one.
+``DOCUMENT`` also holds ``.doc``, ``.rtf``, ``.odt`` and ``.pages``; ``SLIDES``
+also holds ``.ppt``, ``.odp`` and ``.key``. Those are the right families for a
+glyph and for the search picker — a Keynote file *is* slides — and the wrong
+answer for a viewer that reads OOXML and nothing else.
+
+Splitting :class:`FileKind` instead would have been the obvious move and is the
+wrong one: it is also what the search form's file filter is built from, so
+three new members would split "Document" into two options in a feature that has
+no opinion about renderers.
+"""
+
+OOXML_SUFFIXES = frozenset({".docx", ".xlsx", ".pptx"})
+"""The same three, by name, for the senders who state nothing."""
 
 DULL_SUBTYPES = frozenset({"plain"})
 """Subtypes that are short enough to read as a label and say nothing.
@@ -283,21 +315,60 @@ def file_kind(content_type: str, filename: str | None = None) -> FileKind:
     return EXTENSION_KINDS.get(_suffix(filename), FileKind.OTHER)
 
 
+def is_ooxml(content_type: str, filename: str | None = None) -> bool:
+    """Whether a renderer in the browser could open this file.
+
+    The same rule :func:`file_kind` follows, applied to a narrower table: a
+    sender who stated an OOXML type is believed, and only a sender who said
+    nothing — see :data:`GENERIC_TYPES` — has the filename consulted. So
+    ``application/msword`` on a file named ``Vertrag.docx`` is still a Word 97
+    document, which is what the sender knew and the extension is guessing at.
+
+    Never raises. The panel asks this once, and a file it says no to gets the
+    sentence about older formats rather than a viewer that would fail on it.
+    """
+    normalised = _normalise(content_type)
+    if normalised in OOXML_TYPES:
+        return True
+    if normalised not in GENERIC_TYPES:
+        return False
+    return _suffix(filename) in OOXML_SUFFIXES
+
+
 def type_label(content_type: str, filename: str | None = None) -> str:
     """What the card calls this file — ``PDF``, ``XLSX``, ``Spreadsheet``.
 
     The extension first, because it is what the sender named the file and what
-    a reader would say out loud. Its own content type's subtype next, for a
-    part that arrived without a name. The family word last, when neither is
-    short enough to read as a label — see :data:`LABEL_LENGTH`.
+    a reader would say out loud — but only while it does not contradict the
+    sender's own type, which is the module rule: the type decides and the name
+    only breaks a tie. Its own content type's subtype next, for a part that
+    arrived without a name. The family word last, when neither is short enough
+    to read as a label — see :data:`LABEL_LENGTH`.
+
+    Without the contradiction check a spreadsheet called ``Rechnung.pdf`` was
+    labelled ``PDF`` beside the spreadsheet glyph :func:`file_kind` chose —
+    one card saying two things about one file, which is the failure this
+    module exists to prevent.
     """
     extension = _suffix(filename).removeprefix(".")
-    if _is_label(extension):
+    if _is_label(extension) and _uncontradicted(content_type, filename):
         return extension.upper()
     subtype = _normalise(content_type).rpartition("/")[2]
     if _is_label(subtype):
         return subtype.upper()
     return FILE_LABELS[file_kind(content_type, filename)]
+
+
+def _uncontradicted(content_type: str, filename: str | None) -> bool:
+    """Whether the filename's extension agrees with the sender's own type.
+
+    An extension naming no family it knows cannot contradict anything, so it
+    is free to supply the word. One naming a *different* family than
+    :func:`file_kind` settled on is the sender being overruled by a name, and
+    the module header rules that out by name.
+    """
+    named = EXTENSION_KINDS.get(_suffix(filename), FileKind.OTHER)
+    return named is FileKind.OTHER or named is file_kind(content_type, filename)
 
 
 def _is_label(candidate: str) -> bool:
@@ -337,5 +408,14 @@ def _suffix(filename: str | None) -> str:
     ``PurePosixPath`` on a name that is really a sentence (``Re: Fwd. Notes``)
     returns ``. notes``, which matches nothing in the table and is exactly the
     right outcome; nothing here has to defend against it.
+
+    A name that is *only* an extension is the one case ``PurePosixPath`` reads
+    differently from a reader: ``.pdf`` is a hidden file with no suffix by its
+    rules, so an untyped attachment called that classified as ``OTHER``. Here
+    it is the suffix, which is what the sender meant by the name.
     """
-    return PurePosixPath(filename or "").suffix.lower()
+    name = (filename or "").strip()
+    suffix = PurePosixPath(name).suffix
+    if not suffix and name.startswith(".") and name.count(".") == 1:
+        return name.lower()
+    return suffix.lower()

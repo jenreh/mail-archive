@@ -79,7 +79,7 @@ RAIL_SECTIONS: tuple[NavSection, ...] = (
         label="Admin",
         items=(
             NavItem(label="Mail accounts", href=routes.ACCOUNTS, icon="at-sign"),
-            NavItem(label="Embedder", href=routes.EMBEDDER, icon="brain"),
+            NavItem(label="Models", href=routes.EMBEDDER, icon="brain"),
             NavItem(label="Graph status", href=routes.GRAPH_STATUS, icon="database"),
         ),
     ),

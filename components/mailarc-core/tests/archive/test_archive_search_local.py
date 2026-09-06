@@ -788,3 +788,63 @@ class TestMessagesByIds:
         summaries = reader.messages_by_ids(["missing@example.com", known])
 
         assert [one.id for one in summaries] == [known]
+
+
+class TestTheDirectoryBehindTheAddresses:
+    """A different question from what the pickers offer: not *which addresses
+    may I filter by* but *who is that*. Only a name can answer the second, and
+    a name is what somebody has when they do not know the address."""
+
+    def test_it_carries_the_name_an_address_signs_itself(self, planted, reader) -> None:
+        """The whole reason this read exists. A question can say "von Anna
+        Bauer", and ``SearchFilters.senders`` is matched exactly — so without
+        the display name such a question could resolve to nothing."""
+        found = {one.address: one for one in reader.address_directory().entries}
+
+        assert found["anna@example.com"].names == ("Anna Bauer",)
+        assert found["carl@firma.de"].names == ("Carl Winter",)
+
+    def test_an_address_nobody_ever_named_still_appears(self, planted, reader) -> None:
+        """Bob and Dora are only ever recipients and are written with no
+        display name. An empty tuple is a name nobody gave, not a missing
+        entry — leaving them out would make them unfindable by address too."""
+        found = {one.address: one for one in reader.address_directory().entries}
+
+        assert found["bob@example.com"].names == ()
+        assert found["dora@firma.de"].domain == "firma.de"
+
+    def test_it_holds_every_address_in_either_role(self, planted, reader) -> None:
+        """One scan of the label, so senders and recipients are one list —
+        which is what makes it cheap enough to read beside the two traversals
+        ``known_addresses`` already costs."""
+        offered = reader.known_addresses()
+        directory = {one.address for one in reader.address_directory().entries}
+
+        assert set(offered.senders) <= directory
+        assert set(offered.recipients) <= directory
+
+    def test_it_comes_back_in_a_stable_order(self, planted, reader) -> None:
+        """Two runs over an unchanged archive have to agree, or a picker
+        filled from it reshuffles under whoever is reading."""
+        first = reader.address_directory().entries
+
+        assert [one.address for one in first] == sorted(one.address for one in first)
+        assert first == reader.address_directory().entries
+
+    def test_a_role_is_the_join_of_the_two_reads(self, planted, reader) -> None:
+        """How a caller gets back to "who may **From** offer, and what are
+        they called": the flat directory, narrowed by the role list. Order is
+        the role's own — busiest first — because that is the useful one."""
+        offered = reader.known_addresses()
+        senders = reader.address_directory().named(offered.senders)
+
+        assert [one.address for one in senders] == list(offered.senders)
+        assert senders[0].names == ("Anna Bauer",)
+
+    def test_the_join_invents_nothing(self, planted, reader) -> None:
+        """An address with no entry is skipped rather than made up. It cannot
+        happen while both come off the same graph, and it would be a silent
+        lie if it ever did."""
+        directory = reader.address_directory()
+
+        assert directory.named(("nobody@nowhere.example",)) == ()

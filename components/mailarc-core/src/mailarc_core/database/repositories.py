@@ -20,7 +20,9 @@ from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mailarc_core.database.entities import (
+    LLM_SETTINGS_ID,
     SEMANTIC_SETTINGS_ID,
+    LlmSettingsEntity,
     MailAccountEntity,
     MailArchivedMessageEntity,
     MailCredentialEntity,
@@ -740,5 +742,143 @@ class SemanticSettingsRepository(BaseRepository[SemanticSettingsEntity, AsyncSes
         entity = await self.load(session)
         if entity is None:
             entity = SemanticSettingsEntity(id=SEMANTIC_SETTINGS_ID)
+            session.add(entity)
+        return entity
+
+
+class LlmSettingsRepository(BaseRepository[LlmSettingsEntity, AsyncSession]):
+    """The one interpreter settings row, with the same write API and the same
+    reason for it.
+
+    :class:`SemanticSettingsRepository`'s twin. The split into three writes is
+    the security property there and is the security property here: :meth:`store`
+    has no ``api_key`` parameter at all, so "an empty field leaves the stored
+    key alone" is the only thing this class can express rather than a rule a
+    form has to remember. Replacing the key is :meth:`set_api_key` and
+    forgetting it is :meth:`clear_api_key`, which is the explicit control a
+    write-only secret needs.
+
+    Everything that differs from the embedder's is an absence: no ``dimension``,
+    because nothing here produces a vector, and no coverage question, because
+    nothing here wrote anything that a changed model could invalidate.
+    """
+
+    @property
+    def model_class(self) -> type[LlmSettingsEntity]:
+        return LlmSettingsEntity
+
+    async def load(self, session: AsyncSession) -> LlmSettingsEntity | None:
+        """The stored settings, or ``None`` on an installation that has none.
+
+        Carries the decrypted key, so this is the composition root's read and
+        never a page's. Anything in front of a human asks :meth:`api_key_is_set`.
+        """
+        return await session.get(LlmSettingsEntity, LLM_SETTINGS_ID)
+
+    async def api_key_is_set(self, session: AsyncSession) -> bool:
+        """Whether a key is stored — all a form is ever allowed to know.
+
+        The ``IS NOT NULL`` is evaluated by the database, so a boolean comes
+        back over the wire and the ciphertext is never fetched, never decrypted
+        and never held in this process. A caller cannot put in a state var, a
+        log line or a template what it was never given.
+        """
+        result = await session.execute(
+            select(LlmSettingsEntity.api_key.is_not(None)).where(
+                LlmSettingsEntity.id == LLM_SETTINGS_ID
+            )
+        )
+        return bool(result.scalars().first())
+
+    async def store(
+        self,
+        session: AsyncSession,
+        *,
+        provider: str | None,
+        model: str | None,
+        base_url: str | None,
+        expected_updated: datetime | None = None,
+    ) -> LlmSettingsEntity:
+        """Store everything except the key, creating the row on the first save.
+
+        All three settings are required parameters and all three accept
+        ``None``, because ``None`` is a value here rather than an omission: it
+        means "unset this and let the configuration file answer again". A form
+        leaving a field empty has to decide which of the two it meant, and
+        defaulting these would decide it the other way round on its behalf.
+
+        ``expected_updated`` is the concurrency control, exactly as it is on
+        :meth:`SemanticSettingsRepository.store`: passing it makes the write
+        "store this *if* the row is still the one I read", and ``None`` honestly
+        means "I read no row" — which is what a fresh installation and the reset
+        control both are.
+        """
+        entity = await self._row(session)
+        if expected_updated is not None and entity.updated != expected_updated:
+            raise SettingsChangedElsewhere(
+                "the interpreter settings were changed by somebody else since "
+                "this form was loaded"
+            )
+        entity.provider = provider
+        entity.model = model
+        entity.base_url = base_url
+        await session.flush()
+        # `updated` carries `onupdate=func.now()`, so the flush expires it and
+        # only the database knows what it wrote. Refreshed here because the
+        # caller has to hand it back as `expected_updated` next time, and
+        # reading an expired attribute outside a greenlet raises MissingGreenlet.
+        await session.refresh(entity, ["updated"])
+        logger.info(
+            "Interpreter settings stored: provider=%s model=%s", provider, model
+        )
+        return entity
+
+    async def set_api_key(
+        self, session: AsyncSession, api_key: str
+    ) -> LlmSettingsEntity:
+        """Replace the stored key, creating the row if this is the first write.
+
+        The flush is guarded for the reason
+        :meth:`SemanticSettingsRepository.set_api_key` records at length, and it
+        is not tidiness: SQLAlchemy's ``StatementError`` quotes the statement
+        **and its bind parameters**, and for this one statement the bind
+        parameter is the plaintext key. So the one way this write can fail is
+        also the one way the key reaches a log, and a caller doing the right
+        thing — reporting the error — would be the thing that leaked it.
+        ``from None`` is deliberate: chaining would put the original back in
+        the traceback.
+        """
+        entity = await self._row(session)
+        entity.api_key = api_key
+        try:
+            await session.flush()
+        except StatementError as error:
+            raise ApiKeyNotStored(_without_parameters(error)) from None
+        logger.info("A new interpreter API key was stored")
+        return entity
+
+    async def clear_api_key(self, session: AsyncSession) -> LlmSettingsEntity:
+        """Forget the stored key, leaving the rest of the settings alone.
+
+        The other half of :meth:`store`'s refusal to touch it. An empty field
+        on a form means "unchanged", so removing a key has to be something a
+        person asks for in as many words, and this is that request.
+        """
+        entity = await self._row(session)
+        entity.api_key = None
+        await session.flush()
+        logger.info("The stored interpreter API key was cleared")
+        return entity
+
+    async def _row(self, session: AsyncSession) -> LlmSettingsEntity:
+        """The settings row, created empty when nothing has been stored yet.
+
+        The id is fixed rather than generated: the table's ``CHECK (id = 1)`` is
+        what makes "one interpreter" the database's rule, and a row written with
+        any other key is refused rather than becoming a second answer.
+        """
+        entity = await self.load(session)
+        if entity is None:
+            entity = LlmSettingsEntity(id=LLM_SETTINGS_ID)
             session.add(entity)
         return entity

@@ -143,7 +143,8 @@ mail-archive/
 │   │                          SQLite, blob store — no browser, no provider
 │   ├── mailarc-sync/          engine, job queue, worker loop, provider registry,
 │   │                          account clear-out (the engine's inverse)
-│   ├── mailarc-analytics/     derived nodes, analysis queries, embeddings
+│   ├── mailarc-analytics/     derived nodes, analysis queries, embeddings,
+│   │                          natural-language query interpretation
 │   ├── mailarc-google/        Gmail, behind the mail source port
 │   ├── mailarc-imap/          any IMAP mailbox — the provider with NO consent
 │   │                          runner; the account form writes its secret

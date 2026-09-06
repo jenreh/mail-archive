@@ -13,6 +13,7 @@ backend stays :attr:`~mailarc_core.graph.config.GraphConfig.backend`'s choice.
 """
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -27,7 +28,12 @@ from mailarc_core.archive.model import (
     Message,
     Thread,
 )
-from mailarc_core.archive.search import ScoredId, SearchFilters, searchable_terms
+from mailarc_core.archive.search import (
+    AddressEntry,
+    ScoredId,
+    SearchFilters,
+    searchable_terms,
+)
 from mailarc_core.mail.model import UNTYPED_CONTENT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -64,6 +70,16 @@ One variable is enough for the two reads that bind it — the *any* half of
 :func:`_addressed` and :meth:`AddressRepository.find_recipients`. The *all*
 half cannot use it: it needs one variable per address, so it names its own
 ``r0``, ``r1``, … beside this one.
+"""
+
+ADDRESS = alias(Address, "ad")
+"""An address read for its own sake, rather than as the end of a traversal.
+
+Its own handle and not :data:`SENDER` reused, because runic names the pattern
+variable after the alias: a statement rooted at ``ad`` and one that walks into
+``s`` are different queries, and sharing a letter between them is how two reads
+end up meaning each other. ``ad`` rather than another single letter — ``a`` is
+the account and ``m``, ``s``, ``r``, ``t`` and ``f`` are taken.
 """
 
 ACCOUNT = alias(Account, "a")
@@ -610,6 +626,38 @@ class AddressRepository(Repository[Address]):
             RECIPIENT,
         )
 
+    def find_directory(self) -> list[AddressEntry]:
+        """Every address the archive holds, with the names it signs itself.
+
+        One scan of the ``Address`` label, deliberately, where
+        :meth:`find_senders` and :meth:`find_recipients` are traversals of
+        every message. The caller matching a *name* against this needs all of
+        it and cuts the result by how well each entry scored, so paying twice
+        over for a per-address message count would buy an ordering nothing
+        reads.
+
+        Ordered by ``id`` for the reason :meth:`_used` keeps its tiebreak: two
+        runs over an unchanged archive have to agree, or a list reshuffles
+        under whoever is reading it.
+
+        Nodes with no id are skipped, the guard every read in this module
+        keeps: a graph can hold one after a partial write, and it can be named
+        by no filter.
+        """
+        statement = (
+            select(ADDRESS)
+            .where(ADDRESS.id.is_not_null() & (ADDRESS.id != ""))
+            .project(
+                ADDRESS.id.as_("address"),
+                ADDRESS.domain.as_("domain"),
+                ADDRESS.display_names.as_("names"),
+            )
+            .order_by("address")
+        )
+        rows = self._session.all_rows(statement)
+        logger.debug("The archive holds %d addresses in all", len(rows))
+        return [entry for row in rows if (entry := _entry(row)) is not None]
+
     def _used(self, statement: Any, target: Any) -> list[str]:
         """The addresses one traversal reaches, most-used first.
 
@@ -840,3 +888,21 @@ def _newest_first(
     dated.sort(key=lambda one: (one[0], one[1]), reverse=True)
     undated.sort(key=lambda one: one[1])
     return [*dated, *undated]
+
+
+def _entry(row: Mapping[str, Any]) -> AddressEntry | None:
+    """One directory row as a value object, or nothing when it has no address.
+
+    ``display_names`` is stored as a list and comes back as one, but a graph
+    that has never had a name written for an address answers ``None`` rather
+    than an empty list — so the shape is checked rather than assumed, the same
+    call :func:`_float_lists`' cousins make elsewhere.
+    """
+    address = str(row.get("address") or "")
+    if not address:
+        return None
+    stored = row.get("names")
+    names = tuple(str(one) for one in stored if one) if isinstance(stored, list) else ()
+    return AddressEntry(
+        address=address, names=names, domain=str(row.get("domain") or "")
+    )

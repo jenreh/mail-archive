@@ -38,15 +38,19 @@ import logging
 from collections.abc import Iterable, Sequence
 
 from mailarc_ui.message_detail import FILE_LABELS, FileKind, file_kind
+from mailarc_ui.search.ordering import by_label
 
 logger = logging.getLogger(__name__)
 
-KIND_LIMIT = 15
+KIND_LIMIT = len(FileKind)
 """How many families a picker may offer.
 
-There are fifteen and an archive that somehow held every one of them should
-show every one of them: this is a guard against a list growing a scrollbar, not
-a shortening of a list that has a natural length.
+Counted from :class:`~mailarc_ui.message_detail.filetype.FileKind` rather than
+written out, and that is the whole point: an archive that somehow held every
+one of them should show every one of them. This is a guard against a list
+growing a scrollbar, not a shortening of a list that has a natural length —
+and a hand-written fifteen was already one short of the sixteen families that
+enum defines, so the rarest one was dropped from the picker.
 """
 
 UNTYPED = ""
@@ -96,11 +100,19 @@ def kind_options(
     rather than a content type, because one option stands for several types —
     and, where the sender stated none, for several filenames — and the value
     is what comes back to be expanded again.
+
+    Ordered by word rather than by how common the family is, which is the rule
+    every picker on this form now keeps — see :mod:`mailarc_ui.search.ordering`.
+    :func:`families_of` stays commonest-first because that is what
+    :data:`KIND_LIMIT` cuts: which families are offered is decided by weight,
+    and only then are they put in reading order.
     """
-    return [
-        {"value": kind, "label": FILE_LABELS[FileKind(kind)]}
-        for kind in families_of(content_types, untyped_names)
-    ]
+    return by_label(
+        [
+            {"value": kind, "label": FILE_LABELS[FileKind(kind)]}
+            for kind in families_of(content_types, untyped_names)
+        ]
+    )
 
 
 def types_of(kinds: Iterable[str], content_types: Sequence[str]) -> tuple[str, ...]:

@@ -14,28 +14,41 @@ tests drive it. The formatting functions need neither and are checked directly.
 """
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import cast
 
+import appkit_mantine as mn
 import pytest
 import reflex as rx
 from appkit_commons.registry import service_registry
 
+from mailarc_analytics import AnalyticsReader, GroupMembershipRow, TopicMembershipRow
 from mailarc_core import ArchiveReader
+from mailarc_core.archive import TagStore
 from mailarc_core.archive.blobs import BlobStore
 from mailarc_core.archive.config import ArchiveConfig
-from mailarc_core.archive.model import Address, BlobKind
+from mailarc_core.archive.model import Address, BlobKind, TagSummary
 from mailarc_core.archive.reader import GraphSessionFactory
 from mailarc_core.mail.model import EmailAddress, LabelKind
 from mailarc_ui.message_detail import (
+    CHIP_ICONS,
+    CHIP_KINDS,
+    DRAWABLE_CHIPS,
     FRAME_CSP,
+    GRAPH_GLYPH,
+    TAB_GRAPH,
     TAB_MESSAGE,
     TAB_SOURCE,
+    ChipKind,
     MessageDetailState,
     address_label,
+    address_suffix,
+    chips_for,
+    chips_of,
     decode_raw,
     frame_document,
+    group_chip,
     label_text,
     long_date_label,
     message_body,
@@ -44,7 +57,10 @@ from mailarc_ui.message_detail import (
     message_view,
     raw_message_view,
     remote_content_bar,
+    sender_label,
     size_label,
+    tag_chip,
+    topic_chip,
 )
 
 RAW = (
@@ -74,6 +90,38 @@ class OtherDetailState(MessageDetailState, rx.State):
 
     Empty on purpose: whatever it can do, it got from the mixin.
     """
+
+
+class FakeAnalytics:
+    """The two membership reads the header makes, scripted per message."""
+
+    def __init__(self) -> None:
+        self.topics: dict[str, TopicMembershipRow] = {}
+        self.groups: dict[str, GroupMembershipRow] = {}
+        self.failing = False
+
+    def topics_of(self, ids: Sequence[str]) -> dict[str, TopicMembershipRow]:
+        if self.failing:
+            raise ConnectionError("graph is down")
+        return {one: self.topics[one] for one in ids if one in self.topics}
+
+    def groups_of(self, ids: Sequence[str]) -> dict[str, GroupMembershipRow]:
+        if self.failing:
+            raise ConnectionError("graph is down")
+        return {one: self.groups[one] for one in ids if one in self.groups}
+
+
+class FakeTags:
+    """The one read the header makes of the annotation layer."""
+
+    def __init__(self) -> None:
+        self.tags: dict[str, tuple[TagSummary, ...]] = {}
+        self.failing = False
+
+    def tags_of(self, ids: Sequence[str]) -> dict[str, tuple[TagSummary, ...]]:
+        if self.failing:
+            raise ConnectionError("the tag store is down")
+        return {one: self.tags.get(one, ()) for one in ids}
 
 
 class TrustSession:
@@ -114,12 +162,29 @@ def session() -> TrustSession:
 
 
 @pytest.fixture
-def published(session: TrustSession, blobs: BlobStore) -> Iterator[ArchiveReader]:
-    """The reader, left where the composition root would leave it."""
+def analytics() -> FakeAnalytics:
+    return FakeAnalytics()
+
+
+@pytest.fixture
+def tags() -> FakeTags:
+    return FakeTags()
+
+
+@pytest.fixture
+def published(
+    session: TrustSession,
+    blobs: BlobStore,
+    analytics: FakeAnalytics,
+    tags: FakeTags,
+) -> Iterator[ArchiveReader]:
+    """Everything the pane reads through, left where composition would leave it."""
     registry = service_registry()
     saved = registry.snapshot()
     reader = ArchiveReader(cast(GraphSessionFactory, lambda: session), blobs)
     registry.register_as(ArchiveReader, reader)
+    registry.register_as(AnalyticsReader, cast(AnalyticsReader, analytics))
+    registry.register_as(TagStore, cast(TagStore, tags))
     yield reader
     registry.restore(saved)
 
@@ -171,8 +236,32 @@ class TestOpeningAMessage:
         assert state.raw_truncated is False
         assert state.loading_raw is False
         assert state.view.subject == "SwiftScan"
-        assert state.view.sender == "Jens <jens@example.com>"
+        assert state.view.sender_name == "Jens"
+        assert state.view.sender_address == "jens@example.com"
+        assert [one.label for one in state.view.recipients] == [
+            "Anna Bauer <anna@example.com>"
+        ]
+        assert [one.address for one in state.view.recipients] == ["anna@example.com"]
         assert state.view.body_text == "Erstellt mit SwiftScan.\n"
+
+    async def test_the_name_and_the_address_reach_the_header_apart(
+        self, state, digest
+    ) -> None:
+        """A mail client prints the name and then the address after it in
+        grey, so the header needs the two halves rather than one label."""
+        await state._open_message("m1@example.com", digest)
+
+        assert state.sender_address_line == "<jens@example.com>"
+
+    async def test_a_sender_who_gave_no_name_is_printed_once(
+        self, state, html_digest
+    ) -> None:
+        """`shop@example.com <shop@example.com>` is what the naive version of
+        that same line prints."""
+        await state._open_message("m4@example.com", html_digest)
+
+        assert state.view.sender_name == "shop@example.com"
+        assert state.sender_address_line == ""
 
     async def test_a_message_without_a_stored_original_says_so(self, state) -> None:
         await state._open_message("m2@example.com", "")
@@ -326,6 +415,23 @@ class TestTheHeaderLabels:
 
         assert address_label(address) == "Anna <anna@example.com>"
 
+    def test_the_bold_half_is_the_name_or_the_address_behind_it(self) -> None:
+        """And nothing at all for a mail that arrived without a `From`."""
+        named = EmailAddress(address="anna@example.com", display_name="Anna")
+
+        assert sender_label(named) == "Anna"
+        assert sender_label(EmailAddress(address="anna@example.com")) == (
+            "anna@example.com"
+        )
+        assert sender_label(None) == ""
+
+    def test_the_grey_chunk_after_a_name_is_the_address_in_brackets(self) -> None:
+        assert address_suffix("Anna", "anna@example.com") == "<anna@example.com>"
+
+    def test_there_is_no_grey_chunk_when_the_name_is_the_address(self) -> None:
+        assert address_suffix("anna@example.com", "anna@example.com") == ""
+        assert address_suffix("", "") == ""
+
     def test_an_address_without_a_name_is_just_the_address(self) -> None:
         assert (
             address_label(EmailAddress(address="anna@example.com"))
@@ -372,6 +478,243 @@ class TestTheHeaderLabels:
     )
     def test_sizes_read_like_a_file_list(self, size: int, label: str) -> None:
         assert size_label(size) == label
+
+
+class TestTheChipsOnTheHeader:
+    """What the open message belongs to, named the way a chip can hold it.
+
+    The projection only — no state, no graph — so the three label rules are
+    checkable on their own. That the *reads* behind them fail one at a time is
+    ``TestOpeningAMessage``'s business.
+    """
+
+    def test_a_topic_is_named_by_its_subject_first(self) -> None:
+        row = TopicMembershipRow(
+            topic_id="topic:8f3a", label="Rechnungen", keywords=("rechnung", "pdf")
+        )
+
+        assert topic_chip(row).label == "Rechnungen"
+
+    def test_a_topic_with_no_common_subject_falls_back_to_its_words(self) -> None:
+        """Three of them and not all: a chip is a name, not a sentence."""
+        row = TopicMembershipRow(
+            topic_id="topic:8f3a",
+            keywords=("rechnung", "pdf", "august", "mahnung"),
+        )
+
+        assert topic_chip(row).label == "rechnung · pdf · august"
+
+    def test_a_topic_with_neither_says_so_in_a_word(self) -> None:
+        """Not the digest a listing prints — a header shows the one topic this
+        message is in, and eight hex characters name it no better."""
+        assert topic_chip(TopicMembershipRow(topic_id="topic:8f3a")).label == "Topic"
+
+    def test_a_tag_wears_the_name_a_person_gave_it(self) -> None:
+        assert tag_chip(TagSummary(id="t1", name="Steuer")).label == "Steuer"
+        assert tag_chip(TagSummary(id="t1")).label == "t1"
+
+    @pytest.mark.parametrize(
+        ("size", "label"),
+        [(5, "5 people"), (1, "1 person"), (0, "Group")],
+    )
+    def test_a_group_has_a_size_rather_than_a_name(self, size, label) -> None:
+        row = GroupMembershipRow(group_id="g1", size=size)
+
+        assert group_chip(row).label == label
+
+    def test_the_order_is_about_then_filed_then_addressed(self) -> None:
+        chips = chips_for(
+            TopicMembershipRow(topic_id="topic:1", label="Nord 42"),
+            [TagSummary(id="t1", name="Steuer"), TagSummary(id="t2", name="2026")],
+            GroupMembershipRow(group_id="g1", size=3),
+        )
+
+        assert [one.label for one in chips] == ["Nord 42", "Steuer", "2026", "3 people"]
+
+    def test_what_the_archive_does_not_know_is_simply_not_a_chip(self) -> None:
+        """An archive nobody has rebuilt has no topics and no groups, and the
+        header shows the tags it does have rather than three placeholders."""
+        chips = chips_for(None, [TagSummary(id="t1", name="Steuer")], None)
+
+        assert [one.kind for one in chips] == [ChipKind.TAG.value]
+        assert chips_for(None, [], None) == []
+
+    def test_a_topic_and_a_tag_can_be_drawn_and_a_group_cannot(self) -> None:
+        """The flag the header renders the pill from. A recurring group is a
+        node in the graph but no view is rooted at one."""
+        chips = chips_for(
+            TopicMembershipRow(topic_id="topic:1"),
+            [TagSummary(id="t1")],
+            GroupMembershipRow(group_id="g1", size=2),
+        )
+
+        assert [one.drawable for one in chips] == [True, True, False]
+
+    def test_every_kind_of_chip_has_a_glyph(self) -> None:
+        """The map and the chip kinds, checked against each other: a kind
+        added to one and not the other is a `KeyError` at the moment a header
+        draws. The other two kinds are not chips — a message and an address
+        are already named on the header and wear a glyph instead."""
+        assert set(CHIP_ICONS) == set(CHIP_KINDS)
+        assert set(CHIP_KINDS) < set(ChipKind)
+        assert DRAWABLE_CHIPS <= set(ChipKind)
+
+    def test_only_the_three_kinds_that_are_chips_become_chips(self) -> None:
+        """`chips_for` answers about belonging, and a message does not belong
+        to itself."""
+        chips = chips_for(
+            TopicMembershipRow(topic_id="topic:1", label="Nord 42"),
+            [TagSummary(id="t1", name="Steuer")],
+            GroupMembershipRow(group_id="g1", size=3),
+        )
+
+        assert {one.kind for one in chips} <= {one.value for one in CHIP_KINDS}
+
+
+class TestTheChipTab:
+    """Pressing a chip opens a third tab that stands for it."""
+
+    async def test_the_header_learns_what_the_message_belongs_to(
+        self, state, digest, analytics, tags
+    ) -> None:
+        analytics.topics["m1@example.com"] = TopicMembershipRow(
+            topic_id="topic:1", label="Nord 42"
+        )
+        tags.tags["m1@example.com"] = (TagSummary(id="t1", name="Steuer"),)
+
+        await state._open_message("m1@example.com", digest)
+
+        assert [one.label for one in state.chips] == ["Nord 42", "Steuer"]
+
+    async def test_a_read_that_fails_costs_its_own_chips_and_no_more(
+        self, state, digest, analytics, tags
+    ) -> None:
+        """A header is not a page: a graph that went away must not take the
+        mail beside it down."""
+        analytics.failing = True
+        tags.tags["m1@example.com"] = (TagSummary(id="t1", name="Steuer"),)
+
+        await state._open_message("m1@example.com", digest)
+
+        assert [one.label for one in state.chips] == ["Steuer"]
+        assert state.view.subject == "SwiftScan"
+
+    async def test_the_annotation_layer_fails_on_its_own_too(
+        self, state, digest, analytics, tags
+    ) -> None:
+        """The other side of the same rule: three reads, three failures, and
+        the two that answered still reach the header."""
+        tags.failing = True
+        analytics.topics["m1@example.com"] = TopicMembershipRow(
+            topic_id="topic:1", label="Nord 42"
+        )
+
+        await state._open_message("m1@example.com", digest)
+
+        assert [one.label for one in state.chips] == ["Nord 42"]
+
+    def test_no_message_is_no_read_at_all(self, published) -> None:
+        """Nothing selected asks the archive nothing."""
+        assert chips_of("") == []
+
+    async def test_pressing_one_opens_the_tab_on_it(self, state) -> None:
+        await state.show_chip_graph(ChipKind.TOPIC.value, "topic:1", "Nord 42")
+
+        assert state.chip_open is True
+        assert state.chip_kind == ChipKind.TOPIC.value
+        assert state.chip_id == "topic:1"
+        assert state.chip_label == "Nord 42"
+        assert state.tab == TAB_GRAPH
+
+    async def test_a_chip_with_nothing_behind_it_opens_nothing(self, state) -> None:
+        await state.show_chip_graph(ChipKind.TOPIC.value, "", "Nord 42")
+
+        assert state.chip_open is False
+        assert state.tab == TAB_MESSAGE
+
+    async def test_the_graph_tab_is_only_selectable_while_it_is_there(
+        self, state
+    ) -> None:
+        """A stored `graph` would otherwise select a panel off the strip."""
+        state.show_tab(TAB_GRAPH)
+
+        assert state.tab == TAB_MESSAGE
+
+        await state.show_chip_graph(ChipKind.TAG.value, "t1", "Steuer")
+        state.show_tab(TAB_MESSAGE)
+        state.show_tab(TAB_GRAPH)
+
+        assert state.tab == TAB_GRAPH
+
+    async def test_another_message_takes_the_tab_with_it(
+        self, state, digest, html_digest
+    ) -> None:
+        """The topic on the strip is the previous message's topic, and a
+        reader who was looking at it lands on the mail rather than on a panel
+        that is no longer there."""
+        await state.show_chip_graph(ChipKind.TOPIC.value, "topic:1", "Nord 42")
+
+        await state._open_message("m4@example.com", html_digest)
+
+        assert state.chip_open is False
+        assert state.chip_label == ""
+        assert state.tab == TAB_MESSAGE
+
+    async def test_the_pane_itself_draws_nothing(self, state) -> None:
+        """The hook, stated as a test: the reading pane may not import the
+        graph explorer, so what it does with a pressed chip is remember it.
+        `mailarc_ui.graph.ChipGraphState` is what fills the panel, and
+        `test_ui_graph_chips` is where that is checked."""
+        assert await state._load_chip_graph() is None
+
+
+class TestTheGraphGlyphs:
+    """The other half of the header's way into the graph.
+
+    A topic, a tag and a group are things the message *belongs to* and the
+    header prints them as chips. A message and a person are already on the
+    header — as a subject and as a name — so what they get is one glyph beside
+    them. Both open the same third tab.
+    """
+
+    async def test_every_person_on_the_header_can_be_rooted_at(
+        self, state, digest
+    ) -> None:
+        """A `To` line is a list of people and each of them has a picture of
+        their own, so the line cannot be one joined string any more."""
+        await state._open_message("m1@example.com", digest)
+
+        assert state.view.recipients[0].address == "anna@example.com"
+        assert state.has_cc is False
+
+    async def test_pressing_a_person_opens_the_same_tab_a_chip_does(
+        self, state
+    ) -> None:
+        await state.show_chip_graph(
+            ChipKind.ADDRESS.value, "anna@example.com", "Anna Bauer"
+        )
+
+        assert state.chip_open is True
+        assert state.chip_kind == ChipKind.ADDRESS.value
+        assert state.chip_id == "anna@example.com"
+        assert state.tab == TAB_GRAPH
+
+    async def test_pressing_the_subject_roots_it_at_the_message(
+        self, state, digest
+    ) -> None:
+        await state._open_message("m1@example.com", digest)
+
+        await state.show_chip_graph(
+            ChipKind.MESSAGE.value, state.selected_id, state.view.subject
+        )
+
+        assert state.chip_id == "m1@example.com"
+        assert state.chip_label == "SwiftScan"
+
+    def test_the_glyph_says_what_pressing_it_does(self) -> None:
+        """Not what the thing is: a person glyph beside a person's name reads
+        as decoration, and every one of these is the same gesture."""
+        assert GRAPH_GLYPH not in CHIP_ICONS.values()
 
 
 class TestTheComponents:
@@ -433,10 +776,64 @@ class TestTheComponents:
             "ma-reading-address",
             "ma-reading-date",
             "ma-reading-subject",
+            "ma-reading-recipients",
+            "ma-reading-recipient-label",
             "ma-avatar",
             "ma-attachment-card",
         ):
             assert wanted in rendered, wanted
+
+    def test_the_subject_stands_above_the_sender(self) -> None:
+        """A mail client's order, and the reason the block was rearranged:
+        the subject first as the largest thing on the pane, the sender and
+        the people it went to underneath it."""
+        rendered = str(message_header(OtherDetailState).render())
+
+        assert rendered.index("ma-reading-subject") < rendered.index(
+            "ma-reading-sender"
+        )
+
+    def test_the_recipients_are_labelled_the_way_a_client_prints_them(self) -> None:
+        """`To:` and `Cc:` read inline in front of the addresses, in the text
+        column under the sender — not as a label column of their own."""
+        rendered = str(message_header(OtherDetailState).render())
+
+        assert '"To:"' in rendered
+        assert '"Cc:"' in rendered
+
+    def test_the_header_hangs_a_graph_glyph_on_what_it_names(self) -> None:
+        """Beside the subject, beside the sender, beside every recipient."""
+        rendered = str(message_header(OtherDetailState).render())
+
+        assert "ma-glyph-action" in rendered
+        assert "in the graph" in rendered
+        assert rendered.count("ma-glyph-action") >= 3
+
+    def test_the_header_offers_the_chips_the_message_wears(self) -> None:
+        rendered = str(message_header(OtherDetailState).render())
+
+        assert "ma-chip-link" in rendered
+        assert "ma-chip-inert" in rendered
+        assert "ma-reading-chips" in rendered
+
+    def test_there_are_two_tabs_until_a_panel_is_handed_in(self) -> None:
+        """The reading pane cannot draw a graph, so a caller that has no panel
+        to give gets exactly the strip it always had."""
+        rendered = str(message_tabs(OtherDetailState).render())
+
+        assert f'value:"{TAB_MESSAGE}"' in rendered
+        assert f'value:"{TAB_SOURCE}"' in rendered
+        assert f'value:"{TAB_GRAPH}"' not in rendered
+
+    def test_the_third_tab_lands_after_the_source_one(self) -> None:
+        rendered = str(
+            message_tabs(OtherDetailState, graph_panel=mn.text("drawn")).render()
+        )
+
+        assert rendered.index(f'value:"{TAB_SOURCE}"') < rendered.index(
+            f'value:"{TAB_GRAPH}"'
+        )
+        assert "drawn" in rendered
 
     def test_the_text_body_is_set_in_the_reading_face(self) -> None:
         """The plain-text body is the one the page draws itself; the HTML one

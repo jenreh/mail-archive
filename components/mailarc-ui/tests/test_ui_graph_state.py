@@ -165,6 +165,14 @@ class FakeAnalytics:
     def communities(self, *, limit: int = 20) -> tuple[CommunityRow, ...]:
         return self.community_rows[:limit]
 
+    def topics_of(self, ids: Sequence[str]) -> dict[str, Any]:
+        """The reading pane's header chips. Nothing filed, so no chips —
+        what this page's tests are about is the canvas beside them."""
+        return {}
+
+    def groups_of(self, ids: Sequence[str]) -> dict[str, Any]:
+        return {}
+
     def suggestion_counts(self) -> dict[str, int]:
         return {}
 

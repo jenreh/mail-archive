@@ -38,15 +38,19 @@ from mailarc_core.archive.model import (
 )
 from mailarc_core.archive.repository import (
     AddressRepository,
+    AttachmentRepository,
     MessageRepository,
     ThreadRepository,
 )
 from mailarc_core.archive.search import (
+    KnownAddresses,
+    KnownAttachments,
     MessageHit,
     ScoredId,
     SearchFilters,
     SearchPage,
 )
+from mailarc_core.archive.threads import count_unthreaded
 from mailarc_core.mail.model import LabelKind
 
 logger = logging.getLogger(__name__)
@@ -105,6 +109,25 @@ class ArchiveReader:
         """How many messages the archive holds."""
         with self._graph_session() as graph:
             return MessageRepository(graph).count()
+
+    def count_unthreaded_messages(self) -> int:
+        """How many messages sit in no conversation at all.
+
+        What a grouped listing cannot show: a message with no ``IN_THREAD``
+        edge is drawn as a row of its own, beside the very replies that answer
+        it. Read here rather than computed from a listing because it is a
+        question about the whole archive — the panel that offers the repair
+        asks it, and :func:`~mailarc_core.archive.threads.repair_threads` is
+        what makes the answer smaller.
+
+        Reading it and *making* it smaller are deliberately not the same
+        object. The repair is a job the worker runs against a graph the
+        composition root opens (``app/repair.py``), for the reason the derived
+        rebuild is: a second way to start one would become a second way to
+        configure one.
+        """
+        with self._graph_session() as graph:
+            return count_unthreaded(graph)
 
     def search_messages(
         self, filters: SearchFilters, *, limit: int = 50, offset: int = 0
@@ -234,6 +257,78 @@ class ArchiveReader:
                 return []
             repository = MessageRepository(graph)
             return self._summaries(repository, repository.find_by_ids(ids))
+
+    def conversation_members(
+        self, conversation_ids: list[str], *, limit: int = CONVERSATION_LIMIT
+    ) -> dict[str, list[MessageSummary]]:
+        """Several whole conversations at once, each newest first.
+
+        :meth:`conversation_messages` for a page of groups, and the read that
+        lets a grouped listing draw every conversation whole rather than only
+        the members that happened to match. Two statements for the whole page
+        — the ids of every asked conversation, then one hydration over all of
+        them — because a read per group is the N+1 this archive avoids
+        everywhere else.
+
+        A conversation nobody holds is absent rather than empty, and an empty
+        ask never opens a session.
+        """
+        if not conversation_ids:
+            return {}
+        with self._graph_session() as graph:
+            members = ThreadRepository(graph).find_members_for(
+                conversation_ids, limit=limit
+            )
+            wanted = [one for members in members.values() for one in members]
+            if not wanted:
+                return {}
+            repository = MessageRepository(graph)
+            summaries = self._summaries(repository, repository.find_by_ids(wanted))
+        found = {one.id: one for one in summaries}
+        return {
+            conversation: [found[one] for one in ids if one in found]
+            for conversation, ids in members.items()
+        }
+
+    def known_addresses(self) -> KnownAddresses:
+        """Which addresses this archive can be narrowed by, in each role.
+
+        What the search form's two address pickers offer, and the reason it is
+        one call rather than two: both halves come out of the same graph and a
+        form asks for them together, so one session answers both rather than
+        opening a second for the second half.
+
+        Two full traversals of the archive, which is why it is asked once when
+        the page loads and never again while somebody is typing in it.
+        """
+        with self._graph_session() as graph:
+            repository = AddressRepository(graph)
+            return KnownAddresses(
+                senders=tuple(repository.find_senders()),
+                recipients=tuple(repository.find_recipients()),
+            )
+
+    def known_attachments(self) -> KnownAttachments:
+        """Which files this archive carries, commonest first, in two lists.
+
+        What the search form's file filter is built from. The split is
+        :class:`~mailarc_core.archive.search.KnownAttachments`'s to explain:
+        a sender who states a type is answered by type, and one who states
+        ``application/octet-stream`` has said nothing, so the only thing left
+        that describes the file is what it was called.
+
+        Two traversals of every ``HAS_ATTACHMENT`` edge, which is why — like
+        :meth:`known_addresses` — this is asked once when the page loads and
+        never again while somebody is filling the form in. One session for
+        both halves, for the reason :meth:`known_addresses` gives: a form asks
+        for them together.
+        """
+        with self._graph_session() as graph:
+            files = AttachmentRepository(graph)
+            return KnownAttachments(
+                content_types=tuple(files.find_content_types()),
+                untyped_names=tuple(files.find_untyped_names()),
+            )
 
     def remote_content_trusted(self, address: str) -> bool:
         """Whether this sender's remote content may load without asking."""

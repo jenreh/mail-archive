@@ -5,7 +5,7 @@ every piece of a row is a ``kit`` component — the initials circle, the pills,
 the selectable row shell — so this mail list is drawn from the same vocabulary
 as every other list in the archive.
 
-The right column is :func:`~mailarc_ui.message_detail.message_tabs` handed
+The right column is :func:`~mailarc_ui.message_detail.message_pane` handed
 *this* page's state class. That is the whole reason the reading pane is
 parameterised: filling a list and reading one of its rows are two jobs, and the
 open message belongs to whichever page brought the list.
@@ -18,6 +18,7 @@ page that drops this in has to give it a definite height.
 import appkit_mantine as mn
 import reflex as rx
 
+from mailarc_ui.graph import chip_graph_panel
 from mailarc_ui.kit import (
     COLUMN_GAP,
     LIST_WIDTH,
@@ -35,7 +36,7 @@ from mailarc_ui.kit import (
     relevance_chip,
     spinner,
 )
-from mailarc_ui.message_detail import COLUMN, ROW_BORDER, LabelChip, message_tabs
+from mailarc_ui.message_detail import COLUMN, ROW_BORDER, LabelChip, message_pane
 from mailarc_ui.search.form import FORM_WIDTH, search_form
 from mailarc_ui.search.model import GROUPING_OPTIONS, ListLine
 from mailarc_ui.search.state import MailSearchState
@@ -382,7 +383,10 @@ def search_panel() -> rx.Component:
             ),
             mn.splitter.pane(
                 column_card(
-                    message_tabs(MailSearchState),
+                    message_pane(
+                        MailSearchState,
+                        graph_panel=chip_graph_panel(MailSearchState),
+                    ),
                     padding="md",
                     style={**COLUMN, "minWidth": 0},
                 ),

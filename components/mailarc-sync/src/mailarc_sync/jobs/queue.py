@@ -44,6 +44,33 @@ own so it can point at a file it owns instead of the configured database.
 _OPEN_STATES = (SyncJobState.QUEUED, SyncJobState.RUNNING)
 """The states a job can still be asked to stop from."""
 
+_KNOWN_KINDS = frozenset(one.value for one in JobKind)
+"""The kinds *this build* understands, as the strings the column holds.
+
+Read off the enum rather than written out, so a kind added there is known here
+without an edit. Values and not members, because what comes back from the
+column is a plain string.
+"""
+
+UNKNOWN_KIND = (
+    "This worker does not know the job kind {kind!r}. It is running an older "
+    "build than the application that queued the job — restart the archive so "
+    "the worker picks up the new code, then queue the job again."
+)
+"""What a job queued by a newer build is failed with.
+
+Its own sentence, because the two halves of this application are two processes
+and they are upgraded one at a time: the desktop app's worker is a child that
+keeps running across a code change until it is restarted. A worker that met a
+kind its enum had never heard of used to raise ``ValueError`` out of
+:meth:`JobQueue.claim` — through the poll loop, through ``run()``, out of
+``main`` — and the process died. Observed on the day ``repair`` was added, with
+a worker that had been up since before it existed.
+
+One unknown row must cost that row and nothing else, so it is failed here with
+a sentence naming the fix, and the loop goes on to the next job.
+"""
+
 
 class JobQueue:
     """Enqueue, claim, report, finish — and nothing beyond the diagram above.
@@ -111,6 +138,30 @@ class JobQueue:
             entity = result.scalar_one_or_none()
             return None if entity is None else _as_job(entity)
 
+    async def find_all_open(self, kinds: Sequence[JobKind]) -> list[SyncJob]:
+        """Every job of these kinds that has not ended yet, oldest first.
+
+        :meth:`find_open` answers "is *this* mailbox busy?" and needs a loop
+        over the accounts to answer "is *anything* busy?" — which is the
+        question the rail's Sync button asks on every page load, of an archive
+        that may hold a dozen mailboxes. One ``IN`` rather than a dozen
+        round-trips, and it comes back with the jobs themselves so the caller
+        can follow what it finds instead of asking again by id.
+
+        No account filter, because there is no useful one here: the jobs a
+        whole-archive sweep queued belong to different mailboxes by definition.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(MailSyncJobEntity)
+                .where(
+                    MailSyncJobEntity.kind.in_(tuple(kinds)),
+                    MailSyncJobEntity.state.in_(_OPEN_STATES),
+                )
+                .order_by(MailSyncJobEntity.id)
+            )
+            return [_as_job(entity) for entity in result.scalars().all()]
+
     async def claim(self, worker_id: str, lease_seconds: float) -> SyncJob | None:
         """Take the oldest queued job, or return ``None`` if there is none.
 
@@ -126,9 +177,42 @@ class JobQueue:
                 entity = await session.get(MailSyncJobEntity, job_id)
                 if entity is None:  # pragma: no cover - deleted mid-claim
                     continue
+                if entity.kind not in _KNOWN_KINDS:
+                    await self._refuse(session, entity, now)
+                    continue
                 logger.info("Worker %s claimed job %d", worker_id, job_id)
                 return _as_job(entity)
         return None
+
+    async def _refuse(
+        self, session: AsyncSession, entity: MailSyncJobEntity, now: datetime
+    ) -> None:
+        """End a job whose kind this build cannot name. See :data:`UNKNOWN_KIND`.
+
+        On the caller's session rather than through :meth:`fail`: the row was
+        taken to ``running`` a moment ago in this same uncommitted
+        transaction, and a second connection writing it would be a second
+        writer on a row this one is holding.
+
+        Failed rather than left queued. Releasing it would put the same row in
+        front of the same old worker on the next poll, for ever, and the button
+        that queued it would spin with nothing to show; a failed job says in
+        its error column what to do about it.
+        """
+        logger.warning(
+            "Job %d has kind %r, which this build does not know — failing it",
+            entity.id,
+            entity.kind,
+        )
+        await self._write(
+            session,
+            MailSyncJobEntity.id == entity.id,
+            state=SyncJobState.FAILED,
+            error=UNKNOWN_KIND.format(kind=entity.kind),
+            finished_at=now,
+            worker_id=None,
+            lease_until=None,
+        )
 
     async def heartbeat(self, job_id: int, lease_seconds: float) -> bool:
         """Push the lease out; ``False`` means the job is no longer running.

@@ -16,19 +16,24 @@ decision, which is why it lives beside the value objects rather than in a state.
 """
 
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import datetime
+from enum import StrEnum
+from types import MappingProxyType
 
 from appkit_commons.registry import service_registry
 from pydantic import BaseModel, ConfigDict
 
+from mailarc_analytics import GroupMembershipRow, TopicMembershipRow
 from mailarc_core import ArchiveReader
-from mailarc_core.archive.model import MessageLabel
+from mailarc_core.archive.model import MessageLabel, TagSummary
 from mailarc_core.mail.model import (
     EmailAddress,
     LabelKind,
     ParsedAttachment,
     RenderedMessage,
 )
+from mailarc_ui.message_detail.filetype import FILE_ICONS, file_kind, type_label
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +45,24 @@ base64 behind them are on disk either way and nothing a human reads.
 """
 
 NO_SUBJECT = "(no subject)"
+NO_FILENAME = "(unnamed)"
+"""What a mail with no subject, and a part with no name, are called.
+
+The filename is shared rather than written twice: the strip lists the file
+and the panel that opens over it is titled the same way, and two spellings
+of "this part had no name" would be two different files to a reader.
+"""
 
 TAB_MESSAGE = "message"
 TAB_SOURCE = "source"
-"""The two ways of looking at one mail; the tab bar's values."""
+TAB_GRAPH = "graph"
+"""The three ways of looking at one mail; the tab bar's values.
+
+The third is not always there: it appears when a reader presses one of the
+header's chips and stands for that topic, tag or group rather than for the
+message — which is why it sits after the other two and carries the chip's own
+name instead of a fixed one.
+"""
 
 FRAME_CSP = (
     "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:"
@@ -98,6 +117,125 @@ the provider's own housekeeping stays quiet."""
 
 _SYSTEM_PREFIX = "CATEGORY_"
 
+KEYWORDS_ON_A_CHIP = 3
+"""How many of a nameless topic's words fit on a chip before it stops being a
+name and becomes a sentence."""
+
+UNNAMED_TOPIC = "Topic"
+UNNAMED_GROUP = "Group"
+"""What a chip says when the archive has no name for the thing behind it.
+
+Deliberately not the digest ``mailarc_ui.insights.model.short_key`` prints. A
+listing shows many topics at once and has to tell two nameless ones apart; a
+header shows the *one* topic this message is in, and eight hex characters buy
+nothing there that a plain word does not.
+"""
+
+
+class ChipKind(StrEnum):
+    """What the header can root the graph tab at.
+
+    Five things and two shapes. Three of them are what the message *belongs
+    to* and the header prints them as chips; the other two are the message
+    itself and one address on it, which are already on the header as a subject
+    and a name and want a glyph beside them rather than a pill of their own.
+    Both shapes end up calling the same handler with one of these values.
+
+    The values are :class:`~mailarc_analytics.NodeKind`'s own wherever there is
+    one, because they cross into a read as the thing to root a picture at —
+    and into the query string of the link out to the explorer. ``GROUP`` is the
+    exception: it has no node kind and no view, see :data:`DRAWABLE_CHIPS`.
+    """
+
+    TOPIC = "topic"
+    TAG = "tag"
+    GROUP = "group"
+    MESSAGE = "message"
+    ADDRESS = "address"
+
+
+CHIP_KINDS: tuple[ChipKind, ...] = (ChipKind.TOPIC, ChipKind.TAG, ChipKind.GROUP)
+"""The kinds the header prints as chips, in the order it prints them.
+
+The topic first because it is what the message is *about*, the tags next
+because a person put them there, the group last because it is a fact about the
+addressing rather than about the mail. The other two kinds are not chips: a
+message and an address are already named on the header.
+"""
+
+CHIP_ICONS: Mapping[ChipKind, str] = MappingProxyType(
+    {
+        ChipKind.TOPIC: "layers",
+        ChipKind.TAG: "tag",
+        ChipKind.GROUP: "users",
+    }
+)
+"""The glyph each kind of chip wears — :data:`CHIP_KINDS` and no more, which a
+test checks. A mapping rather than a field on the value object, so a chip
+carries what it *is* and this decides what that looks like."""
+
+GRAPH_GLYPH = "share-2"
+"""The one glyph that means "open this in the graph".
+
+Worn by the icon beside the subject and beside every address, and the same
+glyph the third tab carries. Not the kind's own icon: a person glyph next to a
+person's name reads as decoration, and what these say is not *what this is* but
+*what pressing it does*.
+"""
+
+DRAWABLE_CHIPS = frozenset(
+    {ChipKind.TOPIC, ChipKind.TAG, ChipKind.MESSAGE, ChipKind.ADDRESS}
+)
+"""Which of the five have a graph behind them.
+
+Four rooted views of the explorer:
+:meth:`~mailarc_analytics.queries.graphs.GraphReader.topic`, ``.tag``,
+``.message`` and ``.address``. A recurring group is a node in the graph but no
+view is rooted at one and no reader answers for it, so its chip is shown and
+not pressable — naming the group a message went to is worth something on its
+own, and a chip that opened an empty canvas would be worth less than nothing.
+"""
+
+
+class AddressRow(BaseModel):
+    """One person on the header — what to print, and what to root a graph at.
+
+    Two fields and not one string, which is the change the glyphs paid for: a
+    ``To`` line is a list of people and each of them has a picture of their
+    own, so the line cannot be one joined label any more.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str
+    """``Name <address>``, or the address alone — what the line prints."""
+
+    address: str
+    """The bare address the ``person`` view is rooted at."""
+
+
+class MessageChip(BaseModel):
+    """One thing the open message belongs to, as the header offers it.
+
+    ``drawable`` is stored rather than derived because what reads it is an
+    ``rx.cond`` in the browser: a property on the model is a Python call and
+    never crosses. :func:`chips_for` is the one place that decides it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: str
+    """A :class:`ChipKind` value — plain text, for the same reason
+    :attr:`~mailarc_ui.graph.model.NodeCard.kind` is."""
+
+    chip_id: str
+    """What the graph is rooted at when the chip is pressed. Not ``id`` —
+    that is a prop on every Reflex component."""
+
+    label: str
+    icon: str
+    drawable: bool = False
+
 
 class LabelChip(BaseModel):
     """One label on a list row — the text to print and the colour to print it in."""
@@ -116,7 +254,15 @@ class LabelChip(BaseModel):
 
 
 class AttachmentRow(BaseModel):
-    """One file on the message, as the header strip lists it."""
+    """One file on the message, as the header strip lists it.
+
+    :attr:`kind_label` and :attr:`icon` are stored rather than derived from
+    :attr:`content_type` where they are drawn, for the reason
+    :attr:`MessageChip.drawable` is: what reads them is markup in the browser,
+    and a classification is a Python call that never crosses. Deciding once,
+    here, is also what keeps the card and the panel that opens over it saying
+    the same thing about one file.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -124,12 +270,22 @@ class AttachmentRow(BaseModel):
     content_type: str
     size_label: str
 
+    kind_label: str = ""
+    """What the file is, in the shortest true form — ``PDF``, ``XLSX``,
+    ``Spreadsheet``. See
+    :func:`~mailarc_ui.message_detail.filetype.type_label`."""
+
+    icon: str = "file"
+    """The family's glyph."""
+
     @classmethod
     def from_attachment(cls, attachment: ParsedAttachment) -> AttachmentRow:
         return cls(
-            filename=attachment.filename or "(unnamed)",
+            filename=attachment.filename or NO_FILENAME,
             content_type=attachment.content_type,
             size_label=size_label(attachment.size),
+            kind_label=type_label(attachment.content_type, attachment.filename),
+            icon=FILE_ICONS[file_kind(attachment.content_type, attachment.filename)],
         )
 
 
@@ -144,12 +300,18 @@ class MessageView(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     subject: str = ""
-    sender: str = ""
+    sender_name: str = ""
+    """What the header prints in bold: the display name, or the address.
+
+    Kept apart from :attr:`sender_address` rather than joined into one
+    ``Name <address>`` label, because the header prints the two in different
+    weights and colours the way a mail client does.
+    """
     sender_address: str = ""
     """The bare address — the key a trust decision is recorded under."""
-    recipients: str = ""
+    recipients: list[AddressRow] = []
     """The ``To`` line. Not named ``to`` — that is a method on every reflex Var."""
-    cc: str = ""
+    cc: list[AddressRow] = []
     date: str = ""
     body_html: str = ""
     """The mail's own markup, unframed; the state wraps it per policy."""
@@ -161,10 +323,10 @@ class MessageView(BaseModel):
     def from_rendered(cls, rendered: RenderedMessage) -> MessageView:
         return cls(
             subject=rendered.subject or NO_SUBJECT,
-            sender=address_label(rendered.sender),
+            sender_name=sender_label(rendered.sender),
             sender_address=rendered.sender.address if rendered.sender else "",
-            recipients=", ".join(address_label(one) for one in rendered.to),
-            cc=", ".join(address_label(one) for one in rendered.cc),
+            recipients=address_rows(rendered.to),
+            cc=address_rows(rendered.cc),
             date=long_date_label(rendered.sent_at),
             body_html=rendered.body_html or "",
             body_text=rendered.body_text,
@@ -173,6 +335,61 @@ class MessageView(BaseModel):
                 AttachmentRow.from_attachment(one) for one in rendered.attachments
             ],
         )
+
+
+def topic_chip(row: TopicMembershipRow) -> MessageChip:
+    """The topic a message is in, named the way a chip can hold it.
+
+    Its subject when its members had one, its words when they did not, and
+    :data:`UNNAMED_TOPIC` when the clustering found neither — the same three
+    steps :func:`mailarc_ui.search.model.topic_label` takes for a section
+    heading, stopping one short of the digest for the reason given there.
+    """
+    return _chip(
+        ChipKind.TOPIC,
+        row.topic_id,
+        row.label or " · ".join(row.keywords[:KEYWORDS_ON_A_CHIP]) or UNNAMED_TOPIC,
+    )
+
+
+def tag_chip(tag: TagSummary) -> MessageChip:
+    """A tag a person put on the message, under the name they gave it."""
+    return _chip(ChipKind.TAG, tag.id, tag.name or tag.id)
+
+
+def group_chip(row: GroupMembershipRow) -> MessageChip:
+    """``5 people`` — a recurring set of correspondents has a size, not a name."""
+    people = "person" if row.size == 1 else "people"
+    label = f"{row.size} {people}" if row.size else UNNAMED_GROUP
+    return _chip(ChipKind.GROUP, row.group_id, label)
+
+
+def _chip(kind: ChipKind, chip_id: str, label: str) -> MessageChip:
+    return MessageChip(
+        kind=kind.value,
+        chip_id=chip_id,
+        label=label,
+        icon=CHIP_ICONS[kind],
+        drawable=kind in DRAWABLE_CHIPS,
+    )
+
+
+def chips_for(
+    topic: TopicMembershipRow | None,
+    tags: Sequence[TagSummary],
+    group: GroupMembershipRow | None,
+) -> list[MessageChip]:
+    """Everything the open message belongs to, in the order the header reads.
+
+    In :data:`CHIP_KINDS` order. Anything absent is simply not a chip: a
+    message in no topic, or an archive nobody has rebuilt, shows the chips it
+    does have and no placeholder for the rest.
+    """
+    found = [] if topic is None else [topic_chip(topic)]
+    found += [tag_chip(one) for one in tags]
+    if group is not None:
+        found.append(group_chip(group))
+    return found
 
 
 def archive_reader() -> ArchiveReader:
@@ -222,6 +439,36 @@ def _local(sent_at: datetime | None) -> datetime | None:
     except OverflowError, ValueError, OSError:
         logger.warning("Date outside the range this zone can print: %r", sent_at)
         return None
+
+
+def sender_label(address: EmailAddress | None) -> str:
+    """The name a header sets in bold — the display name, or the address.
+
+    Never both: the address follows in its own grey chunk, and a sender who
+    gave no name has only the one thing to print.
+    """
+    if address is None:
+        return ""
+    return address.display_name or address.address
+
+
+def address_suffix(name: str, address: str) -> str:
+    """The grey ``<address>`` that follows the sender's name, or nothing.
+
+    Nothing when the name already *is* the address:
+    ``shop@example.com <shop@example.com>`` is what the naive version of that
+    line prints.
+    """
+    if not address or name == address:
+        return ""
+    return f"<{address}>"
+
+
+def address_rows(addresses: Sequence[EmailAddress]) -> list[AddressRow]:
+    """One header line's worth of people, each with its own root."""
+    return [
+        AddressRow(label=address_label(one), address=one.address) for one in addresses
+    ]
 
 
 def address_label(address: EmailAddress | None) -> str:

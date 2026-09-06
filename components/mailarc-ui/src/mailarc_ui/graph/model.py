@@ -38,7 +38,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from mailarc_analytics import GraphEdge, GraphNode, Subgraph
+from mailarc_analytics import GraphEdge, GraphNode, NodeKind, Subgraph
 from mailarc_ui.theme import Palette
 
 logger = logging.getLogger(__name__)
@@ -289,6 +289,45 @@ def stylesheet_of(palette: Mapping[str, str]) -> list[dict[str, Any]]:
             },
         },
     ]
+
+
+def _sheet(palette: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The canvas' rules for one colour scheme, kinds coloured by selector.
+
+    :func:`stylesheet_of` fills a node from
+    ``data(color)``, which is what lets one stylesheet serve a canvas whose
+    elements already know their colour. Here the *elements* are the thing that
+    must not change with the colour scheme — they are the biggest var on the
+    page and the picture is the same picture in both schemes — so a per-kind
+    rule is appended for each, and a later rule wins in cytoscape.
+    """
+    return [
+        *stylesheet_of(palette),
+        *(
+            {
+                "selector": f'node[kind = "{kind.value}"]',
+                "style": {"background-color": palette[kind.value]},
+            }
+            for kind in NodeKind
+        ),
+    ]
+
+
+LIGHT_STYLESHEET = _sheet(Palette.LIGHT)
+DARK_STYLESHEET = _sheet(Palette.DARK)
+"""The two stylesheets, built once at import.
+
+Not state, and deliberately: which one a reader sees is a fact about their
+browser rather than about the archive, so a component picks between them with
+``rx.color_mode_cond`` and no state ever learns which. A var that only ever
+held one value would be a state that could disagree with the screen.
+
+Here rather than beside the state that was the first to draw with them,
+because a second canvas now does: the reading pane's chip tab
+(:func:`mailarc_ui.graph.chip_graph_panel`) paints from the same two, and a
+module that imported them from the explorer's state would be importing a page
+to get at a constant.
+"""
 
 
 def layout_of(name: LayoutName | str) -> dict[str, Any]:

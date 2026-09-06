@@ -52,6 +52,7 @@ OWNED: dict[str, str] = {
     "badge": "kit.status_badge / kit.dot_badge",
     "button": "kit.primary_button / soft_button / quiet_button / pill_action",
     "card": "kit.panel_card",
+    "drawer": "kit.slide_over",
     "empty_state": "kit.empty_panel",
     "loader": "kit.spinner",
     "paper": "kit.attachment_card",

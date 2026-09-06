@@ -28,13 +28,16 @@ import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_analytics import NodeKind
-from mailarc_ui.graph.model import GraphView, LayoutName, NodeCard, SizeBy
-from mailarc_ui.graph.state import (
+from mailarc_ui.graph.chips import chip_graph_panel
+from mailarc_ui.graph.model import (
     DARK_STYLESHEET,
     LIGHT_STYLESHEET,
-    MAX_DEPTH,
-    GraphExplorerState,
+    GraphView,
+    LayoutName,
+    NodeCard,
+    SizeBy,
 )
+from mailarc_ui.graph.state import MAX_DEPTH, GraphExplorerState
 from mailarc_ui.kit import (
     COLUMN_GAP,
     card_heading,
@@ -51,7 +54,7 @@ from mailarc_ui.kit import (
     soft_button,
     spinner,
 )
-from mailarc_ui.message_detail import message_tabs
+from mailarc_ui.message_detail import message_pane
 from mailarc_ui.tags.components import promote_form, suggestion_rows, tag_chips
 
 CONTROL_WIDTH = "280px"
@@ -327,7 +330,10 @@ def _message_details() -> rx.Component:
     """The reading pane, and the tags this message wears."""
     return mn.stack(
         tag_chips(GraphExplorerState, GraphExplorerState.selected_node.id),
-        message_tabs(GraphExplorerState),
+        message_pane(
+            GraphExplorerState,
+            graph_panel=chip_graph_panel(GraphExplorerState),
+        ),
         gap="xs",
         w="100%",
         style={"minHeight": 0, "flex": "1 1 auto"},

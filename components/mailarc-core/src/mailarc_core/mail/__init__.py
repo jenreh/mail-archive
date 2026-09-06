@@ -51,6 +51,7 @@ from mailarc_core.mail.model import (
     RawMessage,
     SyncCursor,
     SyncCursorKind,
+    UNTYPED_CONTENT_TYPES,
 )
 from mailarc_core.mail.parsing import (
     clean_body,
@@ -69,6 +70,7 @@ from mailarc_core.mail.rendering import (
 )
 
 __all__ = [
+    "UNTYPED_CONTENT_TYPES",
     "AccountIdentity",
     "CredentialField",
     "EmailAddress",

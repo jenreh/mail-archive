@@ -16,9 +16,17 @@ The canvas itself is not here. It is ``kit.graph_canvas``, because the kit owns
 every element this design has exactly one of, and there is exactly one canvas.
 """
 
+from mailarc_ui.graph.chips import (
+    CHIP_LIMIT,
+    NOTHING_TO_DRAW,
+    ChipGraphState,
+    chip_graph_panel,
+)
 from mailarc_ui.graph.components import explorer_panel
 from mailarc_ui.graph.model import (
+    DARK_STYLESHEET,
     FIT_PADDING,
+    LIGHT_STYLESHEET,
     NODE_MAX_SIZE,
     NODE_MIN_SIZE,
     UNIFORM_WEIGHT,
@@ -40,8 +48,6 @@ from mailarc_ui.graph.reads import (
     view_of,
 )
 from mailarc_ui.graph.state import (
-    DARK_STYLESHEET,
-    LIGHT_STYLESHEET,
     MAX_DEPTH,
     NOTHING_DERIVED,
     NOTHING_HERE,
@@ -52,6 +58,7 @@ from mailarc_ui.graph.state import (
 )
 
 __all__ = [
+    "CHIP_LIMIT",
     "DARK_STYLESHEET",
     "FIT_PADDING",
     "LIGHT_STYLESHEET",
@@ -61,17 +68,20 @@ __all__ = [
     "NODE_MIN_SIZE",
     "NOTHING_DERIVED",
     "NOTHING_HERE",
+    "NOTHING_TO_DRAW",
     "PICKER_LIMIT",
     "PICK_ONE",
     "RECOMPUTED",
     "RECOMPUTED_CIRCLE",
     "UNIFORM_WEIGHT",
+    "ChipGraphState",
     "GraphExplorerState",
     "GraphView",
     "LayoutName",
     "NodeCard",
     "SizeBy",
     "card_of",
+    "chip_graph_panel",
     "cluster_members",
     "elements_of",
     "explorer_panel",

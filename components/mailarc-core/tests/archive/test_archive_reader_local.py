@@ -337,3 +337,107 @@ class TestOneWholeConversation:
 
     def test_a_conversation_the_graph_does_not_hold_is_empty(self, reader) -> None:
         assert reader.conversation_messages("7:nothing") == []
+
+
+class TestSeveralWholeConversations:
+    """The read a grouped listing makes so that no thread is drawn in half.
+
+    ``conversation_messages`` answers for one thread and a page draws many, so
+    what has to be true here is that the batched read agrees with it — same
+    members, same order, same cut — and costs one round trip rather than one
+    per group.
+    """
+
+    @staticmethod
+    def _archive(
+        config: GraphConfig, blobs: BlobStore, thread: str, *messages: bytes
+    ) -> None:
+        """Write these messages into one named conversation."""
+        archiver = MessageArchiver(ArchiveConfig())
+        with client.session(config) as graph:
+            for number, raw in enumerate(messages, start=1):
+                blobs.put(raw, BlobKind.MESSAGE)
+                archiver.archive(
+                    graph,
+                    parse_message(raw),
+                    ArchiveSource(
+                        account_id="7",
+                        account_address="anna@example.com",
+                        provider=MailProvider.GMAIL,
+                        provider_message_id=f"g-{thread}-{number}",
+                        provider_thread_id=thread,
+                    ),
+                )
+
+    def test_every_asked_conversation_comes_back_whole(
+        self, config, blobs, reader
+    ) -> None:
+        self._archive(config, blobs, "t-1", eml(1, day=4), eml(2, day=6))
+        self._archive(config, blobs, "t-2", eml(3, day=5))
+
+        found = reader.conversation_members(["7:t-1", "7:t-2"])
+
+        assert {
+            one: [row.subject for row in members] for one, members in found.items()
+        } == {
+            "7:t-1": ["Angebot 2", "Angebot 1"],
+            "7:t-2": ["Angebot 3"],
+        }
+
+    def test_the_order_is_the_listings_own_newest_first(
+        self, config, blobs, reader
+    ) -> None:
+        self._archive(config, blobs, "t-1", eml(1, day=4), eml(2, day=6), eml(3, day=5))
+
+        [found] = reader.conversation_members(["7:t-1"]).values()
+
+        assert [one.subject for one in found] == ["Angebot 2", "Angebot 3", "Angebot 1"]
+
+    def test_it_agrees_with_the_single_conversation_read(
+        self, config, blobs, reader
+    ) -> None:
+        """Two reads of the same thing must not disagree about what is in it."""
+        self._archive(config, blobs, "t-1", eml(1, day=4), eml(2, day=6), eml(3, day=5))
+
+        one_at_a_time = reader.conversation_messages("7:t-1")
+        [batched] = reader.conversation_members(["7:t-1"]).values()
+
+        assert [one.id for one in batched] == [one.id for one in one_at_a_time]
+
+    def test_the_members_carry_their_labels(self, config, blobs, reader) -> None:
+        archive(
+            config,
+            blobs,
+            eml(1, day=4),
+            eml(2, day=6),
+            labels={2: (label("Kunden/Bauer"),)},
+        )
+
+        [members] = reader.conversation_members(["7:t-1"]).values()
+
+        assert [one.name for one in members[0].labels] == ["Kunden/Bauer"]
+
+    def test_the_limit_cuts_each_conversation_and_not_the_page(
+        self, config, blobs, reader
+    ) -> None:
+        """One row per member comes back, so a ``LIMIT`` in the statement would
+        cut whichever thread the store happened to return last."""
+        self._archive(config, blobs, "t-1", eml(1, day=4), eml(2, day=6), eml(3, day=5))
+        self._archive(config, blobs, "t-2", eml(4, day=7), eml(5, day=8))
+
+        found = reader.conversation_members(["7:t-1", "7:t-2"], limit=1)
+
+        assert {one: len(members) for one, members in found.items()} == {
+            "7:t-1": 1,
+            "7:t-2": 1,
+        }
+
+    def test_a_conversation_the_graph_does_not_hold_is_absent(
+        self, config, blobs, reader
+    ) -> None:
+        self._archive(config, blobs, "t-1", eml(1, day=4))
+
+        assert set(reader.conversation_members(["7:t-1", "7:nothing"])) == {"7:t-1"}
+
+    def test_an_empty_ask_never_opens_a_session(self, reader) -> None:
+        assert reader.conversation_members([]) == {}

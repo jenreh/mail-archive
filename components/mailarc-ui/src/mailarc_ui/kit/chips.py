@@ -1,13 +1,17 @@
 """The small pills a mail row wears under its preview.
 
-Three variants because the list has three things to say about a message: how
+Four variants because the list has three things to say about a message: how
 many attachments it carries (``count_chip``), which labels it holds
 (``label_chip``), and — in search mode — how relevant it is
-(``relevance_chip``). All of them are the same 8px-radius pill from
+(``relevance_chip``). The fourth is the reading pane's: ``link_chip``, a pill
+that *leads somewhere* — the topic, the tag or the group the open message
+belongs to, pressed to draw it. All of them are the same 8px-radius pill from
 ``assets/css/mail-archive.css``; the variant classes only recolour it.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import appkit_mantine as mn
 import reflex as rx
@@ -50,4 +54,29 @@ def relevance_chip(label: rx.Var | str) -> rx.Component:
         align="center",
         wrap="nowrap",
         class_name="ma-chip-pill ma-chip-relevance",
+    )
+
+
+def link_chip(icon: str, text: rx.Var | str, **props: Any) -> rx.Component:
+    """A glyph and a name on a pill that leads somewhere — a topic, a tag.
+
+    Pressable when the caller passes ``on_click`` and flat when it does not,
+    and that is the whole variant: a chip naming something the archive cannot
+    draw must not look pressable, because a pill that highlights under the
+    pointer and then does nothing is worse than one that never invited the
+    click. Nothing here decides *which* of the two a chip is — the caller
+    knows whether it has somewhere to go.
+    """
+    return mn.group(
+        rx.icon(icon, size=12),
+        mn.text(text, class_name="ma-chip-text"),
+        gap=5,
+        align="center",
+        wrap="nowrap",
+        class_name=(
+            "ma-chip-pill ma-chip-link"
+            if "on_click" in props
+            else "ma-chip-pill ma-chip-inert"
+        ),
+        **props,
     )

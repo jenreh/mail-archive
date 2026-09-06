@@ -8,7 +8,7 @@ render unstyled.
 """
 
 import json
-from typing import Any
+from typing import Any, get_args
 
 import reflex as rx
 
@@ -16,6 +16,7 @@ from mailarc_ui.kit import (
     FIELD_GAP,
     LABEL_GAP,
     VISIBLE_ROWS,
+    MessageTone,
     attachment_card,
     avatar_initials,
     count_chip,
@@ -33,6 +34,7 @@ from mailarc_ui.kit import (
     list_row,
     message,
     meter_bar,
+    multi_select_field,
     number_field,
     password_field,
     pill_action,
@@ -50,13 +52,34 @@ from mailarc_ui.kit import (
     soft_button,
     spinner,
     status_badge,
+    toast,
     toned_message,
 )
+from mailarc_ui.kit.toast import DURATION_MS, LEVELS, POSITION
+from mailarc_ui.search.state import MailSearchState
+
+TONES: tuple[MessageTone, ...] = ("failure", "warning", "success", "note")
+"""The four every tone table in the kit is checked against."""
+
+POINTER_EVENTS = r"rightSectionPointerEvents:\"all\""
+"""How that prop reads in a dumped render — the quotes are JSON's escaping."""
+
+_HANDLER = MailSearchState
+"""A real state to bind an event and a value to.
+
+The kit takes handlers rather than flags, so a test of one needs a state that
+actually has them; the search page's is the one that uses these two.
+"""
 
 
 def _rendered(component: Any) -> str:
     """One component's whole render tree, as something searchable."""
     return json.dumps(component.render(), default=str)
+
+
+def _script(event: Any) -> str:
+    """The JavaScript a toast event runs — where its level and sentence are."""
+    return " ".join(str(value) for _, value in event.args)
 
 
 def _class_of(component: Any) -> str:
@@ -82,6 +105,15 @@ class TestFieldLabel:
 
     def test_no_hint_renders_no_hint(self) -> None:
         assert "ma-field-hint" not in _rendered(field_label("Sender"))
+
+    def test_a_hint_can_be_a_control_rather_than_a_sentence(self) -> None:
+        """The slot's second job: a switch that says how to read the field
+        under it belongs across from its label, not in a row of its own. It is
+        drawn as it stands — no ``ma-field-hint``, because it is not text."""
+        drawn = _rendered(field_label("To", hint=range_switch(data=["all", "any"])))
+
+        assert "ma-range" in drawn
+        assert "ma-field-hint" not in drawn
 
     def test_a_hint_the_browser_decides_is_drawn_conditionally(self) -> None:
         """A generated field marks itself required, and only the provider that
@@ -114,6 +146,13 @@ class TestFields:
 
         assert "ma-field" in drawn
         assert "filled" in drawn
+
+    def test_multi_select_field(self) -> None:
+        drawn = _rendered(multi_select_field(label="To", data=["bob@example.com"]))
+
+        assert "ma-field" in drawn
+        assert "filled" in drawn
+        assert "MultiSelect" in drawn
 
     def test_date_field(self) -> None:
         drawn = _rendered(date_field(label="From"))
@@ -149,6 +188,35 @@ class TestFields:
     def test_a_callers_variant_still_wins(self) -> None:
         """``filled`` is the recipe's default, not a rule the kit enforces."""
         assert "unstyled" in _rendered(input_field(variant="unstyled"))
+
+
+class TestClearingAtextBox:
+    """What Mantine gives a Select through ``clearable`` and a text box not at
+    all: one gesture that empties the field."""
+
+    def test_a_box_with_no_handler_wears_no_button(self) -> None:
+        assert "CloseButton" not in _rendered(input_field(label="Search", value="x"))
+
+    def test_the_button_is_mantine_s_own_in_the_right_section(self) -> None:
+        """``pointer-events`` included: Mantine's right section ignores clicks
+        by default, and a clear button that cannot be clicked is worse than
+        none — it looks like the feature is there and broken."""
+        drawn = _rendered(
+            input_field(label="Search", value="x", on_clear=_HANDLER.clear_query)
+        )
+
+        assert "CloseButton" in drawn
+        assert POINTER_EVENTS in drawn
+
+    def test_it_is_drawn_only_while_there_is_something_to_clear(self) -> None:
+        """A control that is always there and does nothing half the time reads
+        as broken. Read off the compiled condition, because ``rx.cond`` keeps
+        both branches: a constant value decides which one runs."""
+        empty = _rendered(input_field(value="", on_clear=_HANDLER.clear_query))
+        filled = _rendered(input_field(value="x", on_clear=_HANDLER.clear_query))
+
+        assert "(false ? " in empty
+        assert "(true ? " in filled
 
 
 class TestTheNoteUnderAControl:
@@ -443,6 +511,39 @@ class TestMessages:
 
         assert "LucideTriangleAlert" in drawn
         assert "light" in drawn
+
+
+class TestToasts:
+    """The tones again, for news that goes away instead of staying put."""
+
+    def test_each_tone_reaches_sonner_as_its_own_level(self) -> None:
+        """The level is the colour and the glyph. A finished run that dropped
+        mail and arrived green would read as a success to everybody."""
+        seen = {tone: _script(toast("x", tone)) for tone in TONES}
+
+        assert '["error"]' in seen["failure"]
+        assert '["warning"]' in seen["warning"]
+        assert '["success"]' in seen["success"]
+        assert '["info"]' in seen["note"]
+
+    def test_every_tone_the_alerts_have_can_also_be_a_toast(self) -> None:
+        """One vocabulary in two lifetimes. A tone added to ``message`` and not
+        here fails at the call site with a ``KeyError`` and nowhere else."""
+        assert set(LEVELS) == set(get_args(MessageTone))
+
+    def test_a_toast_says_where_it_goes_and_how_long_it_stays(self) -> None:
+        """Both are the module's to decide, not the call site's: two toasts
+        about one press arriving in different corners are two notifications."""
+        drawn = _script(toast("Finished: synced 12 messages.", "success"))
+
+        assert f'"{POSITION}"' in drawn
+        assert str(DURATION_MS) in drawn
+        assert "Finished: synced 12 messages." in drawn
+
+    def test_a_call_site_can_still_override_one(self) -> None:
+        """``setdefault`` and not an assignment — a long report somebody has to
+        read is the case that will want it."""
+        assert "20000" in _script(toast("x", "note", duration=20000))
 
 
 class TestBadges:

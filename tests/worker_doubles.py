@@ -235,3 +235,10 @@ def a_derive_job(job_id: int = 1) -> SyncJob:
     return SyncJob(
         id=job_id, kind=JobKind.DERIVE, state=JobState.RUNNING, account_id=None
     )
+
+
+def a_repair_job(job_id: int = 1) -> SyncJob:
+    """A job about the whole archive, which is why it names no account."""
+    return SyncJob(
+        id=job_id, kind=JobKind.REPAIR, state=JobState.RUNNING, account_id=None
+    )

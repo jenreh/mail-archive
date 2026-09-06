@@ -1,4 +1,4 @@
-"""The sandbox in the root ``conftest.py``, pinned so it cannot rot silently.
+"""The sandbox in ``tests/sandbox_plugin.py``, pinned so it cannot rot silently.
 
 Every other test in this repository is protected by that file, which makes it
 the one piece of test infrastructure whose failure is invisible: if the
@@ -22,12 +22,13 @@ things passed for months while doing nothing:
 Both are now asserted by planting the condition and reading what a config
 answers.
 
-The root conftest is reached through pytest's plugin manager rather than with
-``import conftest``. That import binds to whichever ``conftest.py`` reached
-``sys.modules`` first, which in a repository-wide run is a component's — the
-same trap ``components/mailarc-analytics/tests/planted_graph.py`` documents.
-Registered plugins are keyed by absolute path, so asking for the root one by
-path is the only form that means the same thing alone and in a full run.
+The plugin is reached through pytest's plugin manager rather than with a plain
+``import``. Asking the manager is what makes this an assertion about the run
+that is actually happening: an import would hand back the module whether or not
+pytest ever loaded it, so deleting ``-p tests.sandbox_plugin`` from ``addopts``
+— which unseals every test in the repository — would leave this file green.
+:func:`test_the_plugin_is_registered_under_its_addopts_name` states that
+separately, because every other test here would still pass by importing.
 """
 
 import os
@@ -43,17 +44,34 @@ from mailarc_analytics import AnalyticsConfig
 from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.graph.config import GraphConfig
 
+PLUGIN = "tests.sandbox_plugin"
+"""The name ``pyproject.toml``'s ``addopts`` registers the sandbox under."""
+
 REAL_STORE = Path(".state/mailstore").resolve()
 REAL_GRAPH_DATA = Path(".state/falkordb").resolve()
 
 
 @pytest.fixture
 def sandbox(request: pytest.FixtureRequest) -> Any:
-    """The root ``conftest.py``, fetched by path so the name cannot collide."""
-    root = str(request.config.rootpath / "conftest.py")
-    plugin = request.config.pluginmanager.get_plugin(root)
-    assert plugin is not None, f"the root conftest is not a registered plugin: {root}"
+    """The sandbox plugin, fetched from the run that is actually happening."""
+    plugin = request.config.pluginmanager.get_plugin(PLUGIN)
+    assert plugin is not None, f"the sandbox plugin is not registered: {PLUGIN}"
     return plugin
+
+
+def test_the_plugin_is_registered_under_its_addopts_name(
+    pytestconfig: pytest.Config,
+) -> None:
+    """The one assertion an ``import`` could not make.
+
+    Every other test in this file reads the sandbox through the :func:`sandbox`
+    fixture, and a fixture that imported the module instead would keep them all
+    green with the plugin unloaded — which is the state in which nothing is
+    sealed. So the registration is asserted on its own, by the name ``addopts``
+    uses, against the ``addopts`` that named it.
+    """
+    assert pytestconfig.pluginmanager.get_plugin(PLUGIN) is not None
+    assert f"-p {PLUGIN}" in " ".join(pytestconfig.getini("addopts"))
 
 
 class TestADefaultBuiltConfigLandsInTheSandbox:

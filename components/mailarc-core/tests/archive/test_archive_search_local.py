@@ -2,7 +2,8 @@
 
 `test_archive_search.py` pins the compiled statements with canned rows; this
 file is what makes each filter a claim about a graph: eight messages across
-two accounts, three senders, a Cc mix, an attachment mix and two UTC offsets
+two accounts, three senders, a Cc mix, an attachment mix in two file types
+and two UTC offsets
 go in through :class:`MessageArchiver`, and every filter has to *narrow* that
 corpus live — including the two behaviours only a real store can prove, the
 lexicographic wall-clock date range and full-text matching composed with
@@ -48,11 +49,30 @@ FULLTEXT_INDEX = (
 )
 """The index the baseline migration creates, issued by the planting fixture."""
 
-ATTACHMENT = (
-    '--BOUND\r\nContent-Type: application/pdf; name="anhang.pdf"\r\n'
-    'Content-Disposition: attachment; filename="anhang.pdf"\r\n'
-    "Content-Transfer-Encoding: base64\r\n\r\nSGVsbG8gUERG\r\n"
-)
+PDF = "application/pdf"
+PNG = "image/png"
+"""The two content types the corpus carries, so the file filter has something
+to tell apart. One kind would prove only that the traversal runs."""
+
+ATTACHED = {PDF: "SGVsbG8gUERG", PNG: "SGVsbG8gUE5H"}
+"""One payload per type — different bytes, so two nodes. See :func:`part`."""
+
+
+def part(content_type: str, payload: str = "SGVsbG8gUERG") -> str:
+    """One attachment part, named after the type it declares.
+
+    ``payload`` is a parameter because an ``Attachment`` node is keyed by the
+    **sha256 of its bytes**: two parts carrying the same base64 are one node
+    however they are labelled, so a corpus that wanted two content types out
+    of one payload would silently get one. The same reason a message needing
+    two attachment *edges* has to carry two different files.
+    """
+    name = "anhang." + content_type.rpartition("/")[2]
+    return (
+        f'--BOUND\r\nContent-Type: {content_type}; name="{name}"\r\n'
+        f'Content-Disposition: attachment; filename="{name}"\r\n'
+        f"Content-Transfer-Encoding: base64\r\n\r\n{payload}\r\n"
+    )
 
 
 def eml(
@@ -64,7 +84,7 @@ def eml(
     subject: str,
     body: str,
     cc: str | None = None,
-    attach: bool = False,
+    attach: str = "",
 ) -> bytes:
     headers = [f"From: {sender}", f"To: {to}"]
     if cc:
@@ -79,7 +99,7 @@ def eml(
         headers.append('Content-Type: multipart/mixed; boundary="BOUND"')
         payload = (
             '--BOUND\r\nContent-Type: text/plain; charset="utf-8"\r\n\r\n'
-            f"{body}\r\n" + ATTACHMENT + "--BOUND--\r\n"
+            f"{body}\r\n" + part(attach, ATTACHED[attach]) + "--BOUND--\r\n"
         )
     else:
         headers.append('Content-Type: text/plain; charset="utf-8"')
@@ -109,7 +129,7 @@ CORPUS: list[tuple[bytes, str, tuple[LabelInfo, ...]]] = [
             date="Thu, 05 Mar 2026 10:00:00 +0000",
             subject="Angebot 2",
             body="Das Angebot als Anhang.",
-            attach=True,
+            attach=PDF,
         ),
         "7",
         (
@@ -151,7 +171,7 @@ CORPUS: list[tuple[bytes, str, tuple[LabelInfo, ...]]] = [
             date="Sat, 07 Mar 2026 08:00:00 +0000",
             subject="Rechnung April",
             body="Rechnung im Anhang.",
-            attach=True,
+            attach=PNG,
         ),
         "8",
         (),
@@ -189,7 +209,7 @@ CORPUS: list[tuple[bytes, str, tuple[LabelInfo, ...]]] = [
             date="Tue, 10 Mar 2026 11:00:00 +0000",
             subject="Termin",
             body="Besprechung am Freitag.",
-            attach=True,
+            attach=PDF,
         ),
         "7",
         (),
@@ -247,18 +267,39 @@ class TestTheStructuredFilters:
         assert all(hit.relevance is None for hit in page.hits)
 
     def test_a_sender_filter_narrows_to_that_address(self, planted, reader) -> None:
-        page = reader.search_messages(SearchFilters(sender="anna"))
+        page = reader.search_messages(SearchFilters(senders=("Anna@Example.com",)))
 
         assert subjects(page) == ["Nachtrag", "Angebot 3", "Angebot 2", "Angebot 1"]
         assert page.total == 4
 
-    def test_a_sender_domain_narrows_by_containment(self, planted, reader) -> None:
-        page = reader.search_messages(SearchFilters(sender="@firma.de"))
+    def test_several_senders_mean_any_of_them(self, planted, reader) -> None:
+        """The only reading there is: a message has one sender, so picking two
+        addresses widens the field rather than narrowing it — Anna's four and
+        Erik's one, and none of Carl's three."""
+        page = reader.search_messages(
+            SearchFilters(senders=("anna@example.com", "erik@example.com"))
+        )
 
-        assert subjects(page) == ["Termin", "Rechnung April", "Rechnung März"]
+        assert subjects(page) == [
+            "Nachtrag",
+            "Projekt Angebot Rechnung",
+            "Angebot 3",
+            "Angebot 2",
+            "Angebot 1",
+        ]
+        assert page.total == 5
+
+    def test_half_an_address_is_not_that_address(self, planted, reader) -> None:
+        """The **From** field is a picker over the archive's own addresses, so
+        the filter matches one whole key — a fragment matches nothing rather
+        than everything it is a fragment of."""
+        page = reader.search_messages(SearchFilters(senders=("anna",)))
+
+        assert subjects(page) == []
+        assert page.total == 0
 
     def test_a_recipient_filter_reaches_cc_as_well_as_to(self, planted, reader) -> None:
-        page = reader.search_messages(SearchFilters(recipient="dora"))
+        page = reader.search_messages(SearchFilters(recipients=(DORA,)))
 
         assert subjects(page) == [
             "Projekt Angebot Rechnung",
@@ -268,13 +309,39 @@ class TestTheStructuredFilters:
         ]
         assert page.total == 4
 
+    def test_all_of_them_means_the_message_reached_every_one(
+        self, planted, reader
+    ) -> None:
+        """Bob *and* Dora — three messages carry both, in either order of To
+        and Cc, and the five that carry only one of them are gone."""
+        page = reader.search_messages(
+            SearchFilters(recipients=(BOB, DORA), recipients_all=True)
+        )
+
+        assert subjects(page) == [
+            "Projekt Angebot Rechnung",
+            "Rechnung April",
+            "Angebot 2",
+        ]
+        assert page.total == 3
+
+    def test_any_of_them_means_the_message_reached_one(self, planted, reader) -> None:
+        """The same two addresses, the other reading of the switch: every
+        message in the corpus reached one or the other."""
+        page = reader.search_messages(
+            SearchFilters(recipients=(BOB, DORA), recipients_all=False), limit=50
+        )
+
+        assert page.total == 8
+
     def test_the_recipient_fan_out_never_doubles_a_message(
         self, planted, reader
     ) -> None:
-        """``@`` matches every recipient, so a message with a To *and* a Cc
-        is two pattern rows — the page and the total must still count it
-        once."""
-        page = reader.search_messages(SearchFilters(recipient="@"), limit=50)
+        """A message with a To *and* a Cc among the picks is two pattern rows
+        — the page and the total must still count it once."""
+        page = reader.search_messages(
+            SearchFilters(recipients=(BOB, DORA), recipients_all=False), limit=50
+        )
 
         found = [hit.summary.id for hit in page.hits]
         assert len(found) == len(set(found)) == 8
@@ -298,11 +365,68 @@ class TestTheStructuredFilters:
         assert without.total == 5
         assert "Termin" not in subjects(without)
 
+    def test_a_file_type_narrows_to_the_messages_carrying_one(
+        self, planted, reader
+    ) -> None:
+        """The claim the tri-state above cannot make: three messages carry a
+        file and they do not all carry the *same* file."""
+        pdfs = reader.search_messages(SearchFilters(attachment_types=(PDF,)))
+        pictures = reader.search_messages(SearchFilters(attachment_types=(PNG,)))
+
+        assert sorted(subjects(pdfs)) == ["Angebot 2", "Termin"]
+        assert subjects(pictures) == ["Rechnung April"]
+
+    def test_several_file_types_mean_any_of_them(self, planted, reader) -> None:
+        """One file has one content type, so *all of these* is a question with
+        no answer — the same asymmetry the sender field has."""
+        page = reader.search_messages(SearchFilters(attachment_types=(PDF, PNG)))
+
+        assert sorted(subjects(page)) == ["Angebot 2", "Rechnung April", "Termin"]
+
+    def test_a_type_nothing_carries_narrows_to_nothing(self, planted, reader) -> None:
+        """Not to everything: an unset filter and a filter nothing satisfies
+        are different questions, and the form only offers types the archive
+        holds precisely so a reader never asks this one."""
+        page = reader.search_messages(
+            SearchFilters(attachment_types=("application/zip",))
+        )
+
+        assert page.hits == ()
+
+    def test_a_message_with_two_matching_files_is_listed_once(
+        self, planted, reader, config, store, blobs
+    ) -> None:
+        """The traversal fans out — one row per matching file — so a message
+        carrying two PDFs would be two hits without the deduplication the
+        listing already does for the recipients' *any* reading."""
+        raw = eml(
+            9,
+            sender=ANNA,
+            to=BOB,
+            date="Wed, 11 Mar 2026 09:00:00 +0000",
+            subject="Zwei Anhaenge",
+            body="beide als PDF.",
+            attach=PDF,
+        )
+        raw = raw.replace(
+            b"--BOUND--\r\n",
+            part(PDF, "WndlaXRlcyBQREY=").encode() + b"--BOUND--\r\n",
+        )
+        with client.session(config) as graph:
+            blobs.put(raw, BlobKind.MESSAGE)
+            MessageArchiver(store).archive(
+                graph, parse_message(raw), source(9, "7", ())
+            )
+
+        page = reader.search_messages(SearchFilters(attachment_types=(PDF,)))
+
+        assert subjects(page).count("Zwei Anhaenge") == 1
+
     def test_filters_compose_and_the_result_keeps_its_labels(
         self, planted, reader
     ) -> None:
         page = reader.search_messages(
-            SearchFilters(sender="anna", has_attachments=True)
+            SearchFilters(senders=("anna@example.com",), has_attachments=True)
         )
 
         assert subjects(page) == ["Angebot 2"]
@@ -310,12 +434,221 @@ class TestTheStructuredFilters:
         assert [one.name for one in page.hits[0].summary.labels] == ["Kunden"]
 
     def test_a_structured_page_cuts_after_deduplication(self, planted, reader) -> None:
-        first = reader.search_messages(SearchFilters(sender="anna"), limit=2)
-        rest = reader.search_messages(SearchFilters(sender="anna"), limit=2, offset=2)
+        anna = SearchFilters(senders=("anna@example.com",))
+        first = reader.search_messages(anna, limit=2)
+        rest = reader.search_messages(anna, limit=2, offset=2)
 
         assert subjects(first) == ["Nachtrag", "Angebot 3"]
         assert subjects(rest) == ["Angebot 2", "Angebot 1"]
         assert first.total == rest.total == 4
+
+
+class TestTheAddressesTheFormCanOffer:
+    def test_senders_are_who_actually_sent_something(self, planted, reader) -> None:
+        """Busiest first: Anna sent four, Carl three, Erik one. Bob and Dora
+        are in this archive and are not senders, so **From** cannot offer a
+        filter that would match nothing."""
+        offered = reader.known_addresses()
+
+        assert offered.senders == (
+            "anna@example.com",
+            "carl@firma.de",
+            "erik@example.com",
+        )
+
+    def test_recipients_count_a_cc_and_never_a_sender(self, planted, reader) -> None:
+        """Bob is on seven messages, Dora on four — Dora's To and Cc both
+        count, and neither of them ever sent one."""
+        offered = reader.known_addresses()
+
+        assert offered.recipients == ("bob@example.com", "dora@firma.de")
+
+    def test_every_offered_address_actually_narrows(self, planted, reader) -> None:
+        """The claim the split is for: each option, picked in its own field,
+        comes back with messages rather than with nothing."""
+        offered = reader.known_addresses()
+
+        for one in offered.senders:
+            assert reader.search_messages(SearchFilters(senders=(one,))).total > 0
+        for one in offered.recipients:
+            assert reader.search_messages(SearchFilters(recipients=(one,))).total > 0
+
+
+class TestTheFileTypesTheFormCanOffer:
+    def test_every_type_the_archive_holds_is_offered(self, planted, reader) -> None:
+        assert set(reader.known_attachments().content_types) == {PDF, PNG}
+
+    def test_the_commonest_type_comes_first(self, planted, reader) -> None:
+        """A picker cut to its first options has to show the ones worth
+        showing; the corpus carries two PDFs and one picture."""
+        assert reader.known_attachments().content_types[0] == PDF
+
+    def test_every_offered_type_actually_narrows(self, planted, reader) -> None:
+        """The bargain the picker strikes: an option that returns nothing
+        reads as an empty archive rather than as a filter nobody can meet."""
+        for content_type in reader.known_attachments().content_types:
+            page = reader.search_messages(
+                SearchFilters(attachment_types=(content_type,))
+            )
+            assert page.hits, content_type
+
+    def test_an_archive_with_no_files_offers_nothing(self, reader, config) -> None:
+        """Unplanted on purpose — no ``planted`` fixture. An empty answer and
+        not an error, which is what lets the form leave the field out."""
+        assert reader.known_attachments().content_types == ()
+
+
+BLOB = "application/octet-stream"
+"""What several mail programs send for every attachment — a shrug."""
+
+INVOICE = "Rechnung.pdf"
+"""A PDF the sender declined to type. The only thing that says *PDF* about it
+is its name, and the picker has to read that or miss it."""
+
+LOGO = "image/png"
+"""The signature picture the HTML pulls in by ``cid:`` — stored like any other
+part, shown by no mail client as a file."""
+
+
+def filed(number: int, *, subject: str, part: str) -> bytes:
+    """One message carrying exactly one MIME part, written out whole.
+
+    Its own builder rather than :func:`eml`'s ``attach``: what these tests are
+    about is the *shape* of a part — a name without a type, a Content-ID
+    without a name — and that is precisely what a corpus keyed on content type
+    cannot express.
+    """
+    return (
+        "\r\n".join(
+            [
+                f"From: {ANNA}",
+                f"To: {BOB}",
+                f"Subject: {subject}",
+                "Date: Mon, 09 Mar 2026 09:00:00 +0000",
+                f"Message-ID: <f{number}@example.com>",
+                "MIME-Version: 1.0",
+                'Content-Type: multipart/mixed; boundary="BOUND"',
+            ]
+        )
+        + "\r\n\r\n"
+        + '--BOUND\r\nContent-Type: text/plain; charset="utf-8"\r\n\r\nText\r\n'
+        + part
+        + "--BOUND--\r\n"
+    ).encode()
+
+
+FILES: list[bytes] = [
+    filed(
+        1,
+        subject="Die Rechnung",
+        part=(
+            f'--BOUND\r\nContent-Type: {BLOB}; name="{INVOICE}"\r\n'
+            f'Content-Disposition: attachment; filename="{INVOICE}"\r\n'
+            "Content-Transfer-Encoding: base64\r\n\r\nUmVjaG51bmc=\r\n"
+        ),
+    ),
+    filed(
+        2,
+        subject="Das Angebot",
+        part=(
+            f'--BOUND\r\nContent-Type: {PDF}; name="angebot.pdf"\r\n'
+            'Content-Disposition: attachment; filename="angebot.pdf"\r\n'
+            "Content-Transfer-Encoding: base64\r\n\r\nQW5nZWJvdA==\r\n"
+        ),
+    ),
+    filed(
+        3,
+        subject="Nur eine Signatur",
+        part=(
+            f"--BOUND\r\nContent-Type: {LOGO}\r\n"
+            "Content-Disposition: inline\r\n"
+            "Content-ID: <logo@example.com>\r\n"
+            "Content-Transfer-Encoding: base64\r\n\r\nUE5H\r\n"
+        ),
+    ),
+]
+"""Three messages, one file each: a shrug with a name, a stated type, and a
+logo that is neither."""
+
+
+@pytest.fixture
+def files(config: GraphConfig, store: ArchiveConfig, blobs: BlobStore) -> None:
+    """:func:`planted`'s corpus is eight messages every other test counts, so
+    the file shapes get a graph of their own rather than shifting those."""
+    archiver = MessageArchiver(store)
+    with client.session(config) as graph:
+        graph.execute(FULLTEXT_INDEX)
+        for number, raw in enumerate(FILES, start=1):
+            blobs.put(raw, BlobKind.MESSAGE)
+            archiver.archive(graph, parse_message(raw), source(number, "7", ()))
+
+
+class TestTheFilesTheFormCanOffer:
+    """What the picker may show, on an archive holding the three shapes a real
+    one holds. The rule under all of it: the picker offers exactly what the
+    filter can find, because both are built from the same two lists."""
+
+    def test_a_stated_type_is_offered_as_a_type(self, files, reader) -> None:
+        assert reader.known_attachments().content_types == (PDF,)
+
+    def test_a_shrug_is_not_offered_as_a_type(self, files, reader) -> None:
+        """It would be one option standing for a folder of unrelated files —
+        and picking it would match every untyped file in the archive, which is
+        the one answer no picked family means."""
+        assert BLOB not in reader.known_attachments().content_types
+
+    def test_a_shrug_is_offered_under_its_name(self, files, reader) -> None:
+        assert reader.known_attachments().untyped_names == (INVOICE,)
+
+    def test_a_cid_logo_is_offered_as_neither(self, files, reader) -> None:
+        """No mail client shows a paperclip for it, and
+        ``Message.has_attachments`` already counts it out; a picker that
+        offered *Image* here would be offering the signature of every
+        newsletter in the archive."""
+        offered = reader.known_attachments()
+
+        assert LOGO not in offered.content_types
+        assert offered.untyped_names == (INVOICE,)
+
+    def test_every_offered_name_actually_narrows(self, files, reader) -> None:
+        """The bargain the types already keep, kept by the other list too."""
+        for name in reader.known_attachments().untyped_names:
+            assert reader.search_messages(SearchFilters(attachment_names=(name,))).hits
+
+
+class TestTheFileFilterItself:
+    def test_a_name_finds_the_message_carrying_that_file(self, files, reader) -> None:
+        page = reader.search_messages(SearchFilters(attachment_names=(INVOICE,)))
+
+        assert subjects(page) == ["Die Rechnung"]
+
+    def test_a_type_and_a_name_are_one_pick_widened(self, files, reader) -> None:
+        """What picking **PDF** on the form expands into: the archive's PDF
+        content type *and* the name of the PDF nobody typed. ORed, so both
+        messages come back — the whole point of the second list."""
+        page = reader.search_messages(
+            SearchFilters(attachment_types=(PDF,), attachment_names=(INVOICE,))
+        )
+
+        assert subjects(page) == ["Die Rechnung", "Das Angebot"]
+
+    def test_a_type_alone_still_means_only_that_type(self, files, reader) -> None:
+        page = reader.search_messages(SearchFilters(attachment_types=(PDF,)))
+
+        assert subjects(page) == ["Das Angebot"]
+
+    def test_a_cid_logo_cannot_be_filtered_for(self, files, reader) -> None:
+        """Asked for directly — which the form cannot do, since it is never
+        offered — the message still does not come back: the statement drops
+        the embedded part rather than the picker merely hiding it."""
+        page = reader.search_messages(SearchFilters(attachment_types=(LOGO,)))
+
+        assert subjects(page) == []
+
+    def test_a_name_nothing_carries_finds_nothing(self, files, reader) -> None:
+        page = reader.search_messages(SearchFilters(attachment_names=("nichts.pdf",)))
+
+        assert subjects(page) == []
 
 
 class TestTheDateRange:
@@ -398,7 +731,9 @@ class TestTheFulltext:
     def test_text_composes_with_recipient_and_attachments(
         self, planted, reader
     ) -> None:
-        copied = reader.search_messages(SearchFilters(text="Angebot", recipient="dora"))
+        copied = reader.search_messages(
+            SearchFilters(text="Angebot", recipients=(DORA,))
+        )
         with_files = reader.search_messages(
             SearchFilters(text="Rechnung", has_attachments=True)
         )
@@ -424,7 +759,9 @@ class TestTheFulltext:
         assert len(found) == len(set(found)) == 5
 
     def test_hits_hydrate_with_sender_and_labels(self, planted, reader) -> None:
-        page = reader.search_messages(SearchFilters(text="Angebot", sender="anna"))
+        page = reader.search_messages(
+            SearchFilters(text="Angebot", senders=("anna@example.com",))
+        )
 
         by_subject = {hit.summary.subject: hit.summary for hit in page.hits}
         assert set(by_subject) == {"Angebot 1", "Angebot 2", "Angebot 3", "Nachtrag"}

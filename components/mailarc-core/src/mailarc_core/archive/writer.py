@@ -36,6 +36,7 @@ from mailarc_core.archive.model import (
     Label,
     Message,
     Thread,
+    thread_key,
     to_signed_64,
 )
 from mailarc_core.mail.model import (
@@ -269,7 +270,7 @@ def _thread_node(
     )
     if not thread_id:
         return None
-    key = f"{source.account_id}:{thread_id}"
+    key = thread_key(source.account_id, thread_id)
     node, _ = nodes.resolve(
         Thread, key, lambda: Thread(id=key, subject=message.subject)
     )

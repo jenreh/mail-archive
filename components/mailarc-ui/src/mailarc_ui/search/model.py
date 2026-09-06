@@ -155,6 +155,21 @@ tri-state: "either" is not a filter, "without" is one, and a box that is
 merely unticked cannot say which of the two it means.
 """
 
+MATCH_ALL = "all"
+MATCH_ANY = "any"
+"""The two positions of the switch over the **To** field.
+
+The field takes several addresses and they can mean two different questions —
+*reached every one of these* or *reached one of these* — and neither is a safe
+guess to make on somebody's behalf. Every other field on this form narrows, so
+:data:`MATCH_ALL` is the default; the switch is what makes the other reading
+askable rather than a rule a reader has to learn.
+
+**From** takes several addresses too and has no switch, because there is
+nothing to choose: a message has exactly one sender, so *from all of these* is
+a question with no answer and *from any of these* is the only reading.
+"""
+
 SEARCH_FAILED = (
     "The archive could not be searched right now. Its graph or the embedding "
     "service did not answer — check that the mail archive is running, then "
@@ -460,6 +475,25 @@ class SearchAnswer(BaseModel):
     than fetched separately so one frozen object still crosses the state lock.
     """
 
+    whole: dict[str, tuple[ResultRow, ...]] = {}
+    """The complete membership of every conversation this answer cut into.
+
+    A search answers with the messages that *matched*, and a conversation is
+    almost never wholly a match: one side of an exchange is the person's own
+    replies, which carry neither the sender nor the words they searched for.
+    Grouping those hits under a heading that then showed two of three messages
+    made the list say something true and useless — "there are three, here are
+    two" — so the missing members are read beside the page and carried here.
+
+    Members and not hits. They are drawn under their heading, they open like
+    any other row, and they are counted nowhere: :attr:`total` stays the number
+    of messages that matched, because that is what the question asked.
+
+    Empty unless the list is grouped by conversation — it is the only grouping
+    that knows a group's true size — and empty when every group on the page is
+    already whole.
+    """
+
     grouping: str = ""
     """The grouping :attr:`memberships` were read for.
 
@@ -510,6 +544,29 @@ def lines_of(
             rows, memberships, collapsed=collapsed, whole=whole, busy=busy
         )
     return _section_lines(rows, filed_by(rows, memberships, grouping), collapsed)
+
+
+def partial_conversations(
+    rows: Sequence[ResultRow], memberships: Mapping[str, Membership]
+) -> list[str]:
+    """The conversations this answer holds only part of, oldest group first.
+
+    What the page then reads in one go so that every group it draws is whole.
+    A group whose members are all here is left out — there is nothing to
+    fetch — and so is one whose ``total`` the read could not establish.
+
+    Pure, like everything else in this module: which groups are short is a
+    question about the answer, not about the graph.
+    """
+    counted: dict[str, int] = {}
+    totals: dict[str, int] = {}
+    for row in rows:
+        found = memberships.get(row.id)
+        if found is None or found.total <= 1:
+            continue
+        counted[found.group_id] = counted.get(found.group_id, 0) + 1
+        totals[found.group_id] = found.total
+    return [one for one, seen in counted.items() if seen < totals[one]]
 
 
 def filed_by(
@@ -753,31 +810,68 @@ def parse_date(value: str) -> datetime | None:
 def filters_of(
     *,
     query: str = "",
-    sender: str = "",
-    recipient: str = "",
+    senders: Sequence[str] = (),
+    recipients: Sequence[str] = (),
+    recipient_match: str = MATCH_ALL,
     date_from: str = "",
     date_to: str = "",
     attachments: str = ATTACH_ANY,
+    file_types: Sequence[str] = (),
+    file_names: Sequence[str] = (),
     account_id: str = "",
 ) -> SearchFilters:
     """One filled form as the archive reads it.
 
-    The one place the browser's strings become a query, so the two decisions
-    that would otherwise be spread over the form live here: an unrecognised
-    attachment segment is "either" rather than an error, and the **To** date
-    is stretched to the end of its day, because a person who picks the 30th
-    means through the 30th and a bound at midnight would drop everything sent
-    on it.
+    The one place the browser's strings become a query, so the decisions that
+    would otherwise be spread over the form live here: an unrecognised
+    attachment segment is "either" rather than an error, an unrecognised
+    recipient switch narrows rather than widens, and the **To** date is
+    stretched to the end of its day, because a person who picks the 30th means
+    through the 30th and a bound at midnight would drop everything sent on it.
+
+    Every field that is set narrows the same one answer — the archive ANDs
+    them — so filling in a second field can only ever make the result list
+    shorter. Several addresses *inside* one field widen that field: any of the
+    senders, any of the file types, and — where ``recipient_match`` says so —
+    any of the recipients.
+
+    ``file_types`` and ``file_names`` arrive already expanded from the families
+    the picker offered into the content types this archive holds and the names
+    of the files whose sender stated no type at all; see
+    :mod:`mailarc_ui.search.files` for why that expansion happens there and
+    not in the archive, and why one pick needs both halves.
     """
     return SearchFilters(
         text=query.strip(),
-        sender=sender.strip(),
-        recipient=recipient.strip(),
+        senders=_addresses(senders),
+        recipients=_addresses(recipients),
+        recipients_all=matches_all(recipient_match),
         sent_from=parse_date(date_from),
         sent_until=_end_of_day(parse_date(date_to)),
         has_attachments=_attachment_filter(attachments),
+        attachment_types=_addresses(file_types),
+        attachment_names=_addresses(file_names),
         account_id=account_id.strip(),
     )
+
+
+def _addresses(picked: Sequence[str]) -> tuple[str, ...]:
+    """One picker's value as the archive reads it — trimmed, blanks dropped.
+
+    Named for the two fields it was written for and used by the file picker
+    too: what a multi-select hands back is the same shape whatever it held.
+    """
+    return tuple(one.strip() for one in picked if one.strip())
+
+
+def matches_all(segment: str) -> bool:
+    """The switch as the archive reads it; anything unknown narrows.
+
+    The one place that value is narrowed, and it falls back to the *narrowing*
+    reading on purpose: a value nobody offered must not quietly widen a search
+    somebody is trusting to be narrow.
+    """
+    return segment != MATCH_ANY
 
 
 def _attachment_filter(segment: str) -> bool | None:

@@ -1,7 +1,7 @@
-"""What the worker makes of the two jobs that are about the whole archive.
+"""What the worker makes of the three jobs that are about the whole archive.
 
-``derive`` and ``embed`` name no account and open no mailbox, which is what
-separates them from the two kinds in ``test_worker.py``: there is no credential
+``derive``, ``embed`` and ``repair`` name no account and open no mailbox, which
+is what separates them from the two kinds in ``test_worker.py``: there is no credential
 to decrypt, no provider to close and nothing to schedule. What is left is the
 bridge — the work happens, its progress reaches the row a page is watching, a
 human can stop it, and a failure is left for the loop to classify under §7.6.
@@ -32,6 +32,7 @@ from mailarc_analytics.semantic import (
     EmbedRun,
     SemanticUnavailable,
 )
+from mailarc_core.archive.threads import ThreadRepairCounts
 from mailarc_core.mail.errors import MailTransientError
 from mailarc_sync.engine import ProviderRegistry
 from mailarc_sync.jobs import JobHandler, JobKind, SessionFactory
@@ -40,6 +41,7 @@ from tests.worker_doubles import (
     RecordingEngine,
     RecordingQueue,
     a_derive_job,
+    a_repair_job,
     an_embed_job,
 )
 
@@ -267,3 +269,94 @@ class TestTheEmbedJob:
 
         with pytest.raises(MailTransientError):
             await self._handler(explode)(an_embed_job(), RecordingQueue())
+
+
+REPAIRED = ThreadRepairCounts(scanned=847, linked=735, threads=714, unkeyed=2)
+"""What a repair hands back — the shape of it, not a measurement."""
+
+
+class RecordingRepair:
+    """Stands in for the repair: it says where it ran and what it found.
+
+    Whether an edge reaches the graph is settled in ``mailarc-core`` against a
+    real FalkorDB. What a job adds is the thread hop, and that is visible from
+    here.
+    """
+
+    def __init__(self) -> None:
+        self.ran = False
+        self.thread = threading.current_thread().name
+        self.saw_a_loop = True
+
+    def __call__(self) -> ThreadRepairCounts:
+        self.ran = True
+        self.thread = threading.current_thread().name
+        self.saw_a_loop = _has_a_running_loop()
+        return REPAIRED
+
+
+class TestTheRepairJob:
+    """The archive's conversations, given back to mail imported without them.
+
+    The edges themselves belong to ``mailarc-core`` and are proved there
+    against a real graph. What is only true here is the bridge: the walk
+    happens off the loop, it asks about no mailbox, and a failure is left for
+    the loop to classify.
+    """
+
+    @staticmethod
+    def _handler(
+        repair: worker.ConversationRepair,
+        session_factory: SessionFactory | None = None,
+    ) -> JobHandler:
+        def refuse() -> AsyncSession:
+            raise AssertionError("a repair job opened a relational session")
+
+        return worker.build_handlers(
+            RecordingEngine(),
+            ProviderRegistry(),
+            session_factory or cast(SessionFactory, refuse),
+            repair=repair,
+        )[JobKind.REPAIR]
+
+    async def test_the_repair_runs_off_the_event_loop(self) -> None:
+        """A walk over the whole archive through a blocking driver, on the loop
+        that answers the page watching it, is the page not answering."""
+        repair = RecordingRepair()
+
+        await self._handler(repair)(a_repair_job(), RecordingQueue())
+
+        assert repair.ran
+        assert repair.thread != threading.current_thread().name
+        assert not repair.saw_a_loop, "the repair ran on the event loop"
+
+    async def test_the_row_is_written_once_when_the_walk_is_over(self) -> None:
+        """A result, not a position. The row's three counters are messages —
+        scanned, filed, unkeyed — and all three are known only at the end, so
+        a bar built on them would sit at zero and then jump."""
+        queue = RecordingQueue()
+
+        await self._handler(RecordingRepair())(a_repair_job(job_id=7), queue)
+
+        assert queue.reports == [
+            (7, REPAIRED.linked, REPAIRED.unkeyed, REPAIRED.scanned)
+        ]
+
+    async def test_nothing_on_the_path_asks_which_account(self) -> None:
+        """``account_id`` is ``None``: a conversation is keyed per mailbox, but
+        the walk is over the archive."""
+        repair = RecordingRepair()
+
+        await self._handler(repair)(a_repair_job(), RecordingQueue())
+
+        assert repair.ran
+
+    async def test_a_failed_repair_is_left_for_the_loop_to_classify(self) -> None:
+        """§7.6 is the loop's to act on. Swallowing this would end the job as a
+        success over an archive that is still half unthreaded."""
+
+        def explode() -> ThreadRepairCounts:
+            raise RuntimeError("the graph went away mid-repair")
+
+        with pytest.raises(RuntimeError, match="graph went away"):
+            await self._handler(explode)(a_repair_job(), RecordingQueue())

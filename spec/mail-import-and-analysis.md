@@ -143,10 +143,14 @@ src/mailarc_core/
 ### 2.5 Bestehende Testkonventionen
 
 - Tests spiegeln die Package-Struktur (`tests/graph/test_status.py`).
-- `conftest.py` gibt es dreimal, jeweils mit einem eigenen Grund: im Wurzel-
-  verzeichnis der **Sandkasten** (leitet `app_*`-Konfiguration in ein
-  Temporärverzeichnis um und schlägt Alarm, falls ein Test doch `.state`
-  beschreibt), in `components/mailarc-core/tests/archive/` und
+- Der **Sandkasten** ist ein pytest-Plugin, nicht ein `conftest.py`:
+  `tests/sandbox_plugin.py`, registriert über `addopts = "-p tests.sandbox_plugin"`
+  in `pyproject.toml`. Er leitet `app_*`-Konfiguration in ein Temporärverzeichnis
+  um und schlägt Alarm, falls ein Test doch `.state` beschreibt. Ein Plugin,
+  weil er alle neun `testpaths` abdecken muss und ein `conftest.py` nur sein
+  eigenes Verzeichnis abdeckt.
+- `conftest.py` gibt es damit noch zweimal, jeweils mit einem eigenen Grund:
+  in `components/mailarc-core/tests/archive/` und
   `components/mailarc-analytics/tests/` je ein sitzungsweiter FalkorDB.
   Alles andere sind Fixtures in den Testmodulen selbst — ein Modul, das ein
   anderes per Namen braucht, bekommt ein eigenes (`corpus.py`,

@@ -250,10 +250,20 @@ def test_a_failed_run_exits_non_zero(
 
 def test_the_worker_runs_this_and_nothing_else(recorder: Recorder) -> None:
     """The handler's default, asserted rather than assumed: an embed job that
-    called something else would be a second way to configure an embedder."""
+    called something else would be a second way to configure an embedder.
+
+    Read off both default maps. The three work functions are keyword-only —
+    ``build_handlers`` takes six arguments and only the first three are ever
+    passed by position — so their defaults live in ``__kwdefaults__``, and a
+    check that looked only at ``__defaults__`` would go quietly green on the
+    day somebody removed the parameter altogether.
+    """
     from app import worker
 
-    parameters = worker.build_handlers.__defaults__ or ()
+    parameters = (
+        *(worker.build_handlers.__defaults__ or ()),
+        *(worker.build_handlers.__kwdefaults__ or {}).values(),
+    )
 
     assert embedding.embed in parameters
 

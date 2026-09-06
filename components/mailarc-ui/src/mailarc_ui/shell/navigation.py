@@ -31,6 +31,14 @@ colour at a time across the Var boundary, and the active item is not one
 colour: it is a background, a border, a radius, a shadow and a text colour
 together. One class in ``mail-archive.css`` says all of that once.
 
+**The one control that is not a page sits directly under the logo.** Sync is
+an action rather than a destination, so it is a button and not a rail entry —
+it has no ``href``, it is in no ``NavSection``, and it is drawn before the
+``MENU`` heading because everything under that heading is somewhere to go. The
+place is the mail client's own: it is where Compose sits, and for the same
+reason — the one thing a person came to press. It is built in
+:mod:`mailarc_ui.sync`, which is where what it does lives; the rail composes it.
+
 **Nothing inside an ``rx.link`` renders a second anchor.** React refuses
 nested interactive elements out loud on every page load — "<a> cannot contain
 a nested <a>. This will cause a hydration error" — which is what the previous
@@ -45,6 +53,7 @@ import reflex as rx
 
 from mailarc_ui.shell import routes
 from mailarc_ui.shell.model import NavItem, NavSection
+from mailarc_ui.sync import rail_sync_button
 
 NAVBAR_WIDTH = 76
 """What the shell reserves for the rail, in pixels."""
@@ -140,6 +149,17 @@ def _logo() -> rx.Component:
     )
 
 
+def _sync() -> rx.Component:
+    """The Sync button, in a section of its own between the logo and ``MENU``.
+
+    Its own ``app_shell.section`` rather than an extra child of the logo's, so
+    the rail's spacing stays the shell's arithmetic: the logo keeps its 18px
+    and this keeps whatever the next section brings, instead of the two sharing
+    a margin that has to be re-tuned every time either moves.
+    """
+    return mn.app_shell.section(rail_sync_button())
+
+
 def _bottom_slot() -> rx.Component:
 
     return mn.app_shell.section(
@@ -167,6 +187,7 @@ def app_sidebar() -> rx.Component:
     """
     return mn.app_shell.navbar(
         _logo(),
+        _sync(),
         *[_rail_section(section) for section in RAIL_SECTIONS],
         mn.app_shell.section(grow=True),
         _bottom_slot(),

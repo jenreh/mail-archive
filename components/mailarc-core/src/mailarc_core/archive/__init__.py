@@ -24,6 +24,9 @@ One module per concern, layered so nothing points back up:
     conversations it groups by, through runic's query builder.
 ``purge``
     ``purge_account`` — the writer's undo, for one mailbox and no other.
+``threads``
+    ``repair_threads`` — the conversations of mail archived before the writer
+    knew how to key one on a ``Message-ID``.
 ``reader``
     ``ArchiveReader`` — the listing back out, and the bytes of one message.
 ``tags``
@@ -55,6 +58,7 @@ from mailarc_core.archive.model import (
     TagSource,
     TagSummary,
     Thread,
+    thread_key,
     to_signed_64,
     to_unsigned_64,
 )
@@ -66,10 +70,16 @@ from mailarc_core.archive.reader import (
 )
 from mailarc_core.archive.repository import (
     AddressRepository,
+    AttachmentRepository,
     MessageRepository,
     ThreadRepository,
 )
 from mailarc_core.archive.tags import TagExists, TagRepository, TagStore, tag_id
+from mailarc_core.archive.threads import (
+    ThreadRepairCounts,
+    count_unthreaded,
+    repair_threads,
+)
 from mailarc_core.archive.writer import MessageArchiver
 
 __all__ = [
@@ -83,6 +93,7 @@ __all__ = [
     "ArchiveSource",
     "ArchivedFrom",
     "Attachment",
+    "AttachmentRepository",
     "BlobKind",
     "BlobStore",
     "Conversation",
@@ -104,10 +115,14 @@ __all__ = [
     "TagSummary",
     "Tagged",
     "Thread",
+    "ThreadRepairCounts",
     "ThreadRepository",
+    "count_unthreaded",
     "preview_of",
     "purge_account",
+    "repair_threads",
     "tag_id",
+    "thread_key",
     "to_signed_64",
     "to_unsigned_64",
 ]

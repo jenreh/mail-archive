@@ -813,6 +813,80 @@ html body,
   color: var(--ma-accent);
 }
 
+/* The Sync button under the logo. A rail item like the rest until it is
+ * working, and then the only moving thing in the column.
+ *
+ * `data-syncing` rather than a `style` dict assembled with `rx.cond`, for the
+ * reason `data-active` above gives one paragraph up: a spin is a keyframe, a
+ * duration and a timing function together, and a colour that crosses the Var
+ * boundary as a string can carry none of them.
+ *
+ * The rotation is on the glyph and the tint is on the square. Spinning the
+ * button itself would take its border, its background and — in the tooltip's
+ * eyes — its box with it, which is how a hovered spinner ends up chasing its
+ * own label around the rail.
+ */
+.ma-rail-sync.ma-rail-sync[data-syncing]:not([data-syncing="false"]) {
+  background: var(--ma-surface);
+  border-color: var(--ma-border);
+  color: var(--ma-accent);
+}
+
+.ma-rail-sync.ma-rail-sync[data-syncing]:not([data-syncing="false"]) svg {
+  animation: ma-spin 1.4s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+/* A press has to feel like one before the first poll comes back, and the
+ * first poll is up to three seconds away. */
+.ma-rail-sync.ma-rail-sync:active svg {
+  transform: rotate(-40deg);
+}
+
+.ma-rail-sync.ma-rail-sync svg {
+  transition: transform 120ms ease-out;
+}
+
+.ma-rail-sync.ma-rail-sync:disabled {
+  cursor: progress;
+}
+
+@keyframes ma-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Somebody who has asked their system not to animate things is not asking to
+ * be kept in the dark about whether their mail is arriving. The rotation goes;
+ * the tint stays, and a slow pulse says the same thing without moving anything
+ * across the screen.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .ma-rail-sync.ma-rail-sync[data-syncing]:not([data-syncing="false"]) svg {
+    animation: ma-breathe 2.4s ease-in-out infinite;
+  }
+
+  .ma-rail-sync.ma-rail-sync svg,
+  .ma-rail-sync.ma-rail-sync:active svg {
+    transition: none;
+    transform: none;
+  }
+
+  @keyframes ma-breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+}
+
 
 /* ── Form fields ─────────────────────────────────────────────────────────── */
 
@@ -945,6 +1019,27 @@ html body,
   background-color: var(--ma-surface-hover);
 }
 
+/* The bare glyph inside a line of text — the reading pane's way into the
+ * graph, hung beside the subject, the sender and every recipient.
+ *
+ * Faint by default and full strength on hover or focus. That is the whole
+ * design of it: a header carries several of these at once, and a row of live
+ * buttons would turn "who this went to" into a toolbar. Focus counts as well
+ * as hover, so a keyboard reaches what a pointer does.
+ */
+.ma-glyph-action.ma-glyph-action {
+  color: var(--ma-text-mute);
+  opacity: 0.55;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.ma-glyph-action.ma-glyph-action:hover,
+.ma-glyph-action.ma-glyph-action:focus-visible {
+  opacity: 1;
+  color: var(--ma-accent);
+  background: var(--ma-accent-soft);
+}
+
 /* ── The mail list row ───────────────────────────────────────────────────── */
 
 /* Hover is a wash; selection is the light-gray rounded-14 card. The attribute
@@ -1047,6 +1142,25 @@ html body,
   color: var(--ma-accent);
 }
 
+/* The pill that leads somewhere: the topic, tag or group the open message
+ * belongs to. Pressable ones lift under the pointer; a chip with nowhere to go
+ * wears `.ma-chip-inert` and stays flat, so the invitation is only ever there
+ * when the click does something.
+ */
+.ma-chip-link.ma-chip-link {
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.ma-chip-link.ma-chip-link:hover {
+  background: var(--ma-accent-soft);
+  color: var(--ma-accent);
+}
+
+.ma-chip-inert.ma-chip-inert {
+  cursor: default;
+}
+
 .ma-chip-text.ma-chip-text {
   font-size: 12px;
   font-weight: 500;
@@ -1106,6 +1220,26 @@ html body,
   padding: 10px 14px;
 }
 
+/* A card that opens the file it names. The lift on hover is the only signal
+ * that it is pressable — a card is not a button and should not grow a border
+ * to say so, but a file the reader can open has to look different from one
+ * they can only read the name of. */
+.ma-attachment-open.ma-attachment-open {
+  cursor: pointer;
+  transition: box-shadow 120ms ease, border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.ma-attachment-open.ma-attachment-open:hover {
+  border-color: var(--ma-accent);
+  box-shadow: var(--ma-shadow-pill);
+  transform: translateY(-1px);
+}
+
+.ma-attachment-open.ma-attachment-open:active {
+  transform: none;
+}
+
 /* The file-type glyph on its tinted square. */
 .ma-attachment-icon.ma-attachment-icon {
   width: 36px;
@@ -1134,19 +1268,49 @@ html body,
   text-overflow: ellipsis;
 }
 
+/* ── The attachment preview panel ────────────────────────────────────────── */
+
+/* The two facts the drawer's title does not carry. Quiet, on one line, and
+ * tabular so that a column of sizes lines up when several files are opened in
+ * turn. */
+.ma-preview-type.ma-preview-type {
+  font-size: 12px;
+  color: var(--ma-text-dim);
+  font-family: "Roboto Mono", ui-monospace, monospace;
+}
+
+.ma-preview-size.ma-preview-size {
+  font-size: 12px;
+  color: var(--ma-text-mute);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── The reading pane ────────────────────────────────────────────────────── */
 
-/* The header block: avatar, sender and address on the left, date right, the
- * subject under them. Its inset comes from the reading column that holds it —
- * that box is already padded, and stating it twice would push the block a
- * second time — so this rule carries only the room under the subject and the
- * hairline that closes the block off from the body.
+/* The header block, in a mail client's order: the subject on top, then the
+ * avatar with sender and recipients beside it and the date opposite. Its
+ * inset comes from the reading column that holds it — that box is already
+ * padded, and stating it twice would push the block a second time — so this
+ * rule carries only the room under the block and the hairline that closes it
+ * off from the body.
  */
 .ma-reading-header.ma-reading-header {
   border-bottom: 1px solid var(--ma-border);
   padding-bottom: 16px;
 }
 
+/* The sender's name, and after it the address it stands for. Both are flex
+ * items on one line, and the order in which they give way is the whole point
+ * of these two rules: `Rehpöhler, Jens <jens.rehpoehler@bertelsmann.de>` in a
+ * pane a little too narrow shrank BOTH boxes in proportion to their content
+ * and printed `Rehpöhler… <jens.rehpoehler@bertel…`, which loses the one
+ * thing a reader is looking for.
+ *
+ * So the name does not shrink at all and the address takes the whole of the
+ * squeeze — down to nothing, if the name needs the line. `max-width: 100%` is
+ * what keeps a runaway name inside the row: it caps the box at the line's own
+ * width, so the ellipsis still lands rather than pushing the date off.
+ */
 .ma-reading-sender.ma-reading-sender {
   font-size: 14px;
   font-weight: 600;
@@ -1154,6 +1318,8 @@ html body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 0;
+  max-width: 100%;
 }
 
 .ma-reading-address.ma-reading-address {
@@ -1163,20 +1329,70 @@ html body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
+/* The date closes the sender's line off at the far right. `margin-left: auto`
+ * rather than a spacer element, and it never shrinks: the one thing on that
+ * line that must not be abbreviated is the one nobody can guess.
+ */
 .ma-reading-date.ma-reading-date {
   font-size: 13px;
   font-weight: 400;
   color: var(--ma-text-dim);
   white-space: nowrap;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
+/* The subject leads the block, so it is the largest type on the pane — but a
+ * shade under the old 24/700, which competed with the page's own heading now
+ * that it sits at the top rather than under the sender.
+ */
 .ma-reading-subject.ma-reading-subject {
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1.25;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.3;
   color: var(--ma-text);
+}
+
+/* The `To:` and `Cc:` lines under the sender: one quiet sentence each, set a
+ * step smaller than the name they belong to. The label never shrinks, so a
+ * long list of addresses wraps in its own box and the prefix stays put.
+ */
+.ma-reading-recipient-label.ma-reading-recipient-label {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ma-text-dim);
+  flex-shrink: 0;
+}
+
+.ma-reading-recipients.ma-reading-recipients {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ma-text-dim);
+}
+
+/* The two rows that close the header off: what the message belongs to, and
+ * what came with it. Both are given air above them rather than the column's
+ * own gap, because they are a different kind of thing from the four lines of
+ * addressing above — one is what the archive made of the mail, the other is
+ * files.
+ */
+.ma-reading-chips.ma-reading-chips,
+.ma-reading-files.ma-reading-files {
+  margin-top: 8px;
+}
+
+/* The way out of the chip's small canvas and into the explorer. */
+.ma-chip-graph-link.ma-chip-graph-link {
+  align-self: flex-start;
+  color: var(--ma-text-dim);
+  text-decoration: none;
+}
+
+.ma-chip-graph-link.ma-chip-graph-link:hover {
+  color: var(--ma-accent);
 }
 
 /* Body type for text the pane renders itself — the plain-text and source

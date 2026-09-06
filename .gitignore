@@ -134,3 +134,4 @@ src-tauri/icons/
 # OAuth client secrets / tokens of the prototypes
 **/token.json
 **/*secret*.json
+.web-agent/

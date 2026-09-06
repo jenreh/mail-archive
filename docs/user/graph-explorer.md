@@ -91,8 +91,10 @@ depth or expanding a node reads again.
 
 The right column answers in the terms the picked node deserves.
 
-- **A message** opens the reading pane, the same two tabs the search page uses,
-  with the tags it wears above them. You can add or remove a tag here.
+- **A message** opens the reading pane, the same tabs the search page uses,
+  with the tags it wears above them. You can add or remove a tag here, and the
+  chips in the message's own header open its topic or one of its tags in a tab
+  of their own — the same picture as the canvas beside it, at reading size.
 - **A topic or a circle** shows what the store holds about it, a form that turns
   it into a tag, and the members that are drawn on the canvas. The table lists
   what is in the picture rather than the whole cluster, because the picture is

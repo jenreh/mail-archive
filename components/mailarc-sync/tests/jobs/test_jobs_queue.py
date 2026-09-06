@@ -27,7 +27,7 @@ from mailarc_core.database.entities import MailAccountEntity, MailSyncJobEntity
 from mailarc_core.database.repositories import SyncJobRepository
 from mailarc_core.database.sqlite import install_pragmas
 from mailarc_sync.jobs.model import JobKind, JobState
-from mailarc_sync.jobs.queue import JobQueue, SessionFactory
+from mailarc_sync.jobs.queue import UNKNOWN_KIND, JobQueue, SessionFactory
 
 
 @pytest.fixture
@@ -191,6 +191,79 @@ class TestClaim:
         taken = [claim.id for claim in claims if claim is not None]
         assert sorted(taken) == sorted(set(taken))
         assert len(taken) == 3
+
+
+class TestAKindThisBuildDoesNotKnow:
+    """The row a newer application queued, met by an older worker.
+
+    Not hypothetical: the desktop app's worker is a child process that keeps
+    running across a code change, so the day a job kind is added there is a
+    window in which the page enqueues a kind the running worker has never
+    heard of. It used to raise ``ValueError`` out of ``claim``, through the
+    poll loop, and kill the process — which then came back and died again on
+    the same row.
+    """
+
+    async def _queue_unknown(self, session_factory: SessionFactory) -> int:
+        """A queued row whose kind no ``JobKind`` names."""
+        async with session_factory() as session:
+            entity = MailSyncJobEntity(kind="from-the-future", state="queued")
+            session.add(entity)
+            await session.flush()
+            return entity.id
+
+    async def test_claiming_it_does_not_take_the_worker_down(
+        self, queue: JobQueue, session_factory: SessionFactory
+    ) -> None:
+        await self._queue_unknown(session_factory)
+
+        assert await queue.claim("worker-a", 60) is None
+
+    async def test_the_job_ends_failed_with_the_sentence_that_names_the_fix(
+        self, queue: JobQueue, session_factory: SessionFactory
+    ) -> None:
+        """Failed and not released: an old worker would meet the same row on
+        every poll for ever, and the button that queued it would spin."""
+        job_id = await self._queue_unknown(session_factory)
+
+        await queue.claim("worker-a", 60)
+
+        async with session_factory() as session:
+            entity = await session.get(MailSyncJobEntity, job_id)
+            assert entity is not None
+            assert entity.state == "failed"
+            assert entity.error == UNKNOWN_KIND.format(kind="from-the-future")
+            assert "restart the archive" in (entity.error or "")
+            assert entity.worker_id is None
+            assert entity.lease_until is None
+            assert entity.finished_at is not None
+
+    async def test_the_job_behind_it_is_still_handed_out(
+        self, queue: JobQueue, session_factory: SessionFactory, account_id: int
+    ) -> None:
+        """One unknown row costs that row and nothing else."""
+        await self._queue_unknown(session_factory)
+        wanted = await queue.enqueue(JobKind.IMPORT, account_id)
+
+        claimed = await queue.claim("worker-a", 60)
+
+        assert claimed is not None
+        assert claimed.id == wanted
+
+    async def test_every_kind_this_build_names_is_still_claimable(
+        self, queue: JobQueue, account_id: int
+    ) -> None:
+        """The guard reads the enum, so a kind added there needs no edit here —
+        and a guard that had drifted would refuse real work."""
+        for kind in JobKind:
+            await queue.enqueue(kind, account_id if kind is JobKind.IMPORT else None)
+
+        claimed = []
+        while (job := await queue.claim("worker-a", 60)) is not None:
+            claimed.append(job.kind)
+            await queue.succeed(job.id)
+
+        assert set(claimed) == set(JobKind)
 
 
 class TestHeartbeat:
@@ -455,6 +528,60 @@ class TestCancel:
         assert job is not None
         assert job.state is JobState.CANCELLED
         assert job.finished_at is not None
+
+
+class TestFindAllOpen:
+    """The listing behind "is anything syncing right now?".
+
+    ``find_open`` answers that for one mailbox and needs a loop over the
+    accounts to answer it for the archive; this is that question asked once.
+    Which is why every assertion below is about the *filter*: a listing that
+    returned finished jobs would leave the rail spinning forever, and one that
+    returned every kind would leave it spinning through a graph rebuild.
+    """
+
+    async def test_open_jobs_of_the_named_kinds_come_back_oldest_first(
+        self, queue: JobQueue, account_id: int
+    ) -> None:
+        first = await queue.enqueue(JobKind.IMPORT, account_id)
+        second = await queue.enqueue(JobKind.INCREMENTAL, account_id)
+
+        found = await queue.find_all_open((JobKind.IMPORT, JobKind.INCREMENTAL))
+
+        assert [job.id for job in found] == [first, second]
+
+    async def test_a_kind_that_was_not_asked_for_is_left_out(
+        self, queue: JobQueue
+    ) -> None:
+        """A rebuild runs for an hour and is nobody's mail arriving."""
+        await queue.enqueue(JobKind.DERIVE)
+
+        assert await queue.find_all_open((JobKind.IMPORT,)) == []
+
+    async def test_a_running_job_is_open(
+        self, queue: JobQueue, account_id: int
+    ) -> None:
+        job_id = await queue.enqueue(JobKind.IMPORT, account_id)
+        await queue.claim("worker-a", 60)
+
+        found = await queue.find_all_open((JobKind.IMPORT,))
+
+        assert [job.id for job in found] == [job_id]
+        assert found[0].state is JobState.RUNNING
+
+    async def test_a_job_that_has_ended_is_not_open(
+        self, queue: JobQueue, account_id: int
+    ) -> None:
+        job_id = await queue.enqueue(JobKind.IMPORT, account_id)
+        await queue.claim("worker-a", 60)
+        await queue.succeed(job_id)
+
+        assert await queue.find_all_open((JobKind.IMPORT,)) == []
+
+    async def test_nothing_open_is_an_empty_list_and_not_a_none(
+        self, queue: JobQueue
+    ) -> None:
+        assert await queue.find_all_open((JobKind.IMPORT,)) == []
 
 
 class TestRepositoryInterop:

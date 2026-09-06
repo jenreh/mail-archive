@@ -46,14 +46,23 @@ from mailarc_core.archive.model import (
     Recipient,
     TagSummary,
 )
-from mailarc_core.archive.search import MessageHit, SearchFilters, SearchPage
+from mailarc_core.archive.search import (
+    KnownAddresses,
+    KnownAttachments,
+    MessageHit,
+    SearchFilters,
+    SearchPage,
+)
 from mailarc_core.database.entities import MailAccountEntity
 from mailarc_core.mail.model import LabelKind
+from mailarc_ui.message_detail import FileKind
 from mailarc_ui.search import memberships, reads
 from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
     ATTACH_WITHOUT,
+    MATCH_ALL,
+    MATCH_ANY,
     MODE_FULLTEXT,
     MODE_SEMANTIC,
     NO_GROUP,
@@ -77,6 +86,16 @@ from mailarc_ui.search.state import PAGE_SIZE, SEMANTIC_HITS, MailSearchState
 READS_MODULE = "mailarc_ui.search.reads"
 
 NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+
+ANNA = "anna@example.com"
+CARL = "carl@firma.de"
+BOB = "bob@example.com"
+DORA = "dora@firma.de"
+"""The addresses the fake archive holds — two senders, two recipients.
+
+Kept apart on purpose: the pickers are role-split, so a test that used one
+address in both fields could not tell the two lists apart.
+"""
 
 RAW = (
     b"From: Anna Bauer <anna@example.com>\r\n"
@@ -134,10 +153,33 @@ class FakeReader(ArchiveReader):
         self.grouped: list[list[str]] = []
         self.members: dict[str, list[MessageSummary]] = {}
         self.expanded: list[str] = []
+        self.completed: list[list[str]] = []
+        self.members_error: Exception | None = None
+        """Fails the batched read alone. ``thread_error`` fails every
+        conversation read there is, including the membership one the page
+        cannot do without — and what has to be observable here is the page
+        surviving a failure of the read that only *completes* it."""
         self.thread_error: Exception | None = None
         self.recipients: dict[str, Recipient] = {}
         self.addressed: list[list[str]] = []
         self.recipient_error: Exception | None = None
+        self.known = KnownAddresses(senders=(ANNA, CARL), recipients=(BOB, DORA))
+        self.address_error: Exception | None = None
+        self.files = KnownAttachments(
+            content_types=("application/pdf", "image/png", "application/zip"),
+            untyped_names=("Rechnung.pdf", "notizen.md"),
+        )
+        self.file_error: Exception | None = None
+
+    def known_addresses(self) -> KnownAddresses:
+        if self.address_error is not None:
+            raise self.address_error
+        return self.known
+
+    def known_attachments(self) -> KnownAttachments:
+        if self.file_error is not None:
+            raise self.file_error
+        return self.files
 
     def recipients_of(self, ids: list[str]) -> dict[str, Recipient]:
         self.addressed.append(list(ids))
@@ -158,6 +200,20 @@ class FakeReader(ArchiveReader):
         if self.thread_error is not None:
             raise self.thread_error
         return list(self.members.get(conversation_id, []))[:limit]
+
+    def conversation_members(
+        self, conversation_ids: list[str], *, limit: int = 200
+    ) -> dict[str, list[MessageSummary]]:
+        self.completed.append(list(conversation_ids))
+        if self.members_error is not None:
+            raise self.members_error
+        if self.thread_error is not None:
+            raise self.thread_error
+        return {
+            one: list(self.members[one])[:limit]
+            for one in conversation_ids
+            if one in self.members
+        }
 
     def search_messages(
         self, filters: SearchFilters, *, limit: int = 50, offset: int = 0
@@ -402,15 +458,32 @@ class TestTheFormAsFilters:
     def test_every_field_reaches_its_filter(self) -> None:
         filters = filters_of(
             query="  rechnung ",
-            sender=" anna ",
-            recipient="jens@",
+            senders=[ANNA, f" {CARL} "],
+            recipients=[BOB, f" {DORA} "],
             account_id=" 7 ",
         )
 
         assert filters.text == "rechnung"
-        assert filters.sender == "anna"
-        assert filters.recipient == "jens@"
+        assert filters.senders == (ANNA, CARL)
+        assert filters.recipients == (BOB, DORA)
         assert filters.account_id == "7"
+
+    def test_the_recipient_switch_is_the_only_or_on_the_form(self) -> None:
+        """Every field is ANDed with every other one; the one place that is a
+        choice is what several picked recipients mean."""
+        assert filters_of(recipients=[BOB], recipient_match=MATCH_ALL).recipients_all
+        assert not filters_of(
+            recipients=[BOB], recipient_match=MATCH_ANY
+        ).recipients_all
+
+    def test_a_switch_position_nobody_offered_narrows(self) -> None:
+        """The value crosses the socket, and the safe fallback is the narrow
+        reading: a search somebody trusts to be narrow must not quietly
+        widen."""
+        assert filters_of(recipients=[BOB], recipient_match="either").recipients_all
+
+    def test_an_empty_pick_is_not_an_address(self) -> None:
+        assert filters_of(senders=["  "], recipients=["", "  "]).empty is True
 
     def test_both_date_shapes_are_read(self) -> None:
         """Mantine sends ISO; a person types what the field displays."""
@@ -515,6 +588,123 @@ class TestWhatARowPrints:
         assert parse_date("2026-03-06T09:30:00+02:00") == naive("2026-03-06T09:30")
 
 
+class TestTheFileFilter:
+    """The families the archive's two lists become, and back again."""
+
+    async def test_the_picker_offers_a_family_per_file_the_archive_holds(
+        self, state
+    ) -> None:
+        """Both halves of the catalogue in one menu: three stated types, and a
+        ``notizen.md`` whose sender stated nothing — ``Rechnung.pdf`` adds no
+        option because *PDF* is already there."""
+        await _load(state)
+
+        assert [one["value"] for one in state.file_type_options] == [
+            FileKind.PDF.value,
+            FileKind.IMAGE.value,
+            FileKind.ARCHIVE.value,
+            FileKind.TEXT.value,
+        ]
+
+    async def test_a_picked_family_reaches_the_archive_as_content_types(
+        self, state, reader
+    ) -> None:
+        """The whole join: a person picks *PDF* and the archive is asked
+        something it can answer without knowing what a PDF is."""
+        await _load(state)
+        state.choose_file_kinds([FileKind.PDF.value])
+        await _submit(state)
+
+        filters, _limit, _offset = reader.asked[-1]
+        assert filters.attachment_types == ("application/pdf",)
+
+    async def test_a_picked_family_also_names_the_files_nobody_typed(
+        self, state, reader
+    ) -> None:
+        """The other half of the same pick. ``Rechnung.pdf`` arrived as
+        ``application/octet-stream``; without this the person who picked
+        *PDF* would not be shown their own invoice."""
+        await _load(state)
+        state.choose_file_kinds([FileKind.PDF.value])
+        await _submit(state)
+
+        filters, _limit, _offset = reader.asked[-1]
+        assert filters.attachment_names == ("Rechnung.pdf",)
+
+    async def test_a_family_only_a_name_could_offer_reaches_the_archive(
+        self, state, reader
+    ) -> None:
+        """*Text* is on the menu because of ``notizen.md`` alone, so the pick
+        can only travel as a name — and it has to, or the option would answer
+        with nothing."""
+        await _load(state)
+        state.choose_file_kinds([FileKind.TEXT.value])
+        await _submit(state)
+
+        filters, _limit, _offset = reader.asked[-1]
+        assert filters.attachment_types == ()
+        assert filters.attachment_names == ("notizen.md",)
+
+    async def test_a_family_nobody_offered_is_dropped(self, state) -> None:
+        """The value crosses the socket; a family this archive holds no files
+        of would answer with an empty list that reads like an empty archive."""
+        await _load(state)
+        state.choose_file_kinds([FileKind.AUDIO.value, "nonsense"])
+
+        assert state.file_kinds == []
+
+    async def test_picking_a_family_is_reason_enough_to_search(self, state) -> None:
+        """A file filter on its own is a question — the button must not stay
+        dead because no words were typed."""
+        await _load(state)
+        assert state.can_search is False
+
+        state.choose_file_kinds([FileKind.PDF.value])
+
+        assert state.can_search is True
+
+    async def test_an_unpicked_filter_reaches_the_archive_as_nothing(
+        self, state, reader
+    ) -> None:
+        await _load(state)
+        await _submit(state)
+
+        filters, _limit, _offset = reader.asked[-1]
+        assert filters.attachment_types == ()
+        assert filters.attachment_names == ()
+
+    async def test_reset_empties_it(self, state) -> None:
+        await _load(state)
+        state.choose_file_kinds([FileKind.PDF.value])
+
+        state.reset_form()
+
+        assert state.file_kinds == []
+
+    async def test_a_graph_that_cannot_answer_costs_the_field_and_not_the_page(
+        self, state, reader
+    ) -> None:
+        """One optional filter must not take the listing beside it down."""
+        reader.file_error = ConnectionError("the graph is down")
+
+        await _load(state)
+
+        assert state.file_type_options == []
+        assert state.error == ""
+        assert len(state.rows) == 4
+
+    async def test_an_archive_with_no_files_offers_no_picker(
+        self, state, reader
+    ) -> None:
+        """What the form's ``rx.cond`` keys on: an empty list of options is
+        how the field is left out rather than shown empty."""
+        reader.files = KnownAttachments()
+
+        await _load(state)
+
+        assert state.file_type_options == []
+
+
 class TestOpeningThePage:
     """``load``: what can be offered, and the newest messages."""
 
@@ -565,6 +755,29 @@ class TestOpeningThePage:
 
         assert state.accounts == offered
 
+    async def test_it_fills_the_two_address_pickers(self, state, reader) -> None:
+        """Role-split, and in the order the archive handed them over — the
+        picker shows a bounded number of options before anybody types, so the
+        busiest-first order is what decides which ones those are."""
+        await _load(state)
+
+        assert state.sender_options == [ANNA, CARL]
+        assert state.recipient_options == [BOB, DORA]
+
+    async def test_a_graph_that_is_gone_costs_the_pickers_and_not_the_list(
+        self, state, reader
+    ) -> None:
+        """The address filters are optional fields; losing them must not cost
+        the listing beside them."""
+        reader.address_error = ConnectionError("graph is down")
+
+        await _load(state)
+
+        assert state.sender_options == []
+        assert state.recipient_options == []
+        assert state.rows != []
+        assert state.error == ""
+
     async def test_a_database_that_is_gone_costs_the_picker_and_not_the_list(
         self, state, caplog
     ) -> None:
@@ -611,8 +824,8 @@ class TestSearching:
         self, state, reader
     ) -> None:
         await _load(state)
-        state.set_sender("anna")
-        state.set_recipient("jens")
+        state.choose_senders([ANNA, CARL])
+        state.choose_recipients([BOB, DORA])
         state.set_date_from("01.08.2026")
         state.set_date_to("30.08.2026")
         state.choose_attachments(ATTACH_WITH)
@@ -621,8 +834,9 @@ class TestSearching:
         await _submit(state)
 
         filters = reader.asked[-1][0]
-        assert filters.sender == "anna"
-        assert filters.recipient == "jens"
+        assert filters.senders == (ANNA, CARL)
+        assert filters.recipients == (BOB, DORA)
+        assert filters.recipients_all is True
         assert filters.sent_from == naive("2026-08-01")
         assert filters.has_attachments is True
         assert filters.account_id == "2"
@@ -634,6 +848,62 @@ class TestSearching:
         state.choose_account("99")
 
         assert state.account_id == ""
+
+    async def test_an_address_nobody_offered_filters_nothing(self, state) -> None:
+        """Same guard, and a second reason for it here: an address this archive
+        never sent from could only ever answer with an empty list, which reads
+        like an empty archive rather than like a bad filter."""
+        await _load(state)
+
+        state.choose_senders([ANNA, "nobody@example.com"])
+        state.choose_recipients([BOB, "nobody@example.com"])
+
+        assert state.senders == [ANNA]
+        assert state.recipients == [BOB]
+
+    async def test_a_recipient_offered_under_from_is_still_not_a_sender(
+        self, state
+    ) -> None:
+        """The two lists are separate lists, and the guard reads the right
+        one — otherwise the split would be cosmetic."""
+        await _load(state)
+
+        state.choose_senders([BOB])
+        state.choose_recipients([ANNA])
+
+        assert state.senders == []
+        assert state.recipients == []
+
+    async def test_one_address_picked_twice_is_one_filter(self, state) -> None:
+        """On the *all* reading a duplicate would be a second pattern matching
+        the first one's node — harmless, and still not what was asked."""
+        await _load(state)
+
+        state.choose_senders([ANNA, CARL, ANNA])
+        state.choose_recipients([BOB, DORA, BOB])
+
+        assert state.senders == [ANNA, CARL]
+        assert state.recipients == [BOB, DORA]
+
+    async def test_the_recipient_switch_takes_only_its_two_positions(
+        self, state
+    ) -> None:
+        await _load(state)
+
+        state.choose_recipient_match(MATCH_ANY)
+        assert state.recipient_match == MATCH_ANY
+
+        state.choose_recipient_match("either")
+        assert state.recipient_match == MATCH_ALL
+
+    async def test_the_switch_reaches_the_archive(self, state, reader) -> None:
+        await _load(state)
+        state.choose_recipients([BOB, DORA])
+        state.choose_recipient_match(MATCH_ANY)
+
+        await _submit(state)
+
+        assert reader.asked[-1][0].recipients_all is False
 
     async def test_a_typed_field_is_cut_before_it_reaches_a_query(self, state) -> None:
         state.set_query("x" * 5_000)
@@ -679,7 +949,8 @@ class TestTheSemanticPath:
         """The KNN cannot honour them, so the form drops them rather than
         pretending they narrowed anything."""
         await _load(state)
-        state.set_sender("anna")
+        state.choose_senders([ANNA])
+        state.choose_recipients([BOB])
         state.set_date_from("01.08.2026")
         state.choose_attachments(ATTACH_WITH)
         state.choose_mode(MODE_SEMANTIC)
@@ -782,13 +1053,17 @@ class TestSwitchingPaths:
     async def test_reset_empties_the_form_and_asks_again(self, state) -> None:
         await _load(state)
         state.set_query("rechnung")
-        state.set_sender("anna")
+        state.choose_senders([ANNA])
+        state.choose_recipients([BOB])
+        state.choose_recipient_match(MATCH_ANY)
         state.choose_attachments(ATTACH_WITH)
 
         returned = state.reset_form()
 
         assert state.query == ""
-        assert state.sender == ""
+        assert state.senders == []
+        assert state.recipients == []
+        assert state.recipient_match == MATCH_ALL
         assert state.attachments == ATTACH_ANY
         assert state.rows == []
         assert returned is MailSearchState.load
@@ -975,7 +1250,8 @@ class TestTheButton:
         "fill",
         [
             lambda one: one.set_query("rechnung"),
-            lambda one: one.set_sender("anna"),
+            lambda one: one.choose_senders([ANNA]),
+            lambda one: one.choose_recipients([BOB]),
             lambda one: one.set_date_from("01.08.2026"),
             lambda one: one.choose_attachments(ATTACH_WITH),
         ],
@@ -990,7 +1266,7 @@ class TestTheButton:
     async def test_the_semantic_path_needs_a_question(self, state) -> None:
         await _load(state)
         state.choose_mode(MODE_SEMANTIC)
-        state.set_sender("anna")
+        state.choose_senders([ANNA])
 
         assert state.can_search is False
 
@@ -1692,15 +1968,135 @@ class TestPagingAGroupedList:
         assert state._expanding == ""
 
 
-class TestShowingTheWholeConversation:
-    async def test_the_missing_members_are_fetched_and_drawn(
+class TestAConversationIsDrawnWhole:
+    """A thread the answer only half matched is completed beside the page.
+
+    The half of an exchange a person wrote themselves matches almost nothing
+    they type — not the sender they filtered on, not the words they searched
+    for — so a group built from the hits alone showed "2 of 3" and then refused
+    to show the third. The missing members are read with the page and drawn
+    under their heading; they are members and never hits, so nothing counts
+    them.
+    """
+
+    async def test_the_missing_members_are_read_with_the_page(
         self, state, reader
     ) -> None:
         reader.summaries = [summary(1)]
         reader.threads = {"m1@example.com": group("c1", 3)}
         reader.members = {"c1": [summary(one) for one in (1, 2, 3)]}
+
+        await _load(state)
+
+        assert reader.completed == [["c1"]]
+        assert [one.key for one in state.lines] == [
+            "c:c1",
+            "m:m2@example.com",
+            "m:m3@example.com",
+        ]
+
+    async def test_the_chip_then_says_the_whole_size(self, state, reader) -> None:
+        """``2 of 3`` was the symptom: a count naming a message not on screen."""
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 3)}
+        reader.members = {"c1": [summary(one) for one in (1, 2, 3)]}
+
+        await _load(state)
+
+        assert state.lines[0].size_label == "3"
+        assert state.lines[0].can_expand is False
+
+    async def test_the_pulled_in_members_are_not_counted_as_hits(
+        self, state, reader
+    ) -> None:
+        """The strip over the list says how many messages matched, and a
+        member that was fetched matched nothing."""
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 3)}
+        reader.members = {"c1": [summary(one) for one in (1, 2, 3)]}
+
+        await _load(state)
+
+        assert state.total == 1
+        assert [one.id for one in state.rows] == ["m1@example.com"]
+
+    async def test_a_group_that_is_already_whole_is_not_read_again(
+        self, state, reader
+    ) -> None:
+        """One read per page, and none at all for the ordinary listing."""
+        reader.summaries = [summary(1), summary(2)]
+        reader.threads = {one.id: group("c1", 2) for one in reader.summaries}
+
+        await _load(state)
+
+        assert reader.completed == []
+
+    async def test_nothing_is_read_while_the_list_is_grouped_otherwise(
+        self, state, reader
+    ) -> None:
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 3)}
+
+        await _switch(state, Grouping.SENDER.value)
+
+        assert reader.completed == []
+
+    async def test_a_read_that_fails_leaves_the_hits_standing(
+        self, state, reader
+    ) -> None:
+        """Completeness is worth a read, never the answer: a list of what
+        matched is a worse page than a whole one and a far better one than a
+        fault."""
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 3)}
+        reader.members_error = RuntimeError("graph gone")
+
+        await _load(state)
+
+        assert state.error == ""
+        assert [one.key for one in state.lines] == ["c:c1"]
+        assert state.lines[0].size_label == "1 of 3"
+        assert state.lines[0].can_expand is True
+
+    async def test_switching_to_conversations_completes_them_too(
+        self, state, reader
+    ) -> None:
+        """The dropdown reads the memberships of rows already on screen, and a
+        group it draws from them has to be as whole as one a search brought."""
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 3)}
+        reader.members = {"c1": [summary(one) for one in (1, 2, 3)]}
+        await _switch(state, Grouping.NONE.value)
+        await _load(state)
+
+        await _switch(state, Grouping.CONVERSATION.value)
+
+        assert reader.completed == [["c1"]]
+        assert [one.key for one in state.lines] == [
+            "c:c1",
+            "m:m2@example.com",
+            "m:m3@example.com",
+        ]
+
+
+class TestShowingTheWholeConversation:
+    """The button that is left once the page completes its own groups.
+
+    It still has a job: the automatic read is capped and it is allowed to
+    fail, and either way the heading says so — ``can_expand`` is what puts the
+    control back.
+    """
+
+    async def test_the_missing_members_are_fetched_and_drawn(
+        self, state, reader
+    ) -> None:
+        reader.summaries = [summary(1)]
+        reader.threads = {"m1@example.com": group("c1", 3)}
+        reader.members_error = RuntimeError("graph gone")
         await _load(state)
         assert state.lines[0].can_expand is True
+        reader.members_error = None
+        reader.members = {"c1": [summary(one) for one in (1, 2, 3)]}
 
         await _expand(state, "c1")
 

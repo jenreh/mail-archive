@@ -67,6 +67,7 @@ class SyncJobKind(StrEnum):
     INCREMENTAL = "incremental"
     DERIVE = "derive"
     EMBED = "embed"
+    REPAIR = "repair"
 
 
 class SyncJobState(StrEnum):

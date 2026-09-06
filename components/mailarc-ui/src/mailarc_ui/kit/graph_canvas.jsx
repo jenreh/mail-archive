@@ -105,7 +105,12 @@ export default function GraphCanvas({
       cy.elements().remove();
       cy.add(Array.isArray(elements) ? elements : []);
     });
-    cy.layout(layout || FALLBACK_LAYOUT).run();
+    // `layout?.name` and not `layout ||`: an empty object is truthy and
+    // cytoscape throws "A `name` must be specified to make a layout" on it,
+    // which takes the whole page down. A canvas whose state has not decided
+    // on an arrangement yet — one that mounted before its read came back, or
+    // whose read failed — hands over exactly that empty object.
+    cy.layout(layout?.name ? layout : FALLBACK_LAYOUT).run();
   }, [elementsKey, layoutKey]);
 
   // Exactly one node is selected, and Python says which. Re-applied when the

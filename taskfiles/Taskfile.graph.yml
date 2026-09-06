@@ -83,6 +83,15 @@ tasks:
       PROFILES: local
     cmd: "{{.RUNNER}} python -m app.derive"
 
+  repair-conversations:
+    desc: |
+      Give every message that sits in no conversation the thread its headers
+      name (mail archived before the conversation key fell back to a
+      Message-ID); idempotent, and the same work the repair job runs
+    env:
+      PROFILES: local
+    cmd: "{{.RUNNER}} python -m app.repair"
+
   embed:
     desc: |
       Compute the embedding for every message that has no vector under the

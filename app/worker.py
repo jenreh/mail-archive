@@ -30,6 +30,7 @@ from appkit_commons.database.session import get_asyncdb_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import derive, embedding
+from app import repair as repair_module
 from app.composition import (
     adopt_semantic_settings,
     archive_config,
@@ -42,6 +43,7 @@ from app.configuration import configure
 from mailarc_analytics import DerivedCounts, ProgressHook, RebuildProgress, RebuildStage
 from mailarc_analytics.semantic import CancelCheck, EmbedProgress, EmbedRun
 from mailarc_core.archive.blobs import BlobStore
+from mailarc_core.archive.threads import ThreadRepairCounts
 from mailarc_core.archive.writer import MessageArchiver
 from mailarc_core.database.entities import CredentialKind
 from mailarc_core.database.repositories import (
@@ -96,6 +98,22 @@ Both hooks are non-optional here although the function they end up in accepts
 ``None`` for either: a job always has a row to report into and a flag to read,
 and defaulting them would make "this handler forgot to wire the cancel" a thing
 that runs.
+"""
+
+type ConversationRepair = Callable[[], ThreadRepairCounts]
+"""Files every message that sits in no conversation and says what it did.
+
+:func:`app.repair.repair` is the only implementation there is; it is a
+parameter of :func:`build_handlers` for the reason :data:`DerivedRebuild` is —
+so a test can drive the handler's mechanics, the thread hop included, against
+something it controls. Nothing in the application passes it.
+
+It takes no progress hook, unlike the rebuild, and its handler writes the row
+**once, at the end**. A repair walks the archive in one pass, so the only
+number that moves while it runs is how far the cursor got — which is not what
+anybody is waiting for. What a person wants is how many messages were filed,
+and that is known when it is over. A bar built on the other number would sit
+still and then jump; a sentence carrying this one says something.
 """
 
 STOP_GRACE_SECONDS = 5.0
@@ -153,8 +171,10 @@ def build_handlers(
     engine: ImportEngine,
     registry: ProviderRegistry,
     session_factory: SessionFactory = get_asyncdb_session,
+    *,
     rebuild: DerivedRebuild = derive.rebuild,
     embed: MessageEmbedding = embedding.embed,
+    repair: ConversationRepair = repair_module.repair,
 ) -> dict[JobKind, JobHandler]:
     """Which kind of job runs what.
 
@@ -165,8 +185,10 @@ def build_handlers(
     rotated mid-flight, reporting into the row the UI polls — is identical, so
     the mode is bound here and nothing else differs. A second handler would be
     the same twenty lines with one argument changed, and two places to forget
-    the credential in. ``derive`` recomputes what the whole archive means, and
-    ``embed`` computes the vectors the import deliberately never writes.
+    the credential in. ``derive`` recomputes what the whole archive means,
+    ``embed`` computes the vectors the import deliberately never writes, and
+    ``repair`` gives mail archived before the writer's ``Message-ID`` fallback
+    the conversation its headers always named.
 
     An unmapped kind is a failure a *user* meets, not a developer: every "then
     run the embed job" sentence in this application — the no-embedder error,
@@ -184,6 +206,7 @@ def build_handlers(
         ),
         JobKind.DERIVE: partial(_derive, rebuild),
         JobKind.EMBED: partial(_embed, embed),
+        JobKind.REPAIR: partial(_repair, repair),
     }
 
 
@@ -545,6 +568,45 @@ async def _derive(rebuild: DerivedRebuild, job: SyncJob, queue: JobQueue) -> Non
         counts.groups,
         counts.topics,
         counts.templates,
+    )
+
+
+async def _repair(repair: ConversationRepair, job: SyncJob, queue: JobQueue) -> None:
+    """Give the archive's conversations back the messages they lost.
+
+    Off the event loop, like :func:`_derive` and for the same reason: every
+    runic driver blocks, and this one holds a session for a walk over the whole
+    archive. The loop stays free to answer the page that is watching this job.
+
+    A repair job names no account (``account_id`` is ``None``): a conversation
+    is keyed per mailbox but the walk is over everything, and nothing on this
+    path asks which mailbox a message came from.
+
+    It honours no cancel, and that is deliberate: a repair is idempotent,
+    page-ordered and finishes in seconds on an archive a person is looking at,
+    so a stop button would be chrome over work that is already over. The row
+    is written once, when the walk is done — see :data:`ConversationRepair` —
+    which also means a job that failed carries no tally, and the panel says so
+    rather than printing zeros. Errors are not caught: §7.6's taxonomy belongs
+    to the loop, and a repair that failed halfway has to end as a failed job so
+    that a second run is asked for.
+    """
+    logger.info("Job %d repairs the archive's conversations", job.id)
+    counts = await asyncio.to_thread(repair)
+    # The row's three counters are messages, and these three are messages: how
+    # many the walk looked at, how many it filed, and how many it could not
+    # key. Written after the work rather than during it — see
+    # `ConversationRepair` — so `done` out of `total` is a result the panel
+    # prints as a sentence, not a position a bar would draw.
+    await queue.progress(
+        job.id, done=counts.linked, failed=counts.unkeyed, total=counts.scanned
+    )
+    logger.info(
+        "Job %d filed %d messages into %d conversations (%d could not be keyed)",
+        job.id,
+        counts.linked,
+        counts.threads,
+        counts.unkeyed,
     )
 
 

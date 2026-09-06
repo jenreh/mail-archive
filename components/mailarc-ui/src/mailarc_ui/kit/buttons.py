@@ -1,9 +1,11 @@
-"""The four buttons this design has.
+"""The five buttons this design has.
 
 A primary action is coral and filled; a real action beside one is soft — a
-tint rather than a fill; anything dismissive is quiet, ink on nothing; and the
+tint rather than a fill; anything dismissive is quiet, ink on nothing; the
 reading-pane header carries small bordered pills, which a list row wears as
-the glyph alone. Five functions rather than five prop spellings, for the same
+the glyph alone; and the fifth is barer still — a glyph *inside* a line of
+text, which is what the reading pane hangs beside a name or a subject to open
+it in the graph. Five functions rather than five prop spellings, for the same
 reason ``panel_card`` exists: the moment a second page writes its own
 ``mn.button(variant=…, color=…)`` the two drift.
 
@@ -96,6 +98,33 @@ def pill_icon_action(icon: str, label: str, **props: Any) -> rx.Component:
             radius="xl",
             aria_label=label,
             class_name=_merged("ma-pill-action", props),
+            **props,
+        ),
+        label=label,
+    )
+
+
+def glyph_action(icon: str, label: str, **props: Any) -> rx.Component:
+    """A glyph inside a line of text — no pill, no border, no box.
+
+    The quietest thing in the vocabulary that is still a button, because of
+    where it goes: beside every address on a header, several to a line. A
+    bordered pill there would turn a sentence about who a mail went to into a
+    toolbar. It is faint until the pointer is near it and takes its colour from
+    ``assets/css/mail-archive.css``.
+
+    The label is the tooltip and the accessible name, the same trade
+    :func:`pill_icon_action` makes — a glyph nobody can name is a glyph
+    nobody presses.
+    """
+    return mn.tooltip(
+        mn.action_icon(
+            rx.icon(icon, size=13),
+            variant="subtle",
+            size="xs",
+            radius="xl",
+            aria_label=label,
+            class_name=_merged("ma-glyph-action", props),
             **props,
         ),
         label=label,

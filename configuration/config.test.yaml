@@ -1,6 +1,6 @@
 # The profile the pytest suite runs the *composed* application config under.
 #
-# The root `conftest.py` redirects every `app_*` environment variable into a
+# `tests/sandbox_plugin.py` redirects every `app_*` environment variable into a
 # per-run temporary directory, and for a bare `ArchiveConfig()` or
 # `GraphConfig()` that is enough. It is not enough for `AppConfig`, and the
 # reason is a source-order rule rather than a mistake: appkit's
@@ -16,15 +16,15 @@
 #
 # That is the real archive, and the developer's own FalkorDB. The only lever
 # that beats an init kwarg is another init kwarg, which is what a profile is:
-# `conftest.py` sets `PROFILES=test`, so this file is merged over `config.yaml`
+# the plugin sets `PROFILES=test`, so this file is merged over `config.yaml`
 # and the highest-priority source is the one naming the sandbox.
 #
 # It overrides exactly the keys `config.yaml` names that point at the real
 # archive. `graph.data_dir` and `archive.store_dir` are deliberately absent —
 # `config.yaml` does not mention them either, so no init kwarg exists for them
-# and the conftest's environment variables win, which puts them in the same
+# and the plugin's environment variables win, which puts them in the same
 # per-run temporary directory a bare config lands in. One sandbox, reached two
-# ways. `tests/test_conftest_sandbox.py` asserts the *resolved* values of all
+# ways. `tests/test_sandbox_plugin.py` asserts the *resolved* values of all
 # five, so a key added to `config.yaml` later turns that split into a red test
 # rather than back into a silent write.
 
@@ -58,5 +58,5 @@ app:
     port: 0
     # A different name as well as a different port: a server somehow reached on
     # the wrong port would still not serve `mail-archive`. Same value the
-    # conftest's `app_graph_graph_name` override uses, so both ways in agree.
+    # plugin's `app_graph_graph_name` override uses, so both ways in agree.
     graph_name: mail-archive-sandbox

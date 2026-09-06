@@ -12,6 +12,7 @@ import appkit_mantine as mn
 import reflex as rx
 
 from mailarc_ui.kit import PAGE_GAP, PAGE_INSET
+from mailarc_ui.repair import ConversationRepairState, repair_card
 from mailarc_ui.shell import routes
 from mailarc_ui.shell.templates import mailarc_app, public_page
 from mailarc_ui.status import GraphStatusState, status_panel
@@ -25,11 +26,20 @@ ROUTE = routes.GRAPH_STATUS
     title="Graph status",
     description="The live state of the graph server this archive is built on",
     template=mailarc_app,
-    on_load=[GraphStatusState.start_polling],
+    on_load=[GraphStatusState.start_polling, ConversationRepairState.load],
 )
 def graph_status_page() -> rx.Component:
+    """The server, and the one maintenance that is about what is stored in it.
+
+    The repair sits under the three server cards rather than on a page of its
+    own: it is one button over one number, and an address of its own would put
+    a fourth icon in the rail for something a person presses once. It is here
+    and not on ``/insights`` because a conversation is ground truth — the
+    derived layer is rebuilt from it, not the other way round.
+    """
     return mn.stack(
         status_panel(),
+        repair_card(),
         gap=PAGE_GAP,
         w="100%",
         p=PAGE_INSET,

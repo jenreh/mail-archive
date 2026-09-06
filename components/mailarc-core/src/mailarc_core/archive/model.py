@@ -309,11 +309,28 @@ class Address(Node, labels=["Address"]):
     """
 
 
+def thread_key(account_id: str, conversation: str) -> str:
+    """The id of the ``Thread`` node one mailbox files a conversation under.
+
+    Here rather than inside the writer because two modules key a thread and
+    they must key it identically: the writer on import, and
+    :mod:`mailarc_core.archive.threads` when it repairs mail archived before
+    the writer knew its third rule. A second spelling of this string would put
+    a repaired message in a node the next import never merges onto.
+
+    *conversation* is the provider's own thread id where there is one, else
+    the ``Message-ID`` a conversation is rooted at — the two things a reply
+    can be joined to its siblings by.
+    """
+    return f"{account_id}:{conversation}"
+
+
 class Thread(Node, labels=["Thread"]):
     """A provider conversation, keyed ``{account}:{provider_thread_id}``.
 
     Scoped to the account on purpose: two providers hand out thread ids from
-    their own namespaces and would otherwise collide.
+    their own namespaces and would otherwise collide. :func:`thread_key`
+    spells that key, and is the only place it is spelled.
     """
 
     id: str = Field(primary_key=True)

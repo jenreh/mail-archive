@@ -17,13 +17,18 @@ import reflex as rx
 def attachment_card(
     filename: rx.Var | str,
     meta: rx.Var | str,
-    icon: str = "file-text",
+    icon: rx.Var | str = "file-text",
     **props: Any,
 ) -> rx.Component:
     """One attachment: glyph, name, and what clicking it costs.
 
-    ``props`` passes through — ``on_click`` for the download above all — and
-    a caller's ``class_name`` is added to ours instead of replacing it.
+    ``props`` passes through — ``on_click`` for opening the file above all —
+    and a caller's ``class_name`` is added to ours instead of replacing it.
+
+    ``icon`` takes a ``Var`` because a strip of files wears a glyph per file
+    and the row that decides which one is only known in the browser. Reflex
+    routes a ``Var`` tag to lucide's dynamic icon, which is what
+    ``kit.link_chip`` already relies on for the header's chips.
     """
     extra = str(props.pop("class_name", "") or "")
     return mn.paper(

@@ -175,6 +175,25 @@ class MessagePage(BaseModel):
     estimated_total: int | None = None
 
 
+UNTYPED_CONTENT_TYPES = frozenset(
+    {"", "application/octet-stream", "binary/octet-stream", "application/binary"}
+)
+"""Content types that state nothing about the file that carries them.
+
+RFC 2046's "arbitrary binary data" and the two spellings of it that mail
+programs invent — several send one for *every* attachment, so an archive's
+invoices arrive as ``application/octet-stream`` and only ``Rechnung.pdf``
+says what they are.
+
+A statement about MIME and not a taxonomy: it says which senders declined to
+answer, not what a spreadsheet is. That is why it can live here, where the
+parser reads the header, while what a ``.xlsx`` *means* stays in the UI —
+:mod:`mailarc_ui.message_detail.filetype` reads this set and holds the rest.
+One home rather than two copies, because two would disagree in a year and
+nothing would fail while they did.
+"""
+
+
 class ParsedAttachment(BaseModel):
     """One attachment, identified by content rather than by name.
 

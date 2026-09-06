@@ -232,10 +232,14 @@ afterwards be told apart from a genuinely archived message.
 
 Two mechanisms keep work away from it. Do not defeat either.
 
-- **Tests** are sealed by the root `conftest.py`: it redirects every `app_*`
+- **Tests** are sealed by `tests/sandbox_plugin.py`: it redirects every `app_*`
   setting into a temporary directory before collection and fails the run if
   `.state` changes while the suite is running. Never point a test at `.state`,
   and never construct a config that writes without passing an explicit path.
+  It is a **pytest plugin**, registered by `addopts = "-p tests.sandbox_plugin"`
+  in `pyproject.toml`, because it has to seal all nine `testpaths` and a
+  `conftest.py` can only seal its own directory. Removing that line unseals the
+  whole repository; `tests/test_sandbox_plugin.py` turns that into a red test.
 - **Driving the application** — a preview server, a rebuild, a worker, a browser
   check — goes through the **`agent:` task namespace**, never the real one:
 

@@ -117,7 +117,10 @@ PAGES: tuple[PageSpec, ...] = (
         page=status.graph_status_page,
         route=routes.GRAPH_STATUS,
         title="Graph status",
-        primes=("GraphStatusState.start_polling",),
+        primes=(
+            "GraphStatusState.start_polling",
+            "ConversationRepairState.load",
+        ),
     ),
 )
 """Every page this application registers, and what it claims to be.

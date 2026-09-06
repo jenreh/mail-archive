@@ -18,6 +18,56 @@ last one stopped.
 An import is a **job**. Something enqueues it, a worker claims it, and the job
 row is what you watch.
 
+There are three ways one gets enqueued:
+
+- **Sync**, the circular arrow at the top of the icon rail, on every page. One
+  press asks every enabled mailbox for whatever it has not archived yet. The
+  arrow spins for as long as anything is still running — including a job you
+  started somewhere else, or one the schedule queued while you were away — so
+  the rail says whether mail is arriving without your having to open a page.
+- **Import** on a single mailbox's page in **Mail accounts**, when you want one
+  mailbox rather than all of them.
+- The **interval schedule**, which queues deltas on its own once a mailbox has
+  had its first full import (see [Configuration](./configuration.md)).
+
+### What one press of Sync does
+
+Per mailbox, and it is not the same answer for each:
+
+| The mailbox | What it gets |
+| --- | --- |
+| Already imported once | An `incremental` — only what changed since the last run |
+| Never imported, or a provider with no delta | A full `import`. Already-archived messages are skipped, so this is not a re-download |
+| Already running a job | Nothing. Two runs over one mailbox collide on the archive's unique key |
+| Waiting for a re-consent, or naming a provider this build does not have | Nothing, and it is counted as needing attention |
+| Disabled | Nothing, and it is not counted at all |
+
+A press says what it did twice, in a message that appears in the top right
+corner and fades after three seconds:
+
+- **When you press it.** How many mailboxes are now syncing, plus whatever else
+  the press ran into — mailboxes that were already going, and mailboxes waiting
+  for you on the accounts page. A press that started nothing says why, which
+  includes an archive with no mailboxes in it yet.
+- **When the run ends.** How much mail it brought in: `Finished: synced 57
+  messages.` If any messages could not be archived the count says so and the
+  message is amber rather than green. Only the mailboxes *that press* started
+  are counted, so a job the schedule was already running is not folded into
+  your number.
+
+The second one arrives whichever page you are on by then, since a sync outlasts
+the page it was started from. It does not arrive if you close the window: there
+is nothing to show it on, and the count is still in the job's row on the
+mailbox's page.
+
+The same sentences are in the tooltip, which is where they stay after the
+message has faded: hover the button and it tells you what is happening now, or
+what the last press did.
+
+This is the same decision the interval schedule makes, with one deliberate
+difference: the schedule leaves a never-imported mailbox alone, because a delta
+over one has no history to start from. Sync does not, because you asked.
+
 The worker runs as a child of the web application by default. Where you want it
 on its own — under Docker, systemd, or just to watch its log:
 
@@ -193,17 +243,71 @@ twice.
 **Search** — the page the window opens on, at `/` — is where you look at what
 arrived. Opened with no question in it, it lists the whole archive newest
 first, which is what you want right after an import; filling in a sender, a
-recipient, a date range or the words in a message narrows that list. Under a
-row's preview sit the labels the provider filed the message under — your own
+recipient, a date range, a kind of attached file or the words in a message
+narrows that list. Under a row's preview sit the labels the provider filed the
+message under — your own
 labels in blue, folders in teal, the provider's housekeeping (Inbox, Updates,
 Unread) in grey and last. Pick a message and the reading pane beside the list
 shows it in two tabs:
 
-- **Message** — the way a mail client renders it: subject, From / To / Cc /
-  Date, the attached files with their sizes, and the body. An HTML mail keeps
-  its layout and its inline pictures; a plain-text mail shows as text.
+- **Message** — the way a mail client renders it, in a mail client's order:
+  the subject on top, under it the sender's name with their address after it
+  and the date opposite, then the `To:` and `Cc:` lines, then chips naming
+  what the message belongs to — its topic, the tags you gave it, the recurring
+  group it went to — then the attached files and the body. An HTML mail keeps
+  its layout and its inline pictures; a plain-text mail shows as text. Each
+  file card says what the file is and how big it is — `PDF · 591 KB`,
+  `XLSX · 2.0 KB` — and wears the glyph of its kind, so a strip of six files
+  can be scanned rather than read. The cards are pressable; see
+  [opening a file](#opening-a-file).
+- **A tab for whatever you press** — press the topic or a tag and a third tab
+  opens after **Source**, carrying that name and drawing that corner of the
+  graph beside the mail. The small glyphs do the same for the other two
+  things the header names: one beside the subject draws **this message** and
+  everything the graph joins it to, and one beside the sender and beside each
+  recipient draws **that person**. There is one such tab and the last thing
+  pressed is what it holds. A link under the picture opens the same thing full
+  size in the [graph explorer](graph-explorer.md). A group chip is there to
+  read and not to press: the explorer has no view rooted at a recurring
+  group.
 - **Source** — the **raw bytes** the provider handed over, headers and all,
   read back from the blob store.
+
+### Opening a file
+
+Press one of the attachment cards on the header and a panel slides in from the
+right with the file itself, not just its name. What it shows depends on what
+the file is:
+
+| File | What the panel shows |
+| --- | --- |
+| A picture — PNG, JPEG, WebP, SVG, anything the browser draws | The picture, scaled to the panel |
+| A PDF | The document in the browser's own PDF viewer, pageable and zoomable |
+| HTML | The page rendered, in the same sandbox a mail body gets |
+| Text — plain text, CSV, JSON, XML, Markdown, a log, a forwarded `.eml` | The text, monospaced; JSON is laid out over lines on the way |
+| Anything else — a spreadsheet, an archive, a Word document | Its type and its size, and a line saying a browser cannot draw it |
+
+Closing the panel puts you back exactly where you were: the message stays
+open, the list keeps its place, and the panel stays out of the way until you
+press another file.
+
+A few things about it are worth knowing:
+
+- The file is read from the stored original **when you press it**, not when
+  you open the message. A message with a 30 MB attachment costs nothing to
+  look at until you ask for the attachment.
+- Sender-supplied markup is sandboxed exactly like a mail body: an HTML
+  attachment may load **nothing remote**, so a tracking pixel in one counts
+  the same as one in the mail. There is no *allow* button on the panel — an
+  attachment is a file, not a message you are corresponding about.
+- Files over **8 MB** are not shown. Everything in the panel travels inline to
+  the browser, and past that the wait costs more than the look is worth; a
+  long text file is shown from the top and says it was cut.
+- The sender's own content type decides what the panel does, and what the card
+  calls the file. When they send `application/octet-stream` — which several
+  mail programs do for every attachment — the filename's extension decides
+  instead. A file with neither is shown as *File*, which is the whole of what
+  is honestly known about it.
 
 A few things are on purpose:
 
@@ -224,6 +328,35 @@ A few things are on purpose:
   still on disk; the viewer just declines to render a PDF as base64.
 - A message archived without a stored original — or whose blob has since
   gone missing — says so instead of erroring.
+
+### Narrowing by the kind of file
+
+Two fields on the form ask about attachments, and they ask different things.
+**Attachments** is a three-way switch — any, with, without — over whether the
+message carries a file at all. **File type** is a list of the kinds of file
+*this archive actually holds*: pick PDF and you get the messages carrying one,
+pick PDF and Image and you get the messages carrying either.
+
+The list is built from your own mail, so every option in it returns something.
+An archive with no attachments in it shows no **File type** field at all, and
+a family you never received never appears. Picking a type already means "with
+attachments", so you do not have to set the switch above it as well.
+
+Three things worth knowing:
+
+- The kinds come from the content type the sender declared, and from the
+  filename when the sender declared nothing. Several mail programs label every
+  attachment `application/octet-stream`, so your invoices arrive under a type
+  that means "some bytes" — those are sorted by their name instead, which is
+  why picking **PDF** finds a `Rechnung.pdf` that never said it was one. A file
+  with neither a usable type nor a readable name lands under **File**.
+- Only files you would see as attachments are offered. The picture a signature
+  pulls into the message body is stored like any other part, but no mail
+  program shows a paperclip for it, so it puts no **Image** in the list and
+  picking **Image** never returns a message that carries only one.
+- Files are stored by their content, so the same file arriving twice under two
+  different declared types is one file in the archive, under whichever type
+  arrived first.
 
 The page reads **every mailbox of the installation** at once, and nothing in
 the application narrows that. There is no sign-in and no per-mailbox
@@ -286,6 +419,7 @@ nothing gates it.
 | `derive` | Works — recomputes the analysis nodes. **Rebuild** on the insights page enqueues one; `task graph:rebuild-derived` does the same without a worker |
 | `incremental` | Works — Gmail's `historyId` delta, queued by the interval schedule (see [Configuration](./configuration.md)). Falls back to a full walk in the same job when the cursor is too old |
 | `embed` | Works — computes the message embeddings semantic search needs. Needs an embedder configured (see [Semantic search](./semantic-search.md)). **Rebuild the vectors** on the embedder page enqueues one; `task graph:embed` runs the same job without a worker |
+| `repair` | Works — files every message that sits in no conversation, using the headers already in the graph. **Repair conversations** on the graph status page enqueues one; `task graph:repair-conversations` runs the same work without a worker |
 
 Every kind has a handler. A kind without one would fail its job with "no handler
 registered", which is what the worker does with an unmapped kind; the next kind
@@ -293,5 +427,9 @@ to be added fails a test before it can fail a job.
 
 The schedule only queues `incremental` for a mailbox whose **first full import
 has finished**. There is no history before that point, so a delta over a fresh
-account would archive nothing and report success for ever. Press **Import**
-once; from then on the schedule keeps up.
+account would archive nothing and report success for ever. Press **Sync** in the
+rail or **Import** on the mailbox once; from then on the schedule keeps up.
+
+`incremental` is also what **Sync** queues for a mailbox that has been imported
+before, so the two paths write the same job and the same checkpoint — the only
+difference is who asked for it.

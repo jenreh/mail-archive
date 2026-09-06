@@ -15,8 +15,8 @@ and their encrypted credentials in `.state/mail-archive.db`, the original bytes
 of every imported message in `.state/mailstore`, the graph in
 `.state/falkordb`. The blob store is content-addressed and write-once, so a
 fixture written into it cannot afterwards be told apart from a message that was
-really archived. The root `conftest.py` is what keeps the suite away from all
-three, and it does it four ways:
+really archived. `tests/sandbox_plugin.py` is what keeps the suite away from
+all three, and it does it four ways:
 
 - **Redirection.** Every `app_*` environment variable is pointed at a
   per-run temporary directory before collection starts, so a default-built
@@ -39,6 +39,18 @@ three, and it does it four ways:
   because appkit calls `load_dotenv(override=True)` at import.
 - **A tripwire.** `.state` is fingerprinted before the first test and after the
   last, and a difference fails the run.
+
+It is a **pytest plugin** rather than a root `conftest.py`, registered by
+`addopts = "-p tests.sandbox_plugin"` in `pyproject.toml`. A `conftest.py` only
+covers its own directory downwards, and `testpaths` names nine sibling
+directories whose only common ancestor is the repository root — so sealing them
+from `tests/` would have left the eight component suites resolving
+`ArchiveConfig()` to the real store. `-p` also loads earlier than any conftest,
+which matters because some test modules build a config at import time, and it
+is the only form besides a rootdir conftest from which pytest honours
+`pytest_addoption` (that is where `--allow-missing-runtime` comes from).
+Deleting that `addopts` line unseals the whole repository, so
+`tests/test_sandbox_plugin.py` asserts the registration by name.
 
 **If the tripwire fires**, the run is telling you one of two things: a test
 reached past the sandbox, or the application itself was writing to the real
@@ -129,7 +141,7 @@ every collected test, so a component that owns `graph_local` tests declares it.
 itself when `task tauri:vendor` has not produced `falkordb.so`, which is right
 for a component tested as a standalone wheel and wrong for the repository: over
 two hundred tests would vanish and the run would still report green. So the
-root `conftest.py` ends a repository-wide run that selected `graph_local` tests
+sandbox plugin ends a repository-wide run that selected `graph_local` tests
 without a runtime, with a message naming the task. `--allow-missing-runtime`
 is the deliberate way past it, and saying so on the command line is the point —
 nobody then mistakes the result for a full pass.

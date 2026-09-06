@@ -48,19 +48,126 @@ class SearchFilters(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     text: str = ""
-    sender: str = ""
-    recipient: str = ""
+    senders: tuple[str, ...] = ()
+    """The addresses the message may have come from, each matched **exactly**.
+
+    Exact and not by containment, because these are picked from the addresses
+    the archive holds rather than typed: ``anna@example.com`` is a substring of
+    ``hanna@example.com``, so a containment match on a picked address would
+    quietly widen a filter a person chose from a list.
+
+    Several of them can only ever mean **any** — a message has exactly one
+    sender, so "from all of these" is a question with no answer. That is why
+    there is no ``senders_all`` beside :attr:`recipients_all`: the choice the
+    recipients have is not a choice this field has.
+    """
+
+    recipients: tuple[str, ...] = ()
+    """The addresses the message has to have reached, each matched exactly.
+
+    A tuple rather than one string because the form offers a multi-select, and
+    :attr:`recipients_all` is what several of them mean.
+    """
+
+    recipients_all: bool = True
+    """Whether every one of :attr:`recipients` has to be on the message.
+
+    ``True`` narrows — the message reached all of them — and ``False`` widens:
+    any one is enough. The default is the narrowing one, because every other
+    field on this form narrows too. A message can carry any number of
+    recipients, which is what makes this askable at all — see :attr:`senders`.
+    """
+
     sent_from: datetime | None = None
     sent_until: datetime | None = None
     has_attachments: bool | None = None
+
+    attachment_types: tuple[str, ...] = ()
+    """Content types a file on the message may have, each matched **exactly**.
+
+    Exact and not by family, for the reason :attr:`senders` is exact: these are
+    picked from what the archive holds rather than typed. *What counts as a
+    spreadsheet* is a question about how a person reads a file list, and the
+    answer belongs where the list is drawn — the form expands its choice into
+    the types this archive actually stores and sends those. The archive is then
+    only asked something it can answer without a taxonomy of its own.
+
+    Several of them mean **any**, and can mean nothing else: one file has one
+    content type, so "a message carrying a PDF *and* a spreadsheet" and "a
+    message carrying either" would need two readings of a pick the form offers
+    as one list. Any is the reading a person expects of a file filter — the
+    same call :attr:`senders` makes, and the opposite of
+    :attr:`recipients_all`, where a message really can satisfy every value.
+
+    One thing this filter inherits and cannot fix: an ``Attachment`` node is
+    keyed by the **sha256 of its bytes**, so the same file arriving twice under
+    two different declared types is one node carrying whichever type was
+    written first. That is content addressing doing what it is for, and the
+    place to change it would be the node, not the query.
+    """
+
+    attachment_names: tuple[str, ...] = ()
+    """Filenames a file on the message may have, each matched **exactly**.
+
+    The other half of the same pick, and it exists because a content type can
+    be a shrug: a sender who says ``application/octet-stream`` has said
+    nothing, and the only thing left that says *PDF* is ``Rechnung.pdf``. The
+    form expands a picked family into both lists — the types this archive
+    stores for it, and the names of the shrugs that belong to it — and this
+    filter ORs them, so a message matches when either half does.
+
+    Exact whole names, from :attr:`KnownAttachments.untyped_names`, for the
+    reason :attr:`senders` is exact: they are picked from what the archive
+    holds rather than typed. A suffix match would be the archive deciding what
+    ``.pdf`` means, which is the taxonomy this component does not carry.
+    """
+
     account_id: str = ""
+
+    @property
+    def sent_by(self) -> tuple[str, ...]:
+        """:attr:`senders` with the blanks dropped — the ones that filter."""
+        return _picked(self.senders)
+
+    @property
+    def addressed(self) -> tuple[str, ...]:
+        """:attr:`recipients` with the blanks dropped — the ones that filter.
+
+        With :attr:`sent_by`, the one place an empty pick is thrown away, so
+        that "is this filter set" and "which addresses does it name" cannot
+        disagree.
+        """
+        return _picked(self.recipients)
+
+    @property
+    def attached_types(self) -> tuple[str, ...]:
+        """:attr:`attachment_types` with the blanks dropped — the ones that
+        filter. The same guard :attr:`sent_by` keeps, for the same reason."""
+        return _picked(self.attachment_types)
+
+    @property
+    def attached_names(self) -> tuple[str, ...]:
+        """:attr:`attachment_names` with the blanks dropped — the ones that
+        filter. A file part can reach the graph with an empty name, and an
+        empty pick must not become a filter for it."""
+        return _picked(self.attachment_names)
+
+    @property
+    def attached(self) -> bool:
+        """Whether the file picker is set at all, in either of its halves.
+
+        The one place the two lists are read as one question, so that "is this
+        filter on" cannot answer differently from what the statement builds.
+        """
+        return bool(self.attached_types or self.attached_names)
 
     @property
     def structured(self) -> bool:
         """Whether any graph-shaped filter is set — everything but ``text``."""
         return bool(
-            self.sender.strip()
-            or self.recipient.strip()
+            self.sent_by
+            or self.addressed
+            or self.attached
             or self.account_id.strip()
             or self.sent_from is not None
             or self.sent_until is not None
@@ -71,6 +178,71 @@ class SearchFilters(BaseModel):
     def empty(self) -> bool:
         """Whether this form asks for nothing — the browse-recent case."""
         return not self.text.strip() and not self.structured
+
+
+def _picked(values: tuple[str, ...]) -> tuple[str, ...]:
+    """The values in a pick that are actually values — blanks dropped."""
+    return tuple(one.strip() for one in values if one.strip())
+
+
+class KnownAttachments(BaseModel):
+    """The files this archive's messages actually carry, in two lists.
+
+    What the search form's file filter is built from, and the same bargain
+    :class:`KnownAddresses` strikes: the form offers what the archive holds
+    rather than a fixed menu, so no option can return nothing. Both lists are
+    ordered commonest first, so a picker cut to its first options shows the
+    ones a person is most likely to want.
+
+    Raw content types and names, never families. Grouping ``application/pdf``
+    and ``image/png`` into *PDF* and *Images* is a presentation decision, and
+    this component has no opinion about how a person reads a file list — see
+    :attr:`SearchFilters.attachment_types`.
+
+    **What is left out is as deliberate as what is in.** A part the HTML
+    references by ``cid:`` and the sender never named is a logo in a
+    signature, not a file: it is counted out here exactly as
+    :attr:`~mailarc_core.mail.model.ParsedMessage.has_attachments` counts it
+    out, so the tri-state above the picker and the picker itself cannot
+    disagree about whether a message carries anything.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    content_types: tuple[str, ...] = ()
+    """The types of the files whose sender said what they were."""
+
+    untyped_names: tuple[str, ...] = ()
+    """The *filenames* of the files whose sender said nothing.
+
+    A second list rather than four more entries in the first one, because
+    ``application/octet-stream`` — see
+    :data:`~mailarc_core.mail.model.UNTYPED_CONTENT_TYPES` — is what several
+    mail programs send for every attachment, and an archive's invoices arrive
+    under it. Offered as a type it would be one option called *File* standing
+    for a folder of PDFs; offered by name, ``Rechnung.pdf`` can be read as
+    what it is by the one layer that knows how to read a file name.
+
+    Their content types are deliberately **not** in :attr:`content_types`:
+    a filter over them would match every shrug in the archive, which is the
+    one answer no picked family means.
+    """
+
+
+class KnownAddresses(BaseModel):
+    """The addresses a search form can be narrowed by, split by role.
+
+    Two lists rather than one, because the two fields ask different questions:
+    an address the archive only ever received mail *at* is not a sender, and
+    offering it under **From** would be offering a filter that cannot match.
+    Each is ordered busiest first, so a picker showing only its first hundred
+    options shows the hundred a person is most likely to want.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    senders: tuple[str, ...] = ()
+    recipients: tuple[str, ...] = ()
 
 
 class ScoredId(BaseModel):

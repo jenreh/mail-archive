@@ -27,7 +27,7 @@ from mailarc_core.archive.blobs import BlobStore
 from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.archive.model import Address, Label, Message
 from mailarc_core.archive.reader import ArchiveReader, GraphSessionFactory
-from mailarc_core.archive.repository import MessageRepository
+from mailarc_core.archive.repository import AddressRepository, MessageRepository
 from mailarc_core.archive.search import (
     ScoredId,
     SearchFilters,
@@ -44,7 +44,8 @@ class FakeSession:
     ``all_with_edges`` answers the label lookup — told apart by the edge it
     walks — with ``labels`` and every listing (filtered, by-ids) with
     ``rows``. ``all_rows`` answers the full-text statement — told apart by
-    the procedure call — with ``scored`` and the count statement with
+    the procedure call — with ``scored``, the address reads — told apart by
+    their projected column — with ``addresses``, and the count statement with
     ``total``. Every statement is recorded compiled, backticks dropped, with
     its bound parameters beside it.
     """
@@ -54,11 +55,13 @@ class FakeSession:
         rows: list[tuple[Message, Address | Label | None]] | None = None,
         labels: list[tuple[Message, Address | Label | None]] | None = None,
         scored: list[dict[str, Any]] | None = None,
+        addresses: list[dict[str, Any]] | None = None,
         total: int = 0,
     ) -> None:
         self.rows = rows or []
         self.labels = labels or []
         self.scored = scored or []
+        self.addresses = addresses or []
         self.total = total
         self.statements: list[str] = []
         self.parameters: list[dict[str, Any]] = []
@@ -88,6 +91,8 @@ class FakeSession:
         cypher = self._record(statement)
         if "queryNodes" in cypher:
             return self.scored
+        if "AS address" in cypher:
+            return self.addresses
         return [{"total": self.total}]
 
     def count(self, statement: Any) -> int:
@@ -119,6 +124,10 @@ def repository(session: FakeSession) -> MessageRepository:
     return MessageRepository(cast(Any, session))
 
 
+def addresses(session: FakeSession) -> AddressRepository:
+    return AddressRepository(cast(Any, session))
+
+
 @pytest.fixture
 def blobs(tmp_path) -> BlobStore:
     return BlobStore(ArchiveConfig(store_dir=tmp_path / "blobs"))
@@ -136,7 +145,9 @@ class TestTheFilters:
         assert filters.structured is False
 
     def test_whitespace_is_not_a_filter(self) -> None:
-        filters = SearchFilters(text="  ", sender=" ", recipient=" ", account_id=" ")
+        filters = SearchFilters(
+            text="  ", senders=(" ",), recipients=(" ", ""), account_id=" "
+        )
 
         assert filters.empty is True
 
@@ -149,8 +160,8 @@ class TestTheFilters:
     @pytest.mark.parametrize(
         "overrides",
         [
-            {"sender": "anna"},
-            {"recipient": "bob"},
+            {"senders": ("anna",)},
+            {"recipients": ("bob",)},
             {"account_id": "7"},
             {"sent_from": SENT_AT},
             {"sent_until": SENT_AT},
@@ -164,6 +175,46 @@ class TestTheFilters:
 
         assert filters.structured is True
         assert filters.empty is False
+
+
+class TestTheAddressesAFormCanOffer:
+    def test_senders_walk_the_one_edge_a_message_has(self) -> None:
+        session = FakeSession(addresses=[{"address": "anna@example.com"}])
+
+        found = addresses(session).find_senders()
+
+        [cypher] = session.statements
+        assert "MATCH (m)-[:SENT_FROM]->(s:Address)" in cypher
+        assert found == ["anna@example.com"]
+
+    def test_recipients_walk_to_and_cc_and_never_bcc(self) -> None:
+        session = FakeSession(addresses=[{"address": "bob@example.com"}])
+
+        addresses(session).find_recipients()
+
+        [cypher] = session.statements
+        assert "MATCH (m)-[:SENT_TO|COPIED_TO]->(r:Address)" in cypher
+        assert "BLIND" not in cypher
+
+    def test_the_busiest_address_comes_first_and_ties_break_by_key(self) -> None:
+        """The picker shows a bounded number of options before anybody types,
+        so the order decides which ones those are; the id tiebreak is what
+        stops two equally busy addresses swapping between page loads."""
+        session = FakeSession()
+
+        addresses(session).find_senders()
+
+        [cypher] = session.statements
+        assert "count(DISTINCT m.id) AS messages" in cypher
+        assert "ORDER BY messages DESC, address ASC" in cypher
+
+    def test_an_address_without_a_key_is_not_offered(self) -> None:
+        """A node a smoke test or an older schema left behind is not an
+        address anybody can filter by."""
+        session = FakeSession(addresses=[{"address": None}, {"address": ""}])
+
+        assert addresses(session).find_senders() == []
+        assert "s.id IS NOT NULL" in session.statements[0]
 
 
 class TestSearchableTerms:
@@ -182,24 +233,78 @@ class TestTheFilteredListing:
     def test_a_sender_filter_shares_the_display_traversal(self) -> None:
         session = FakeSession()
 
-        repository(session).find_filtered(SearchFilters(sender=" Anna@Example.COM "))
+        repository(session).find_filtered(
+            SearchFilters(senders=(" Anna@Example.COM ",))
+        )
 
         [cypher] = session.statements
         assert "MATCH (m)-[:SENT_FROM]->(s:Address)" in cypher
         assert "OPTIONAL MATCH" not in cypher
-        assert "s.id CONTAINS $p0" in cypher
-        assert session.parameters[0]["p0"] == "anna@example.com"
+        assert "s.id IN $p0" in cypher
+        assert session.parameters[0]["p0"] == ["anna@example.com"]
+
+    def test_several_senders_are_one_in_and_can_be_nothing_else(self) -> None:
+        """A message has exactly one ``SENT_FROM`` edge, so "from all of these"
+        has no answer and the pattern cannot fan out — one walk, one ``IN``,
+        one row per message however many addresses were picked."""
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(senders=("Anna@example.com", "carl@firma.de"))
+        )
+
+        [cypher] = session.statements
+        assert cypher.count("MATCH (m)-[:SENT_FROM]->") == 1
+        assert "s.id IN $p0" in cypher
+        assert session.parameters[0]["p0"] == ["anna@example.com", "carl@firma.de"]
 
     def test_a_recipient_filter_walks_to_and_cc_in_one_pattern(self) -> None:
         session = FakeSession()
 
-        repository(session).find_filtered(SearchFilters(recipient="Bob"))
+        repository(session).find_filtered(SearchFilters(recipients=("Bob",)))
 
         [cypher] = session.statements
-        assert "MATCH (m)-[:SENT_TO|COPIED_TO]->(r:Address)" in cypher
+        assert "MATCH (m)-[:SENT_TO|COPIED_TO]->(r0:Address)" in cypher
         assert "BLIND" not in cypher
-        assert "r.id CONTAINS $p0" in cypher
+        assert "r0.id = $p0" in cypher
         assert session.parameters[0]["p0"] == "bob"
+
+    def test_every_recipient_gets_a_pattern_of_its_own(self) -> None:
+        """ "All" is one walk per address: only a message that reached both
+        can bind ``r0`` *and* ``r1``. An ``IN`` over one variable would be
+        "any" however many values it held."""
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(recipients=("Bob", "Dora"), recipients_all=True)
+        )
+
+        [cypher] = session.statements
+        assert "MATCH (m)-[:SENT_TO|COPIED_TO]->(r0:Address)" in cypher
+        assert "MATCH (m)-[:SENT_TO|COPIED_TO]->(r1:Address)" in cypher
+        assert "(r0.id = $p0) AND (r1.id = $p1)" in cypher
+        assert session.parameters[0] == {"p0": "bob", "p1": "dora"}
+
+    def test_any_of_them_is_one_pattern_and_an_in(self) -> None:
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(recipients=("Bob", "Dora"), recipients_all=False)
+        )
+
+        [cypher] = session.statements
+        assert cypher.count("MATCH (m)-[:SENT_TO|COPIED_TO]->") == 1
+        assert "r.id IN $p0" in cypher
+        assert session.parameters[0]["p0"] == ["bob", "dora"]
+
+    def test_a_pick_that_is_only_whitespace_filters_nothing(self) -> None:
+        """An empty option cannot reach a pattern — a blank ``r0.id = ""``
+        would match nothing and empty the result list."""
+        session = FakeSession()
+
+        repository(session).find_filtered(SearchFilters(recipients=(" ", "")))
+
+        assert "SENT_TO" not in session.statements[0]
 
     def test_the_predicate_never_lands_on_the_optional_match(self) -> None:
         """The load-bearing clause order: display traversal first, filter
@@ -208,12 +313,12 @@ class TestTheFilteredListing:
         sender instead, and every filter would silently stop filtering."""
         session = FakeSession()
 
-        repository(session).find_filtered(SearchFilters(recipient="bob"))
+        repository(session).find_filtered(SearchFilters(recipients=("bob",)))
 
         [cypher] = session.statements
         display = cypher.index("OPTIONAL MATCH (m)-[:SENT_FROM]->(s:Address)")
-        narrows = cypher.index("MATCH (m)-[:SENT_TO|COPIED_TO]->(r:Address)")
-        where = cypher.index("WHERE r.id CONTAINS")
+        narrows = cypher.index("MATCH (m)-[:SENT_TO|COPIED_TO]->(r0:Address)")
+        where = cypher.index("WHERE r0.id =")
         assert display < narrows < where
 
     def test_an_account_filter_matches_the_key_exactly(self) -> None:
@@ -257,9 +362,103 @@ class TestTheFilteredListing:
     def test_no_attachment_preference_emits_no_clause(self) -> None:
         session = FakeSession()
 
-        repository(session).find_filtered(SearchFilters(recipient="bob"))
+        repository(session).find_filtered(SearchFilters(recipients=("bob",)))
 
         assert "has_attachments" not in session.statements[0]
+
+    def test_a_file_type_walks_to_the_attachment_and_matches_it(self) -> None:
+        """A plain ``MATCH`` and never an optional one: a message with no
+        matching file is what this filter is there to exclude."""
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(attachment_types=("application/pdf", "image/png"))
+        )
+
+        [cypher] = session.statements
+        assert "HAS_ATTACHMENT" in cypher
+        assert "OPTIONAL MATCH (m)-[:HAS_ATTACHMENT]" not in cypher
+        assert "f.content_type IN $p0" in cypher
+        assert session.parameters[0]["p0"] == ["application/pdf", "image/png"]
+
+    def test_a_file_pick_never_counts_a_cid_logo(self) -> None:
+        """The edge is bound and read, not merely walked: a part the HTML
+        pulls in by ``cid:`` and the sender never named is a signature
+        picture, and ``Message.has_attachments`` already counts it out. The
+        picker cannot offer one, and this is why asking for one anyway still
+        finds nothing."""
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(attachment_types=("image/png",))
+        )
+
+        [cypher] = session.statements
+        assert "(m)-[h:HAS_ATTACHMENT]->(f:Attachment)" in cypher
+        assert "(h.filename IS NOT NULL) OR (h.content_id IS NULL)" in cypher
+
+    def test_a_file_name_matches_the_edge_that_carries_it(self) -> None:
+        """The half of the pick that finds the invoices nobody typed. The name
+        hangs on the edge — the node is content-addressed — so this is the one
+        filter that reads a property of the relationship."""
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(attachment_names=("Rechnung.pdf",))
+        )
+
+        [cypher] = session.statements
+        assert "h.filename IN $p0" in cypher
+        assert "f.content_type IN" not in cypher
+        assert session.parameters[0]["p0"] == ["Rechnung.pdf"]
+
+    def test_a_type_and_a_name_are_ored_and_not_anded(self) -> None:
+        """One family expands into both halves — the types this archive states
+        for it and the names of the shrugs that belong to it — so a message
+        matches when either says so. ANDed it would ask for a file that is
+        both, which nothing is."""
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(
+                attachment_types=("application/pdf",),
+                attachment_names=("Rechnung.pdf",),
+            )
+        )
+
+        [cypher] = session.statements
+        assert "(f.content_type IN $p0) OR (h.filename IN $p1)" in cypher
+
+    def test_no_file_type_walks_no_attachment_edge(self) -> None:
+        session = FakeSession()
+
+        repository(session).find_filtered(SearchFilters(recipients=("bob",)))
+
+        assert "HAS_ATTACHMENT" not in session.statements[0]
+
+    def test_no_file_name_walks_no_attachment_edge_either(self) -> None:
+        """Both halves empty is no filter at all — an empty ``IN`` matches
+        nothing in Cypher, so a clause emitted for an unset pick would empty
+        the page."""
+        session = FakeSession()
+
+        repository(session).find_filtered(SearchFilters(attachment_names=("", " ")))
+
+        assert "HAS_ATTACHMENT" not in session.statements[0]
+
+    def test_a_file_type_gets_the_with_stage_the_backend_demands(self) -> None:
+        """The listing's sender walk is an ``OPTIONAL MATCH`` when no sender
+        was picked, and a plain ``MATCH`` may not follow one without a ``WITH``
+        between — measured against FalkorDB, which refuses the statement
+        outright rather than answering it wrongly."""
+        session = FakeSession()
+
+        repository(session).find_filtered(
+            SearchFilters(attachment_types=("application/pdf",))
+        )
+
+        [cypher] = session.statements
+        assert cypher.index("WITH") < cypher.index("HAS_ATTACHMENT")
 
     def test_every_filter_at_once_keeps_the_listing_shape(self) -> None:
         """Distinct before the page cut, newest first with the id tiebreak,
@@ -268,12 +467,13 @@ class TestTheFilteredListing:
 
         repository(session).find_filtered(
             SearchFilters(
-                sender="anna",
-                recipient="bob",
+                senders=("anna",),
+                recipients=("bob",),
                 account_id="7",
                 sent_from=datetime(2026, 3, 1),  # noqa: DTZ001
                 sent_until=datetime(2026, 3, 31),  # noqa: DTZ001
                 has_attachments=True,
+                attachment_types=("application/pdf",),
             ),
             limit=10,
             offset=20,
@@ -292,19 +492,19 @@ class TestTheFilteredCount:
         """The recipient alternation fans out; the total counts messages."""
         session = FakeSession(total=3)
 
-        total = repository(session).count_filtered(SearchFilters(recipient="bob"))
+        total = repository(session).count_filtered(SearchFilters(recipients=("bob",)))
 
         assert total == 3
         [cypher] = session.statements
         assert "count(DISTINCT m.id) AS total" in cypher
-        assert "MATCH (m)-[:SENT_TO|COPIED_TO]->(r:Address)" in cypher
+        assert "MATCH (m)-[:SENT_TO|COPIED_TO]->(r0:Address)" in cypher
         assert "SKIP" not in cypher
         assert "LIMIT" not in cypher
 
     def test_a_count_asks_for_no_display_sender(self) -> None:
         session = FakeSession()
 
-        repository(session).count_filtered(SearchFilters(recipient="bob"))
+        repository(session).count_filtered(SearchFilters(recipients=("bob",)))
 
         assert "OPTIONAL MATCH" not in session.statements[0]
 
@@ -422,7 +622,7 @@ class TestSearchMessages:
             total=7,
         )
 
-        page = reader(session, blobs).search_messages(SearchFilters(sender="anna"))
+        page = reader(session, blobs).search_messages(SearchFilters(senders=("anna",)))
 
         assert page.total == 7
         [hit] = page.hits

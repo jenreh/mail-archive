@@ -22,8 +22,8 @@
 #
 # The `app_*` environment variables below close that: every `BaseConfig` reads
 # its own `env_prefix` regardless of how it was constructed, so a bare config
-# lands in the sandbox too. This is the same belt-and-braces the root
-# `conftest.py` puts around the test suite, for the same reason.
+# lands in the sandbox too. This is the same belt-and-braces
+# `tests/sandbox_plugin.py` puts around the test suite, for the same reason.
 #
 # Note `app_database_url_override`, not `app_database_url`. `DatabaseConfig.url`
 # is a computed field over a stored `url_override`; the obvious name is accepted
@@ -97,6 +97,11 @@ tasks:
     desc: Rebuild the derived analysis nodes in the agent sandbox
     deps: [check]
     cmd: "{{.SANDBOX}} {{.RUNNER}} python -m app.derive"
+
+  repair:
+    desc: Repair the agent sandbox's conversations
+    deps: [check]
+    cmd: "{{.SANDBOX}} {{.RUNNER}} python -m app.repair"
 
   embed:
     desc: Compute the missing message embeddings in the agent sandbox

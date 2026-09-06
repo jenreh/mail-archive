@@ -32,12 +32,12 @@ empty" and that is a different, false claim.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from typing import Any
 
 import reflex as rx
 
 from mailarc_analytics import NodeKind, Subgraph
+from mailarc_ui.graph.chips import ChipGraphState
 from mailarc_ui.graph.model import (
     GraphView,
     LayoutName,
@@ -47,7 +47,6 @@ from mailarc_ui.graph.model import (
     defaults_for,
     elements_of,
     layout_of,
-    stylesheet_of,
 )
 from mailarc_ui.graph.reads import (
     answered,
@@ -57,9 +56,7 @@ from mailarc_ui.graph.reads import (
     picker_options,
     view_of,
 )
-from mailarc_ui.message_detail import MessageDetailState
 from mailarc_ui.tags.state import TagActionsState, read_tags
-from mailarc_ui.theme import Palette
 
 logger = logging.getLogger(__name__)
 
@@ -100,41 +97,7 @@ PICK_ONE = "Pick something to look at."
 it has one there is no question to answer."""
 
 
-def _sheet(palette: Mapping[str, str]) -> list[dict[str, Any]]:
-    """The canvas' rules for one colour scheme, kinds coloured by selector.
-
-    :func:`~mailarc_ui.graph.model.stylesheet_of` fills a node from
-    ``data(color)``, which is what lets one stylesheet serve a canvas whose
-    elements already know their colour. Here the *elements* are the thing that
-    must not change with the colour scheme — they are the biggest var on the
-    page and the picture is the same picture in both schemes — so a per-kind
-    rule is appended for each, and a later rule wins in cytoscape.
-    """
-    return [
-        *stylesheet_of(palette),
-        *(
-            {
-                "selector": f'node[kind = "{kind.value}"]',
-                "style": {"background-color": palette[kind.value]},
-            }
-            for kind in NodeKind
-        ),
-    ]
-
-
-LIGHT_STYLESHEET = _sheet(Palette.LIGHT)
-DARK_STYLESHEET = _sheet(Palette.DARK)
-"""The two stylesheets, built once at import.
-
-Not state, and deliberately: which one a reader sees is a fact about their
-browser rather than about the archive, so
-:mod:`mailarc_ui.graph.components` picks between them with
-``rx.color_mode_cond`` and the state never learns which. A var that only ever
-held one value would be a state that could disagree with the screen.
-"""
-
-
-class GraphExplorerState(TagActionsState, MessageDetailState, rx.State):
+class GraphExplorerState(TagActionsState, ChipGraphState, rx.State):
     """One corner of the graph: what to draw, what was drawn, what is picked."""
 
     view_name: str = GraphView.OVERVIEW.value

@@ -8,7 +8,7 @@
 # content-addressed and write-once, so anything it adds cannot afterwards be
 # told apart from a message that was really archived.
 #
-# The pytest suite is already sealed off by the root `conftest.py`, which
+# The pytest suite is already sealed off by `tests/sandbox_plugin.py`, which
 # redirects every `app_*` setting into a temporary directory and fails the run
 # if `.state` changes. This profile is the other half of that: the suite covers
 # tests, and this covers everything that drives the real application.

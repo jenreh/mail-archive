@@ -22,14 +22,20 @@ One module per concern:
     ``IntervalScheduler`` — the recurring trigger, which only ever enqueues.
     Its own module beside the queue, because "when should a job exist" is the
     one question the queue refuses to answer.
+``sweep``
+    ``MailboxSweep`` — *which* mailboxes owe a run, and the jobs that give them
+    one. The half of that question the schedule shares with the rail's Sync
+    button, which asks it on a person's say-so rather than on a timer.
 """
 
 from mailarc_sync.jobs.model import JobKind, JobProgress, JobState, SyncJob
 from mailarc_sync.jobs.queue import JobQueue, SessionFactory
 from mailarc_sync.jobs.scheduler import IntervalScheduler
+from mailarc_sync.jobs.sweep import MAILBOX_KINDS, MailboxSweep, SweepReport
 from mailarc_sync.jobs.worker import JobHandler, JobWorker, default_worker_id
 
 __all__ = [
+    "MAILBOX_KINDS",
     "IntervalScheduler",
     "JobHandler",
     "JobKind",
@@ -37,7 +43,9 @@ __all__ = [
     "JobQueue",
     "JobState",
     "JobWorker",
+    "MailboxSweep",
     "SessionFactory",
+    "SweepReport",
     "SyncJob",
     "default_worker_id",
 ]

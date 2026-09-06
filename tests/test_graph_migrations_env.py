@@ -11,9 +11,9 @@ migration" a natural next instruction and that resolution a live hazard.
 
 Asserted in a subprocess under a profile that moves the answer, because that is
 the only shape that can tell the two implementations apart. Inside this suite
-both a bare ``GraphConfig()`` and the composed one land on the sandbox — the
-root ``conftest.py`` sees to that — so an in-process assertion would pass
-either way and prove nothing.
+both a bare ``GraphConfig()`` and the composed one land on the sandbox —
+``tests/sandbox_plugin.py`` sees to that — so an in-process assertion would
+pass either way and prove nothing.
 
 Nothing connects: ``create_adapter`` is replaced before the module is imported,
 so the probe reports the host, port and graph name that *would* have been

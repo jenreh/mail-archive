@@ -41,6 +41,16 @@ _FIELD_CLASS = "ma-field"
 LABEL_GAP = 8
 """How far the control sits under its label — and a note under its control."""
 
+OPTION_LIMIT = 100
+"""How many options of a searchable dropdown reach the DOM at once.
+
+Mantine renders every option it is given, so a picker over an archive's whole
+address book would put thousands of nodes on a page that draws fifty. The cap
+is on the *rendering*, not on the data: the search still runs over the whole
+list, and what a person sees before typing is the first hundred — which is why
+the reads behind these lists come back busiest-first.
+"""
+
 FIELD_GAP = 18
 """What the design puts between one field and the next.
 
@@ -50,7 +60,9 @@ close to the box above it as to its own.
 """
 
 
-def field_label(label: rx.Var | str, hint: rx.Var | str = "") -> rx.Component:
+def field_label(
+    label: rx.Var | str, hint: rx.Var | str | rx.Component = ""
+) -> rx.Component:
     """Mono uppercase field label with an optional right-aligned hint."""
     return mn.group(
         mn.text(label, class_name="ma-field-label"),
@@ -63,13 +75,22 @@ def field_label(label: rx.Var | str, hint: rx.Var | str = "") -> rx.Component:
     )
 
 
-def _hint(hint: rx.Var | str) -> rx.Component:
+def _hint(hint: rx.Var | str | rx.Component) -> rx.Component:
     """The note across from a label, and nothing at all where there is none.
 
     A ``Var`` is decided in the browser rather than here — which is how a
     generated field marks itself required, since the provider that declared it
     is what says whether it is.
+
+    A **component** is drawn as it stands, and that is the slot's second job:
+    the archive already puts one short thing across from a label, so a control
+    that says how to read the field under it — the search form's *all / any*
+    switch over the recipients — belongs there rather than in a row of its
+    own. It is the caller's business to keep it small; anything a person saves
+    is a field and gets a label of its own.
     """
+    if isinstance(hint, rx.Component):
+        return hint
     drawn = mn.text(hint, class_name="ma-field-hint")
     if isinstance(hint, rx.Var):
         return rx.cond(hint != "", drawn, rx.fragment())
@@ -89,7 +110,7 @@ def _field_class(props: dict[str, Any]) -> str:
 
 def _labeled(
     label: rx.Var | str | None,
-    hint: rx.Var | str,
+    hint: rx.Var | str | rx.Component,
     description: str,
     field: rx.Component,
 ) -> rx.Component:
@@ -108,7 +129,7 @@ def _labeled(
 def _field(
     control: Callable[..., rx.Component],
     label: rx.Var | str | None,
-    hint: rx.Var | str,
+    hint: rx.Var | str | rx.Component,
     description: str,
     props: dict[str, Any],
 ) -> rx.Component:
@@ -119,18 +140,60 @@ def _field(
 
 def input_field(
     label: rx.Var | str | None = None,
-    hint: rx.Var | str = "",
+    hint: rx.Var | str | rx.Component = "",
     description: str = "",
+    on_clear: Any = None,
     **props: Any,
 ) -> rx.Component:
-    """A text input (filled + ``.ma-field``)."""
+    """A text input (filled + ``.ma-field``), optionally clearable.
+
+    ``on_clear`` is what a Select spells ``clearable``: Mantine gives its
+    dropdowns a clear button and gives a text box none, so the box gets the
+    same affordance built the same way — Mantine's own ``CloseButton`` in the
+    right section, shown only while there is something to clear. A form whose
+    picker empties in one gesture and whose text field has to be selected and
+    deleted is a form with two rules in it.
+
+    It takes a handler rather than a flag because a text box has no value of
+    its own to drop: emptying it is a state event, and only the caller knows
+    which one.
+    """
     props.setdefault("variant", "filled")
+    if on_clear is not None:
+        props.setdefault(
+            "right_section", _clear_section(props.get("value", ""), on_clear)
+        )
+        props.setdefault("right_section_pointer_events", "all")
     return _field(mn.text_input, label, hint, description, props)
+
+
+def _clear_section(value: Any, on_clear: Any) -> rx.Component:
+    """Mantine's clear button, drawn only while the box holds something.
+
+    ``rx.cond`` and not a ``disabled`` button: a control that is always there
+    and does nothing half the time reads as broken, and Mantine's own
+    ``clearable`` selects show the button on exactly this condition.
+
+    No ``variant``: ``appkit_mantine``'s ``CloseButton`` declares only ``icon``,
+    ``icon_size``, ``radius`` and ``size``, so anything else is passed through
+    as a **style** key — ``variant: transparent`` reached the DOM as a bogus CSS
+    declaration and Mantine used its own default anyway. Its default is the one
+    this design wants.
+    """
+    return rx.cond(
+        value != "",
+        mn.close_button(
+            on_click=on_clear,
+            size="sm",
+            aria_label="Clear this field",
+        ),
+        rx.fragment(),
+    )
 
 
 def password_field(
     label: rx.Var | str | None = None,
-    hint: rx.Var | str = "",
+    hint: rx.Var | str | rx.Component = "",
     description: str = "",
     **props: Any,
 ) -> rx.Component:
@@ -141,7 +204,7 @@ def password_field(
 
 def number_field(
     label: rx.Var | str | None = None,
-    hint: rx.Var | str = "",
+    hint: rx.Var | str | rx.Component = "",
     description: str = "",
     **props: Any,
 ) -> rx.Component:
@@ -156,7 +219,7 @@ def number_field(
 
 def select_field(
     label: rx.Var | str | None = None,
-    hint: rx.Var | str = "",
+    hint: rx.Var | str | rx.Component = "",
     description: str = "",
     **props: Any,
 ) -> rx.Component:
@@ -165,9 +228,29 @@ def select_field(
     return _field(mn.select, label, hint, description, props)
 
 
+def multi_select_field(
+    label: rx.Var | str | None = None,
+    hint: rx.Var | str | rx.Component = "",
+    description: str = "",
+    **props: Any,
+) -> rx.Component:
+    """A dropdown that keeps several picks as pills (filled + ``.ma-field``).
+
+    Its ``on_change`` hands over a ``list[str]`` rather than an event, so a
+    handler bound here takes a list — the same shape the state holds.
+
+    Over a long list, pass ``limit=OPTION_LIMIT`` the way
+    :func:`select_field`'s callers do; it is left to the call site for the
+    same reason no other prop is defaulted here — the kit decides what a field
+    looks like, not what one is for.
+    """
+    props.setdefault("variant", "filled")
+    return _field(mn.multi_select, label, hint, description, props)
+
+
 def date_field(
     label: rx.Var | str | None = None,
-    hint: rx.Var | str = "",
+    hint: rx.Var | str | rx.Component = "",
     description: str = "",
     **props: Any,
 ) -> rx.Component:
@@ -178,7 +261,7 @@ def date_field(
 
 def segmented_field(
     label: rx.Var | str | None = None,
-    hint: rx.Var | str = "",
+    hint: rx.Var | str | rx.Component = "",
     description: str = "",
     **props: Any,
 ) -> rx.Component:

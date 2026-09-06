@@ -4,8 +4,9 @@ The archive answers through :class:`~mailarc_core.ArchiveReader` and — for the
 semantic path — :class:`~mailarc_analytics.semantic.SemanticSearch`, both read
 out of the service registry inside the method that needs one (§6). Reading the
 message a row names is not here at all: it is
-:class:`~mailarc_ui.message_detail.MessageDetailState`, a mixin this state
-lists, so filling the list and reading one of its rows stay separable.
+:class:`~mailarc_ui.graph.ChipGraphState` — the reading pane's own mixin with
+its header chips wired to a picture — which this state lists, so filling the
+list and reading one of its rows stay separable.
 
 Three things are worth knowing before editing this file.
 
@@ -31,6 +32,7 @@ invites a reader to believe the numbers moved when only the label did.
 
 import asyncio
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 import reflex as rx
@@ -42,14 +44,26 @@ from mailarc_analytics.semantic import (
     SearchRequest,
     SemanticError,
 )
-from mailarc_core.archive.search import SearchFilters
-from mailarc_ui.message_detail.state import MessageDetailState
+from mailarc_core.archive.search import (
+    KnownAddresses,
+    KnownAttachments,
+    SearchFilters,
+)
+from mailarc_ui.graph import ChipGraphState
 from mailarc_ui.search import reads
+from mailarc_ui.search.files import (
+    kind_options,
+    names_of,
+    offered_kinds,
+    types_of,
+)
 from mailarc_ui.search.memberships import read_memberships
 from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
     ATTACH_WITHOUT,
+    MATCH_ALL,
+    MATCH_ANY,
     MODE_FULLTEXT,
     MODE_SEMANTIC,
     READ_GROUPINGS,
@@ -62,6 +76,7 @@ from mailarc_ui.search.model import (
     filters_of,
     grouping_of,
     lines_of,
+    partial_conversations,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,29 +97,85 @@ sent, so this is not about what a form can hold — it is the cut that stops a
 megabyte from reaching a Cypher parameter or a RediSearch query.
 """
 
+ADDRESS_LIMIT = 20
+"""How many addresses one picker carries.
+
+The same reasoning as :data:`FIELD_LIMIT` and a sharper reason besides: on the
+recipients' *all* reading every address is a pattern of its own in the
+statement, so a caller sending a thousand of them would build a
+thousand-clause query. Twenty is far past what either field is drawn to hold
+and far short of that.
+"""
+
 _EMPTY = SearchFilters()
 """The form nobody has filled in — the browse-the-newest read."""
 
 
-class MailSearchState(MessageDetailState, rx.State):
+class MailSearchState(ChipGraphState, rx.State):
     """The search page: the form, what it found, and the message being read.
 
     The mixin comes first in the bases, so what it defines is copied into this
-    state before ``rx.State`` makes it a real one.
+    state before ``rx.State`` makes it a real one. It is
+    :class:`~mailarc_ui.graph.ChipGraphState` rather than the reading pane's own
+    :class:`~mailarc_ui.message_detail.MessageDetailState` — the same pane with
+    the header's chips wired to a picture, which is what fills the third tab.
     """
 
     query: str = ""
     mode: str = MODE_FULLTEXT
-    sender: str = ""
-    recipient: str = ""
+    senders: list[str] = []
+    """The addresses picked under **From**, meaning *any of these*.
+
+    There is no switch beside it the way there is beside :attr:`recipients`,
+    because a message has exactly one sender: *from all of these* is a question
+    with no answer.
+    """
+
+    recipients: list[str] = []
+    """The addresses picked under **To**. Several, hence :attr:`recipient_match`."""
+
+    recipient_match: str = MATCH_ALL
+    """Whether **To** means *all of these* or *any of these* — the switch over
+    that field. See :data:`~mailarc_ui.search.model.MATCH_ALL`."""
+
     date_from: str = ""
     date_to: str = ""
     attachments: str = ATTACH_ANY
+
+    file_kinds: list[str] = []
+    """The file families picked under **File type**, each a
+    :class:`~mailarc_ui.message_detail.FileKind` value.
+
+    Families and not content types: what the archive is asked is
+    :func:`~mailarc_ui.search.files.types_of`'s expansion of this into the
+    types it actually holds, and a form that held the expansion would have to
+    re-derive which boxes are ticked from it.
+    """
+
+    file_type_options: list[dict[str, str]] = []
+    """What the file picker offers — one entry per family this archive holds
+    a file of, commonest first. Dicts and not plain strings, because a family
+    is shown as a word and comes back as its enum value."""
+
     account_id: str = ""
 
     accounts: list[dict[str, str]] = []
     """What the account picker offers — ``value`` is the account's row id as a
     string, which is what the graph keys an ``Account`` node under."""
+
+    sender_options: list[str] = []
+    recipient_options: list[str] = []
+    """Every address the archive holds in that role, busiest first.
+
+    Plain strings, because for an address the option and its label are the same
+    thing — unlike the accounts above, where a row id has to be shown as the
+    name somebody gave the mailbox.
+
+    Two lists and not one: an address that only ever received mail is not a
+    sender, and offering it under **From** would be offering a filter that
+    cannot match. The archive answers both in one read — see
+    :meth:`~mailarc_core.ArchiveReader.known_addresses`.
+    """
 
     rows: list[ResultRow] = []
     total: int = 0
@@ -174,6 +245,22 @@ class MailSearchState(MessageDetailState, rx.State):
 
     _expanding: str = ""
     """The one conversation whose fetch is running. Never :attr:`searching`."""
+
+    _content_types: list[str] = []
+    """Every content type this archive's files state, commonest first.
+
+    Backend-only: it is half the *expansion table* behind the file picker, not
+    something the browser draws, and it is read once with the address pickers
+    for the same reason — it costs a traversal of every attachment edge.
+    """
+
+    _untyped_names: list[str] = []
+    """The names of the files whose sender stated no type, commonest first.
+
+    The other half of the same table, and the reason a person picking **PDF**
+    finds the invoices that arrived as ``application/octet-stream`` — see
+    :mod:`mailarc_ui.search.files`.
+    """
 
     @rx.var
     def has_rows(self) -> bool:
@@ -260,12 +347,13 @@ class MailSearchState(MessageDetailState, rx.State):
             return self.semantic_ready and self.query.strip() != ""
         return bool(
             self.query.strip()
-            or self.sender.strip()
-            or self.recipient.strip()
+            or self.senders
+            or self.recipients
             or self.date_from.strip()
             or self.date_to.strip()
             or self.account_id.strip()
             or self.attachments != ATTACH_ANY
+            or self.file_kinds
         )
 
     @rx.var
@@ -276,6 +364,16 @@ class MailSearchState(MessageDetailState, rx.State):
     @rx.event
     def set_query(self, value: str) -> None:
         self.query = _kept(value)
+
+    @rx.event
+    def clear_query(self) -> None:
+        """Empty the question box. The clear button inside it.
+
+        Its own handler rather than ``set_query("")`` bound at the call site,
+        because the button is built in ``kit.inputs`` and the kit does not know
+        what a search is — it takes the event, not the var.
+        """
+        self.query = ""
 
     @rx.event
     def search_on_enter(self, key: str) -> EventCallback[()] | None:
@@ -289,12 +387,23 @@ class MailSearchState(MessageDetailState, rx.State):
         return MailSearchState.submit
 
     @rx.event
-    def set_sender(self, value: str) -> None:
-        self.sender = _kept(value)
+    def choose_senders(self, values: list[str]) -> None:
+        """The addresses to search for as the sender; an empty list clears it.
+
+        Several of them mean *any*, which is the only thing they can mean —
+        see :attr:`senders`.
+        """
+        self.senders = _offered(values, self.sender_options)
 
     @rx.event
-    def set_recipient(self, value: str) -> None:
-        self.recipient = _kept(value)
+    def choose_recipients(self, values: list[str]) -> None:
+        """The addresses to search for as recipients; an empty list clears it."""
+        self.recipients = _offered(values, self.recipient_options)
+
+    @rx.event
+    def choose_recipient_match(self, value: str) -> None:
+        """Whether **To** means all of the picked addresses or any of them."""
+        self.recipient_match = MATCH_ANY if value == MATCH_ANY else MATCH_ALL
 
     @rx.event
     def set_date_from(self, value: str) -> None:
@@ -303,6 +412,17 @@ class MailSearchState(MessageDetailState, rx.State):
     @rx.event
     def set_date_to(self, value: str) -> None:
         self.date_to = _kept(value)
+
+    @rx.event
+    def choose_file_kinds(self, values: list[str]) -> None:
+        """Which kinds of file a message has to carry — any of them.
+
+        Narrowed to what the picker offered, the guard every field on this
+        form keeps: the list arrives over the socket, and a family this
+        archive holds no files of would answer with an empty result list that
+        reads like an empty archive.
+        """
+        self.file_kinds = offered_kinds(values, self.file_type_options)
 
     @rx.event
     def choose_attachments(self, value: str) -> None:
@@ -346,11 +466,13 @@ class MailSearchState(MessageDetailState, rx.State):
         one.
         """
         self.query = ""
-        self.sender = ""
-        self.recipient = ""
+        self.senders = []
+        self.recipients = []
+        self.recipient_match = MATCH_ALL
         self.date_from = ""
         self.date_to = ""
         self.attachments = ATTACH_ANY
+        self.file_kinds = []
         self.account_id = ""
         self.mode = MODE_FULLTEXT
         self._forget()
@@ -410,10 +532,18 @@ class MailSearchState(MessageDetailState, rx.State):
         if not ids:
             return
         found = await _memberships_of(ids, wanted)
+        rows = tuple(self.rows)
+        whole = await asyncio.to_thread(
+            _whole_conversations, rows, found, wanted, datetime.now(UTC)
+        )
         async with self:
             if self.grouping != wanted.value:
                 return
             self._memberships = {**self._memberships, **found}
+            self._whole = {
+                **self._whole,
+                **{one: list(members) for one, members in whole.items()},
+            }
 
     @rx.event(background=True)
     async def show_whole_conversation(self, conversation_id: str) -> None:
@@ -445,11 +575,16 @@ class MailSearchState(MessageDetailState, rx.State):
     async def load(self) -> None:
         """What this page can offer, and the newest messages. Its ``on_load``.
 
-        Three reads that fail apart: whether the semantic path is available is
+        Four reads that fail apart: whether the semantic path is available is
         answered in memory, the account picker comes out of the archive's own
-        database, and the listing comes off the graph. A graph that is not
-        running has to leave the form usable, and a database that is not has
-        to leave the listing readable.
+        database, and the address pickers and the listing come off the graph. A
+        graph that is not running has to leave the form usable, and a database
+        that is not has to leave the listing readable.
+
+        The address pickers are filled here and nowhere else. They are two
+        traversals of the whole archive, and a list that is re-read while
+        somebody is typing into it is a list that moves under them — so it is
+        asked once, when the page opens.
         """
         async with self:
             self.searching = True
@@ -461,11 +596,21 @@ class MailSearchState(MessageDetailState, rx.State):
             grouping = grouping_of(self.grouping)
         ready, note = _semantic_offer()
         accounts = await _accounts()
+        addresses = await _addresses()
+        files = await _attachment_catalogue()
         answer = await _answer(MODE_FULLTEXT, _EMPTY, 0, grouping)
         async with self:
             self.semantic_ready = ready
             self.semantic_note = note
             self.accounts = accounts
+            self.sender_options = list(addresses.senders)
+            self.recipient_options = list(addresses.recipients)
+            self._content_types = list(files.content_types)
+            self._untyped_names = list(files.untyped_names)
+            self.file_type_options = kind_options(
+                files.content_types, files.untyped_names
+            )
+            self.file_kinds = offered_kinds(self.file_kinds, self.file_type_options)
             if not ready and self.mode == MODE_SEMANTIC:
                 self.mode = MODE_FULLTEXT
             self._apply(answer, append=False)
@@ -533,11 +678,14 @@ class MailSearchState(MessageDetailState, rx.State):
             return filters_of(query=self.query)
         return filters_of(
             query=self.query,
-            sender=self.sender,
-            recipient=self.recipient,
+            senders=self.senders,
+            recipients=self.recipients,
+            recipient_match=self.recipient_match,
             date_from=self.date_from,
             date_to=self.date_to,
             attachments=self.attachments,
+            file_types=types_of(self.file_kinds, self._content_types),
+            file_names=names_of(self.file_kinds, self._untyped_names),
             account_id=self.account_id,
         )
 
@@ -557,6 +705,10 @@ class MailSearchState(MessageDetailState, rx.State):
         self.offset = len(self.rows)
         if answer.grouping == self.grouping:
             self._memberships = {**self._memberships, **answer.memberships}
+            self._whole = {
+                **self._whole,
+                **{one: list(members) for one, members in answer.whole.items()},
+            }
         if self._row(self.selected_id) is None:
             self._clear_selection()
 
@@ -614,6 +766,27 @@ def _kept(value: str) -> str:
     return value[:FIELD_LIMIT]
 
 
+def _offered(values: list[str], options: list[str]) -> list[str]:
+    """One picker's value, narrowed to what the page actually offered.
+
+    The guard :meth:`MailSearchState.choose_account` keeps, for both address
+    fields: the list arrives over the socket, and an address the archive holds
+    in neither role could only ever answer with an empty result list — which
+    reads like an empty archive rather than like a bad filter.
+
+    Order is kept as the person picked it and duplicates are dropped: one
+    address twice is one filter, and on the recipients' *all* reading it would
+    otherwise be a second pattern matching the first one's node. Cut at
+    :data:`ADDRESS_LIMIT`.
+    """
+    known = set(options)
+    kept: list[str] = []
+    for one in values[:ADDRESS_LIMIT]:
+        if one in known and one not in kept:
+            kept.append(one)
+    return kept
+
+
 def _semantic_offer() -> tuple[bool, str]:
     """Whether the semantic segment can be offered, and why not when it cannot.
 
@@ -644,6 +817,38 @@ async def _accounts() -> list[dict[str, str]]:
     except Exception:
         logger.exception("Could not read the accounts for the search picker")
         return []
+
+
+async def _addresses() -> KnownAddresses:
+    """What the two address pickers offer, or two empty pickers.
+
+    The same bargain :func:`_accounts` strikes, for the same reason: the
+    address filters are optional fields, and a graph that cannot answer them
+    must not cost the listing beside them. Blocking, so it goes to a thread.
+    """
+    try:
+        return await asyncio.to_thread(reads.archive_reader().known_addresses)
+    except Exception:
+        logger.exception("Could not read the addresses for the search pickers")
+        return KnownAddresses()
+
+
+async def _attachment_catalogue() -> KnownAttachments:
+    """What the file picker offers, or an empty picker.
+
+    The bargain :func:`_addresses` strikes, for the same reason: the file
+    filter is one optional field, and a graph that cannot answer it must not
+    cost the listing beside it. Blocking, so it goes to a thread.
+
+    Both halves or neither: the picker is built from the two lists together,
+    and half a catalogue would offer families whose files it could not then
+    find.
+    """
+    try:
+        return await asyncio.to_thread(reads.archive_reader().known_attachments)
+    except Exception:
+        logger.exception("Could not read the files for the search picker")
+        return KnownAttachments()
 
 
 async def _answer(
@@ -689,14 +894,59 @@ def _filtered(filters: SearchFilters, offset: int, grouping: Grouping) -> Search
     )
     memberships = read_memberships([one.summary.id for one in page.hits], grouping)
     now = datetime.now(UTC)
+    rows = tuple(
+        ResultRow.from_summary(one.summary, now, one.relevance) for one in page.hits
+    )
     return SearchAnswer(
-        rows=tuple(
-            ResultRow.from_summary(one.summary, now, one.relevance) for one in page.hits
-        ),
+        rows=rows,
         total=page.total or 0,
         memberships=memberships,
+        whole=_whole_conversations(rows, memberships, grouping, now),
         grouping=grouping.value,
     )
+
+
+def _whole_conversations(
+    rows: Sequence[ResultRow],
+    memberships: Mapping[str, Membership],
+    grouping: Grouping,
+    now: datetime,
+) -> dict[str, tuple[ResultRow, ...]]:
+    """The full membership of every conversation this answer cut into.
+
+    **A thread is shown whole or not at all.** A search matches messages, and
+    the half of an exchange a person wrote themselves matches almost nothing
+    they type: their own replies carry neither the sender they filtered on nor,
+    usually, the words they searched for. Grouping the remainder under a
+    heading that says "2 of 3" is true and useless — it names a message the
+    list then refuses to show. So the missing members are read here, in the
+    same thread as the page, and travel with it.
+
+    One read for the page, not one per group: see
+    :meth:`~mailarc_core.ArchiveReader.conversation_members`. Nothing is read
+    when the list is grouped some other way, and nothing when every group is
+    already whole — the common case on an archive nobody has filtered.
+
+    A failure is swallowed, and that is the difference between this read and
+    the page's own: what it adds is completeness, and a list of the messages
+    that *did* match is a worse answer than a whole one but a far better one
+    than a fault. The groups then draw as they used to, chip and button and
+    all.
+    """
+    if grouping != Grouping.CONVERSATION:
+        return {}
+    wanted = partial_conversations(rows, memberships)
+    if not wanted:
+        return {}
+    try:
+        found = reads.archive_reader().conversation_members(wanted)
+    except Exception:
+        logger.exception("Could not read the whole of %d conversations", len(wanted))
+        return {}
+    return {
+        conversation: tuple(ResultRow.from_summary(one, now) for one in members)
+        for conversation, members in found.items()
+    }
 
 
 async def _memberships_of(ids: list[str], grouping: Grouping) -> dict[str, Membership]:
@@ -758,10 +1008,14 @@ async def _nearest(question: str, grouping: Grouping) -> SearchAnswer:
     rows = tuple(
         ResultRow.from_summary(one, now, scores.get(one.id)) for one in summaries
     )
+    whole = await asyncio.to_thread(
+        _whole_conversations, rows, memberships, grouping, now
+    )
     return SearchAnswer(
         rows=rows,
         total=len(rows),
         memberships=memberships,
+        whole=whole,
         grouping=grouping.value,
         notice=result.notice,
     )

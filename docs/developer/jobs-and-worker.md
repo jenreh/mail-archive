@@ -200,12 +200,13 @@ to back off.
 of work:
 
 ```python
-def build_handlers(engine, registry, session_factory, rebuild, embed):
+def build_handlers(engine, registry, session_factory, *, rebuild, embed, repair):
     return {
         JobKind.IMPORT: partial(_import, ..., mode=SyncCursorKind.FULL),
         JobKind.INCREMENTAL: partial(_import, ..., mode=SyncCursorKind.INCREMENTAL),
         JobKind.DERIVE: partial(_derive, rebuild),
         JobKind.EMBED: partial(_embed, embed),
+        JobKind.REPAIR: partial(_repair, repair),
     }
 ```
 
@@ -216,12 +217,24 @@ credential, storing the one the provider rotated mid-flight, reporting into the
 row the UI polls — is identical, so only the mode is bound differently. A second
 handler would be the same twenty lines with one argument changed, and two places
 to forget the credential in. `derive` recomputes what the whole archive means,
-and `embed` fills in the vectors the import never writes.
+`embed` fills in the vectors the import never writes, and `repair` gives mail
+archived before the conversation key learned its `Message-ID` fallback the
+thread its headers always named.
 
 A kind with no handler fails with "no handler registered", which is what the
 loop does with an unmapped kind. `tests/test_worker.py` asserts the mapping
 against `JobKind` itself, so the next kind that arrives without a handler fails
 a test rather than a user's job.
+
+A kind the worker's **enum** does not know is the other case, and it belongs to
+`JobQueue.claim` rather than to the handler map. The two halves of this
+application are two processes upgraded one at a time — the desktop app's worker
+is a child that keeps running across a code change — so the day a kind is added
+there is a window in which the page enqueues one the running worker has never
+heard of. `claim` fails that row with a sentence naming the fix ("restart the
+archive so the worker picks up the new code") and goes on to the next job.
+Before that guard it raised `ValueError` out of the poll loop and killed the
+process, which then came back and died on the same row.
 
 `_open_mailbox` builds the source **inside the caller's session**: a factory
 reads what it needs off the account row, and a row whose session has closed hands
@@ -345,11 +358,38 @@ watching, on a page that offers the rebuild button next to it. And only while no
 rebuild is already open, for the reason `find_open` exists: two rebuilds
 interleaving delete each other's rows.
 
+## The repair job
+
+A `repair` job names no account either, and for a different reason than the
+rebuild: a `Thread` is keyed per mailbox, but the walk is over every message in
+the archive. It runs
+[`app.repair.repair`](https://github.com/jenreh/mail-archive/blob/main/app/repair.py)
+inside `asyncio.to_thread`, which pages through the messages that carry no
+`IN_THREAD` edge and files each one under
+`{account}:{provider_thread_id or rfc_message_id}` — the same key
+`mailarc_core.archive.writer` uses on import, through the same
+`thread_key` function, so a repaired message lands in exactly the node the next
+import would have merged it onto.
+
+It exists because nothing else reaches that mail. The writer keyed a thread on
+the provider's id or on the root of `References` and on nothing else until the
+`Message-ID` fallback landed, so a conversation's *first* message got no node —
+and the import engine drops every reference `mail_archived_messages` already
+knows before a message is fetched, which means re-syncing rewrites nothing.
+
+The row is written **once, at the end**: `total` is the messages scanned,
+`done` the messages filed, `failed` the ones that could carry no key (a
+`sha256:` canonical id has no `Message-ID` for a reply to reference). There is
+no progress to report while it walks and no cancel to honour — the work is
+idempotent, page-ordered and over in seconds — so the panel shows a sentence
+rather than a bar. `/admin/status` counts what is left over and queues the job.
+
 ## Running it
 
 ```sh
-task sync:worker           # foreground, its own process
-task graph:rebuild-derived # one rebuild, no queue, no worker
+task sync:worker              # foreground, its own process
+task graph:rebuild-derived    # one rebuild, no queue, no worker
+task graph:repair-conversations  # one repair, no queue, no worker
 ```
 
 Under the desktop app it is a child of the web application, started by

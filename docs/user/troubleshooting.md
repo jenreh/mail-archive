@@ -28,6 +28,28 @@ Check the port. An unreachable server is a valid status, not an error — the
 reader returns `reachable=false` with the reason instead of raising, so the page
 can render "down" like any other state. The reason is in `error`.
 
+## A thread shows only the replies
+
+Symptom: the result list, grouped by **Conversation / Thread**, shows a reply
+as a heading that says `1 of 2`, and the message it answers sits below it as a
+row of its own instead of indented under it.
+
+The archive really does hold both, but only the reply is *in* the conversation.
+A message is joined to its siblings through the `Thread` node its headers name,
+and the key for a conversation's first message — which carries no `References`
+and no `In-Reply-To` — is its own `Message-ID`. Mail imported before the key
+learned that fallback got no node at all, so every old exchange is missing its
+opening message.
+
+Fix it on **Graph status** (`/admin/status`): the **Conversations** card counts
+the messages that sit in no conversation and **Repair conversations** files
+them. It reads the headers already in the graph — nothing is fetched, changed
+or deleted — and running it twice is harmless. On the command line it is
+`task graph:repair-conversations`.
+
+Re-syncing the mailbox does **not** fix it. The import drops every message it
+has already archived before it fetches anything, so it never rewrites the edge.
+
 ## Configuration looks half-applied
 
 Symptom: some settings follow the profile you asked for, others keep the

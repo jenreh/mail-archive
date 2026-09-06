@@ -15,6 +15,35 @@ one careless ``BlobStore(config)`` away from writing to the real store. The
 individual fixtures are careful today. This file makes the carelessness
 impossible tomorrow, for tests nobody has written yet.
 
+**A plugin, not a ``conftest.py``.** This was the repository root's
+``conftest.py`` until it moved here, and the move had to keep four properties
+that only a root conftest gets for free. ``-p tests.sandbox_plugin`` in
+``pyproject.toml``'s ``addopts`` keeps all four:
+
+* It reaches **every** testpath. ``testpaths`` names nine sibling directories —
+  ``tests`` and eight ``components/*/tests`` — whose only common ancestor is the
+  repository root, so a ``conftest.py`` in any one of them seals that one and
+  leaves the other eight resolving ``ArchiveConfig()`` to the real store. A
+  plugin named in the root ``addopts`` is not scoped to a directory at all.
+* It is loaded **before collection**. ``pytest_configure`` has to have set the
+  environment before the first test module is imported, because several build a
+  configuration object at import time — ``mailarc-analytics``'s ``corpus.py``
+  holds one as a module constant. ``-p`` plugins are imported in ``_preparse``,
+  earlier still.
+* :func:`pytest_addoption` still works. pytest honours that hook only from the
+  rootdir ``conftest.py`` or from a registered plugin; ``--allow-missing-runtime``
+  would simply not exist from anywhere else under ``tests/``.
+* It stays **off** for a component-standalone run, which is what
+  :func:`pytest_collection_modifyitems` relies on. ``addopts`` is read from the
+  ini file that wins, and inside ``components/mailarc-core`` that is the
+  component's own ``pyproject.toml``, which names no plugin — the same boundary
+  the old ``confcutdir`` gave.
+
+The import itself does not depend on the editable install that happens to put
+the repository root on ``sys.path`` today: ``pythonpath = ["."]`` is applied in
+``Config._preparse`` immediately *before* ``-p`` plugins are imported, so the
+root is there either way.
+
 Four mechanisms, because each closes a hole the others cannot reach:
 
 **Redirection.** Every ``app_*`` environment variable the components read is
@@ -73,7 +102,7 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 from mailarc_core.graph.runtime import DEFAULT_RUNTIME_DIR
 
-REAL_STATE = Path(__file__).parent / ".state"
+REAL_STATE = Path(__file__).resolve().parent.parent / ".state"
 """The live archive this file exists to keep tests away from."""
 
 RUNTIME_DIR = Path(DEFAULT_RUNTIME_DIR).resolve()
@@ -130,7 +159,7 @@ OVERRIDES = {
     # back to appkit's `postgresql://postgres@localhost` default, or to whatever
     # `config.yaml` says, which here is the real archive. A sandbox that looks
     # set and is not is worse than no sandbox at all, so this name is pinned by
-    # `tests/test_conftest_sandbox.py` rather than left to be rediscovered.
+    # `tests/test_sandbox_plugin.py` rather than left to be rediscovered.
     "app_database_url_override": f"sqlite+aiosqlite:///{SANDBOX / 'mail-archive.db'}",
     # A blob store of our own. This is the one that cannot be undone: the store
     # is content-addressed and write-once, so a fixture written into the real
@@ -195,7 +224,7 @@ def forget_dotenv() -> None:
     global _dotenv_dropped
     if _dotenv_dropped:
         return
-    original = BaseConfig.settings_customise_sources.__func__  # type: ignore[attr-defined]
+    original = BaseConfig.settings_customise_sources.__func__
 
     # The six positional parameters are pydantic-settings' hook signature, not
     # a choice this file gets to make.
@@ -217,7 +246,10 @@ def forget_dotenv() -> None:
         )
         return tuple(one for one in sources if one is not dotenv_settings)
 
-    BaseConfig.settings_customise_sources = classmethod(without_dotenv)  # type: ignore[assignment]
+    # Monkeypatching a `classmethod` onto a class is what this function is for,
+    # and no annotation describes it: the declared attribute is the bound method,
+    # not the descriptor that produces it. Narrow to the one rule, on the one line.
+    BaseConfig.settings_customise_sources = classmethod(without_dotenv)  # ty: ignore[invalid-assignment]
     _dotenv_dropped = True
 
 
@@ -266,9 +298,10 @@ def pytest_collection_modifyitems(
     coverage is not a gate.
 
     So a **repository-wide** run insists. A run inside a component keeps the
-    skips, because this hook lives in the root ``conftest.py`` and pytest does
-    not load it when the component's own ``pyproject.toml`` becomes the
-    rootdir — which is exactly the standalone case the skip messages describe.
+    skips, because this plugin is named in the root ``pyproject.toml``'s
+    ``addopts`` and pytest reads ``addopts`` from whichever ini file wins — which
+    inside a component is that component's own ``pyproject.toml``, naming no
+    plugin. That is exactly the standalone case the skip messages describe.
 
     ``--allow-missing-runtime`` is the deliberate way out, and being deliberate
     is its whole value: an operator who cannot vendor the runtime says so on
@@ -389,7 +422,7 @@ def report_change(before: dict[str, str], after: dict[str, str]) -> None:
     raise AssertionError(
         "the test run modified the real archive under .state — "
         f"{', '.join(changed)} changed. Either a test reached past the sandbox "
-        "this conftest sets up, or the application itself was running against "
+        "this plugin sets up, or the application itself was running against "
         "the real archive while the suite ran. Find out which before running "
         "the suite again: what a test wrote into a content-addressed, "
         "write-once blob store cannot be told apart from a real archived "

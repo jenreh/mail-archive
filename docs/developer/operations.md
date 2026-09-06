@@ -89,6 +89,7 @@ drop fails.
 
 ```sh
 task graph:rebuild-derived         # delete Group/Topic/Template, compute again
+task graph:repair-conversations    # file the messages that sit in no thread
 ```
 
 Not a migration, and deliberately in the same namespace as one so that the two

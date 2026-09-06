@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from mailarc_ui.kit import OPTION_LIMIT
 from mailarc_ui.message_detail.model import LabelChip
 from mailarc_ui.search.components import (
     _chips,
@@ -35,12 +36,19 @@ from mailarc_ui.search.components import (
     result_list,
     search_panel,
 )
-from mailarc_ui.search.form import ATTACHMENT_SEGMENTS, search_form
+from mailarc_ui.search.form import (
+    ANY_SENDER,
+    ATTACHMENT_SEGMENTS,
+    MATCH_SEGMENTS,
+    search_form,
+)
 from mailarc_ui.search.model import (
     ATTACH_ANY,
     ATTACH_WITH,
     ATTACH_WITHOUT,
     GROUPING_OPTIONS,
+    MATCH_ALL,
+    MATCH_ANY,
     ListLine,
 )
 from mailarc_ui.search.state import MailSearchState
@@ -52,12 +60,21 @@ The quotes are escaped because :func:`_drawn` dumps the tree as JSON — the
 render itself holds the prop as ``className:"ma-field"``.
 """
 
-FIELDS = 8
-"""Search, Mode, From, To, the two dates, Attachments, Account."""
+FIELDS = 9
+"""Search, Mode, From, To, the two dates, Attachments, File type, Account.
 
-DISABLED_BY_PATH = 6
-"""How many of them the semantic path switches off — everything but the
-question and the path selector itself."""
+The file picker counts even though it is behind an ``rx.cond``: a condition is
+a branch in the rendered tree, not a component that is absent from it, so both
+arms are drawn and only one is mounted.
+"""
+
+DISABLED_BY_PATH = 8
+"""How many controls the semantic path switches off.
+
+Every field but the question and the path selector — seven — plus the *all /
+any* switch over the recipients, which is not a field but would otherwise be
+a live control over a picker that is dead.
+"""
 
 SEMANTIC_NOTE = "the sender, date, attachment and account fields do not narrow it"
 """The ASCII tail of :data:`SEMANTIC_IS_TEXT_ONLY`.
@@ -199,6 +216,81 @@ class TestEveryFieldIsAKitField:
         """A search form whose Enter key does nothing is a form people fight."""
         assert "search_on_enter" in _drawn(search_form())
 
+    def test_the_question_box_can_be_emptied_in_one_gesture(self) -> None:
+        """Mantine's own ``CloseButton`` in the right section — the affordance
+        its selects get from ``clearable`` and its text inputs do not."""
+        drawn = _drawn(search_form())
+
+        assert "CloseButton" in drawn
+        assert "clear_query" in drawn
+
+
+class TestTheTwoAddressPickers:
+    """The **From** and **To** fields offer the archive's own addresses.
+
+    Read off the render, because the claim is not "the state holds two lists"
+    — the state tests make that one — but that each field is bound to the list
+    for *its* role. The two are one edit apart from each other, and a form
+    offering recipients under **From** would look completely normal.
+    """
+
+    def test_each_field_is_bound_to_the_list_for_its_role(self) -> None:
+        """The two are one edit apart from each other, and a form offering
+        recipients under **From** would look completely normal."""
+        drawn = _drawn(search_form())
+
+        assert "sender_options" in drawn
+        assert "choose_senders" in drawn
+        assert "recipient_options" in drawn
+        assert "choose_recipients" in drawn
+
+    def test_both_take_several_addresses(self) -> None:
+        """**From** as much as **To**: an archive holds mail from more than one
+        address a person thinks of as the same correspondent.
+
+        Three multi-selects on the form and only two of them here — the third
+        is the file picker, which takes several families for the same reason
+        and is not an address."""
+        assert _names(search_form().render()).count("MultiSelect") == 3
+
+    def test_only_the_recipients_carry_a_switch_over_them(self) -> None:
+        """The asymmetry is the data's, not the design's: a message has one
+        sender, so *from all of these* is a question with no answer — and the
+        **From** label says *any* in the slot the switch sits in."""
+        drawn = _drawn(search_form())
+
+        assert drawn.count("choose_recipient_match") == 1
+        assert ANY_SENDER in drawn
+
+    def test_neither_field_lets_a_filter_be_typed_that_cannot_match(self) -> None:
+        """No free text under either label: what the archive holds is what can
+        be asked for."""
+        drawn = _drawn(search_form())
+
+        assert "set_sender" not in drawn
+        assert "set_recipient" not in drawn
+
+    def test_every_picked_list_is_searchable_and_capped(self) -> None:
+        """An address book is not a list anybody scrolls — and Mantine renders
+        every option it is given, so the cap is what keeps a page that draws
+        fifty rows from holding thousands of dropdown nodes.
+
+        Three: both address pickers and the file picker, which is the same
+        control asking a smaller question and gets the same props for it — a
+        field that behaves like the one above it is one fewer thing to
+        learn."""
+        props = _props(search_form().render())
+
+        assert props.count("searchable:true") == 3
+        assert props.count(f"limit:{OPTION_LIMIT}") == 3
+
+    def test_every_control_that_holds_a_value_can_drop_it(self) -> None:
+        """Six: both address pickers, both dates, the file picker and the
+        account — the whole structured half. A filter that can be set has to be
+        unsettable in the same gesture, and the question box is the seventh
+        through its own ``CloseButton``."""
+        assert _props(search_form().render()).count("clearable:true") == 6
+
 
 class TestTheTwoPaths:
     def test_the_segments_come_from_the_state_rather_than_the_form(self) -> None:
@@ -228,6 +320,20 @@ class TestTheTwoPaths:
         """Disabling the fields is not enough — a form that quietly stops
         honouring what is typed in it is how a search lies."""
         assert SEMANTIC_NOTE in _drawn(search_form())
+
+    def test_the_recipient_switch_goes_dead_with_the_field_it_qualifies(
+        self,
+    ) -> None:
+        """It is chrome rather than a field, so nothing else in this file
+        counts it — and a live switch over a dead picker is the one way it
+        could be left behind."""
+        drawn = _drawn(search_form())
+
+        assert "choose_recipient_match" in drawn
+        assert MATCH_SEGMENTS == [
+            {"label": "all", "value": MATCH_ALL},
+            {"label": "any", "value": MATCH_ANY},
+        ]
 
     def test_the_attachment_segment_has_all_three_positions(self) -> None:
         assert [one["value"] for one in ATTACHMENT_SEGMENTS] == [

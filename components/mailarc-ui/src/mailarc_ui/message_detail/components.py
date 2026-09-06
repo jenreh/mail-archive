@@ -20,16 +20,25 @@ from mailarc_ui.kit import (
     attachment_card,
     avatar_initials,
     empty_panel,
+    glyph_action,
+    link_chip,
     message,
     quiet_button,
+    slide_over,
     soft_button,
     spinner,
 )
 from mailarc_ui.message_detail.model import (
+    GRAPH_GLYPH,
+    TAB_GRAPH,
     TAB_MESSAGE,
     TAB_SOURCE,
+    AddressRow,
     AttachmentRow,
+    ChipKind,
+    MessageChip,
 )
+from mailarc_ui.message_detail.preview import PreviewKind
 from mailarc_ui.message_detail.state import MessageDetailState
 
 ROW_BORDER = "1px solid var(--mantine-color-default-border)"
@@ -48,12 +57,69 @@ COLUMN = {**GROW, "display": "flex", "flexDirection": "column"}
 """A growing pane whose children stack and can grow the same way."""
 
 
-def _header_line(label: str, value: rx.Var | str) -> rx.Component:
-    """One ``From:``-style line of the header block."""
+def _graph_glyph(
+    state: type[MessageDetailState],
+    kind: str,
+    root: rx.Var | str,
+    label: rx.Var | str,
+) -> rx.Component:
+    """The little icon that opens one thing in the graph tab.
+
+    The same gesture the chips make, in the shape a line of running text can
+    hold: the subject, the sender and every recipient already say what they
+    are, so what hangs beside them is one glyph that says what pressing it
+    does. All of them open the third tab — there is one, and the last thing
+    pressed is what it stands for.
+    """
+    return glyph_action(
+        GRAPH_GLYPH,
+        f"Show {label} in the graph",
+        on_click=state.show_chip_graph(kind, root, label),
+    )
+
+
+def _address(state: type[MessageDetailState], row: AddressRow) -> rx.Component:
+    """One person on a ``To:`` line, with the way into their own graph."""
     return mn.group(
-        mn.text(label, size="sm", c="dimmed", w=48, style={"flexShrink": 0}),
-        mn.text(value, size="sm", style={"wordBreak": "break-word"}),
-        gap="xs",
+        mn.text(row.label, class_name="ma-reading-recipients"),
+        _graph_glyph(state, ChipKind.ADDRESS.value, row.address, row.label),
+        gap=2,
+        wrap="nowrap",
+        align="center",
+    )
+
+
+def _recipient_line(
+    state: type[MessageDetailState],
+    label: str,
+    # The class attribute is annotated with what the *state* holds and the
+    # class exposes a Var over it, so both spellings are the truth depending
+    # on which side you read from — the same seam `graph/components.py`
+    # documents on `hidden_kinds`.
+    rows: rx.Var | list[AddressRow],
+) -> rx.Component:
+    """One ``To:`` line of the header block, under the sender's name.
+
+    The label runs inline in front of the addresses rather than in a column of
+    its own: a mail client sets the whole line as one quiet sentence, and a
+    fixed label column would indent the addresses away from the name they
+    belong under. The label itself never shrinks, so a long recipient list
+    wraps inside its own box and the ``To:`` stays put.
+
+    The people wrap as entries rather than running together with commas,
+    because each of them now carries a glyph and a comma between a glyph and
+    the next name reads as punctuation belonging to the button.
+    """
+    return mn.group(
+        mn.text(label, class_name="ma-reading-recipient-label"),
+        mn.group(
+            rx.foreach(rows, lambda row: _address(state, row)),
+            gap=10,
+            wrap="wrap",
+            align="center",
+            style={"minWidth": 0},
+        ),
+        gap=6,
         wrap="nowrap",
         align="flex-start",
     )
@@ -67,58 +133,160 @@ row instead of one long ribbon; the filename ellipses inside the card.
 """
 
 
-def _attachment_card(row: AttachmentRow) -> rx.Component:
-    """One file on the card the kit offers files on."""
-    return attachment_card(row.filename, row.size_label, maw=ATTACHMENT_WIDTH)
+def _attachment_card(
+    state: type[MessageDetailState], row: AttachmentRow, index: int
+) -> rx.Component:
+    """One file on the card the kit offers files on, pressed to open it.
+
+    ``PDF · 591 KB`` under the name, and the family's own glyph on the tinted
+    square: a reader scanning a strip of six files is looking for *the
+    spreadsheet*, and six identical document glyphs make them read six
+    filenames to find it. The two halves of the meta line are joined here
+    rather than stored joined, because the panel's own heading needs the size
+    without the family beside it.
+
+    Addressed by position and not by name: two parts of one message routinely
+    arrive called ``image001.png``, and a panel that opened whichever came
+    first would be showing the wrong picture with no way to tell.
+
+    ``index`` is annotated ``int`` and arrives as a ``Var`` — what ``rx.foreach``
+    hands its second parameter — the same trade every item in this module makes:
+    the annotation says what the value *is* in the browser, and typing it as a
+    ``Var`` would only make the handler's own signature unassignable.
+    """
+    return attachment_card(
+        row.filename,
+        row.kind_label + " · " + row.size_label,
+        icon=row.icon,
+        maw=ATTACHMENT_WIDTH,
+        on_click=state.show_attachment(index),
+        class_name="ma-attachment-open",
+    )
+
+
+def _sender_line(state: type[MessageDetailState]) -> rx.Component:
+    """``Anna Bauer <anna@example.com>`` — the name in ink, the address grey.
+
+    One line and not two: the address is what the name stands for, so it
+    trails it rather than hanging under it, and it disappears entirely when
+    the sender gave no name and the two would read the same. The date closes
+    the line off at the far right, pushed there by the stylesheet rather than
+    by a spacer.
+    """
+    return mn.group(
+        mn.text(state.view.sender_name, class_name="ma-reading-sender"),
+        rx.cond(
+            state.sender_address_line != "",
+            mn.text(state.sender_address_line, class_name="ma-reading-address"),
+            rx.fragment(),
+        ),
+        _graph_glyph(
+            state,
+            ChipKind.ADDRESS.value,
+            state.view.sender_address,
+            state.view.sender_name,
+        ),
+        mn.text(state.view.date, class_name="ma-reading-date"),
+        gap=6,
+        wrap="nowrap",
+        align="center",
+        style={"minWidth": 0},
+    )
+
+
+AVATAR_SIZE = 40
+"""The initials circle beside the header, in pixels.
+
+It is the block's left gutter: the subject, the sender, the recipients and the
+chips all start where the circle ends, which is what makes the header read as
+one column rather than as four lines that happen to be near each other.
+"""
+
+
+def _chip(state: type[MessageDetailState], chip: MessageChip) -> rx.Component:
+    """One thing the message belongs to, pressed to draw it.
+
+    Two spellings of one pill and the difference is only ``on_click``: a topic
+    or a tag opens the graph tab, a group has no view to open — see
+    :data:`~mailarc_ui.message_detail.model.DRAWABLE_CHIPS`.
+    """
+    return rx.cond(
+        chip.drawable,
+        link_chip(
+            chip.icon,
+            chip.label,
+            on_click=state.show_chip_graph(chip.kind, chip.chip_id, chip.label),
+        ),
+        link_chip(chip.icon, chip.label),
+    )
 
 
 def message_header(state: type[MessageDetailState]) -> rx.Component:
-    """Who wrote it, when, about what, and what came with it.
+    """Who wrote it, when, about what, what came with it, and where it belongs.
 
-    The order a mail client uses and not the order a header block has: the
-    sender is a person — initials, name, address — with the date opposite,
-    and the subject is the largest thing on the page under them. ``To`` and
-    ``Cc`` stay as labelled lines below, because they answer a question that
-    is asked occasionally rather than every time.
+    The block a mail client draws, in its order and in one column: the subject
+    on top as the largest thing on the pane, the sender under it with the date
+    opposite, then ``To:`` and ``Cc:`` set quietly, then the chips naming the
+    topic, the tags and the group this mail sits in. The initials circle is the
+    gutter beside all of it, which is what aligns the subject with the names
+    below rather than leaving it hanging out to the left.
     """
-    return mn.stack(
-        mn.group(
-            avatar_initials(state.view.sender, size=44),
-            mn.stack(
-                mn.text(state.view.sender, class_name="ma-reading-sender"),
-                mn.text(state.view.sender_address, class_name="ma-reading-address"),
-                gap=2,
-                style={"minWidth": 0, "flex": "1 1 0%"},
-            ),
-            mn.text(state.view.date, class_name="ma-reading-date"),
-            gap=12,
-            align="flex-start",
-            wrap="nowrap",
-        ),
-        mn.title(
-            state.view.subject,
-            order=3,
-            line_clamp=2,
-            class_name="ma-reading-subject",
-        ),
+    return mn.group(
+        avatar_initials(state.view.sender_name, size=AVATAR_SIZE),
         mn.stack(
-            _header_line("To", state.view.recipients),
+            mn.group(
+                mn.title(
+                    state.view.subject,
+                    order=3,
+                    line_clamp=2,
+                    class_name="ma-reading-subject",
+                ),
+                _graph_glyph(
+                    state,
+                    ChipKind.MESSAGE.value,
+                    state.selected_id,
+                    state.view.subject,
+                ),
+                gap=6,
+                wrap="nowrap",
+                align="flex-start",
+                style={"minWidth": 0},
+            ),
+            _sender_line(state),
+            _recipient_line(state, "To:", state.view.recipients),
             rx.cond(
                 state.has_cc,
-                _header_line("Cc", state.view.cc),
-                mn.text(""),
+                _recipient_line(state, "Cc:", state.view.cc),
+                rx.fragment(),
             ),
-            gap=2,
-        ),
-        rx.cond(
-            state.has_attachments,
-            mn.group(
-                rx.foreach(state.view.attachments, _attachment_card),
-                gap="xs",
+            rx.cond(
+                state.chips,
+                mn.group(
+                    rx.foreach(state.chips, lambda one: _chip(state, one)),
+                    gap=6,
+                    wrap="wrap",
+                    class_name="ma-reading-chips",
+                ),
+                rx.fragment(),
             ),
-            mn.text(""),
+            rx.cond(
+                state.has_attachments,
+                mn.group(
+                    rx.foreach(
+                        state.view.attachments,
+                        lambda row, index: _attachment_card(state, row, index),
+                    ),
+                    gap="xs",
+                    class_name="ma-reading-files",
+                ),
+                rx.fragment(),
+            ),
+            gap=4,
+            style={"minWidth": 0, "flex": "1 1 0%"},
         ),
-        gap="sm",
+        gap=12,
+        align="flex-start",
+        wrap="nowrap",
         class_name="ma-reading-header",
     )
 
@@ -241,8 +409,175 @@ def _tab_panel(value: str, body: rx.Component) -> rx.Component:
     return mn.tabs.panel(body, value=value, pt="sm")
 
 
-def message_tabs(state: type[MessageDetailState]) -> rx.Component:
-    """The right column: Message and Source, or a prompt to pick something."""
+PREVIEW_FRAME = {
+    **GROW,
+    "width": "100%",
+    "border": "0",
+    "background": "var(--ma-surface)",
+    "borderRadius": "var(--mantine-radius-sm)",
+}
+"""The frame an attachment renders in, sized by its parent's layout.
+
+Same flex sizing and same reason as :data:`GROW` — a percentage height inside
+a drawer body resolves against nothing and collapses to 150 pixels.
+"""
+
+
+def _preview_head(state: type[MessageDetailState]) -> rx.Component:
+    """What the file is, over what it shows: the type and the size.
+
+    The drawer's own title carries the name, so this says the two things a
+    name does not — and it says them for a file that has no preview too,
+    where they are the whole of the answer.
+    """
+    return mn.group(
+        mn.text(state.preview.content_type, class_name="ma-preview-type"),
+        mn.text(state.preview.size_label, class_name="ma-preview-size"),
+        gap=8,
+        align="baseline",
+        wrap="wrap",
+    )
+
+
+def _preview_body(state: type[MessageDetailState]) -> rx.Component:
+    """The file itself, in whichever of the four shapes it takes.
+
+    A chain of ``rx.cond`` over one string rather than a lookup, because the
+    choice is made in the browser: what crosses is
+    :attr:`~mailarc_ui.message_detail.preview.AttachmentPreview.kind` as text,
+    and each branch is a different element with different props.
+    """
+    return rx.cond(
+        state.preview.kind == PreviewKind.IMAGE.value,
+        _preview_image(state),
+        rx.cond(
+            state.preview.kind == PreviewKind.PDF.value,
+            _preview_pdf(state),
+            rx.cond(
+                state.preview.kind == PreviewKind.HTML.value,
+                _preview_html(state),
+                rx.cond(
+                    state.preview.kind == PreviewKind.TEXT.value,
+                    _preview_text(state),
+                    _preview_none(state),
+                ),
+            ),
+        ),
+    )
+
+
+def _preview_image(state: type[MessageDetailState]) -> rx.Component:
+    """A picture, scaled to the panel and centred on it.
+
+    Straight in the page rather than in a frame: an ``<img>`` never runs what
+    is inside it — an SVG's script included — so the frame would buy nothing
+    and would cost the picture its ability to size itself to the panel.
+    """
+    return mn.center(
+        rx.image(
+            src=state.preview.source,
+            alt=state.preview.filename,
+            style={"maxWidth": "100%", "maxHeight": "100%", "objectFit": "contain"},
+        ),
+        style={**GROW, "overflow": "auto"},
+    )
+
+
+def _preview_pdf(state: type[MessageDetailState]) -> rx.Component:
+    """A PDF in the browser's own viewer.
+
+    The one frame in this application without a ``sandbox`` attribute, and it
+    is deliberate: the viewer is a plugin and ``sandbox=""`` blocks plugins,
+    so a sandboxed frame renders a blank rectangle. What the sandbox was for
+    is kept anyway — a ``data:`` URI is an opaque origin, so the document
+    inside cannot reach this page — and see
+    :mod:`mailarc_ui.message_detail.preview` for the whole argument.
+    """
+    return rx.el.iframe(
+        src=state.preview.source,
+        referrer_policy="no-referrer",
+        title=state.preview.filename,
+        style=PREVIEW_FRAME,
+    )
+
+
+def _preview_html(state: type[MessageDetailState]) -> rx.Component:
+    """A page of HTML in the same sandbox a mail body gets, under the same CSP."""
+    return rx.el.iframe(
+        src_doc=state.preview.document,
+        sandbox="",
+        referrer_policy="no-referrer",
+        title=state.preview.filename,
+        style=PREVIEW_FRAME,
+    )
+
+
+def _preview_text(state: type[MessageDetailState]) -> rx.Component:
+    """A text file, set monospaced and wrapped, scrolling inside the panel."""
+    return mn.scroll_area(
+        mn.code(
+            state.preview.text,
+            block=True,
+            style={"whiteSpace": "pre-wrap", "wordBreak": "break-word"},
+        ),
+        type="hover",
+        style=GROW,
+    )
+
+
+def _preview_none(state: type[MessageDetailState]) -> rx.Component:
+    """A file a browser cannot draw — said plainly, with its glyph."""
+    return empty_panel(
+        state.preview.icon,
+        "No preview",
+        state.preview.filename,
+        style=GROW,
+    )
+
+
+def attachment_panel(state: type[MessageDetailState]) -> rx.Component:
+    """The slide-in panel one of the header's files opens into.
+
+    Mounted beside the tabs rather than inside the message panel, so that the
+    reader who opens a file, looks at the source and comes back finds the same
+    panel where they left it — a drawer inside a tab that unmounts would take
+    the file with it.
+    """
+    return slide_over(
+        mn.stack(
+            _preview_head(state),
+            rx.cond(
+                state.preview_note_shown,
+                message(state.preview.note, "note"),
+                rx.fragment(),
+            ),
+            rx.cond(state.preview_loading, spinner(), _preview_body(state)),
+            gap="sm",
+            style=COLUMN,
+        ),
+        opened=state.preview_open,
+        on_close=state.close_attachment,
+        title=state.preview.filename,
+    )
+
+
+def message_tabs(
+    state: type[MessageDetailState],
+    graph_panel: rx.Component | None = None,
+) -> rx.Component:
+    """The right column: Message and Source, or a prompt to pick something.
+
+    ``graph_panel`` is the third tab's body, and it is an argument rather than
+    something built here because the reading pane cannot draw a graph: the
+    canvas and its projection live in :mod:`mailarc_ui.graph`, which already
+    reads this module for its own reading column. Whoever composes the pane
+    supplies the panel — :func:`mailarc_ui.graph.chip_graph_panel` — and a
+    caller that passes none gets the two tabs it always had.
+
+    The tab itself only exists once a chip has been pressed, which is why it
+    is behind an ``rx.cond`` and carries :attr:`chip_label` rather than a
+    fixed name: it stands for that topic, tag or group, not for a view.
+    """
     return rx.cond(
         state.has_selection,
         rx.cond(
@@ -260,9 +595,11 @@ def message_tabs(state: type[MessageDetailState]) -> rx.Component:
                         value=TAB_SOURCE,
                         left_section=rx.icon("code", size=14),
                     ),
+                    _chip_tab(state, graph_panel),
                 ),
                 _tab_panel(TAB_MESSAGE, message_view(state)),
                 _tab_panel(TAB_SOURCE, raw_message_view(state)),
+                _chip_panel(state, graph_panel),
                 value=state.tab,
                 on_change=state.show_tab,
                 keep_mounted=False,
@@ -277,3 +614,46 @@ def message_tabs(state: type[MessageDetailState]) -> rx.Component:
             "It shows up here, readable or as its raw source.",
         ),
     )
+
+
+def message_pane(
+    state: type[MessageDetailState],
+    graph_panel: rx.Component | None = None,
+) -> rx.Component:
+    """The tabs, and the panel a file on the open message slides in over.
+
+    One function so that a page composing a reading pane gets both without
+    having to know the second one exists — and so the drawer sits outside the
+    tabs, where ``keep_mounted=False`` cannot take it down mid-read.
+    """
+    return rx.fragment(message_tabs(state, graph_panel), attachment_panel(state))
+
+
+def _chip_tab(
+    state: type[MessageDetailState], graph_panel: rx.Component | None
+) -> rx.Component:
+    """The third tab, after Source, when there is one to show."""
+    if graph_panel is None:
+        return rx.fragment()
+    return rx.cond(
+        state.chip_open,
+        mn.tabs.tab(
+            state.chip_label,
+            value=TAB_GRAPH,
+            left_section=rx.icon("share-2", size=14),
+        ),
+        rx.fragment(),
+    )
+
+
+def _chip_panel(
+    state: type[MessageDetailState], graph_panel: rx.Component | None
+) -> rx.Component:
+    """Its body — mounted only while the tab is on the strip.
+
+    ``keep_mounted=False`` takes care of the panel that is not selected; this
+    guards the case Mantine cannot see, which is a panel whose *tab* is gone.
+    """
+    if graph_panel is None:
+        return rx.fragment()
+    return rx.cond(state.chip_open, _tab_panel(TAB_GRAPH, graph_panel), rx.fragment())

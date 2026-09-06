@@ -13,6 +13,8 @@ allows nothing remote. That is the whole defence against a hostile mail, and it
 is the browser's, not a tag allow-list of ours.
 """
 
+from collections.abc import Callable
+
 import appkit_mantine as mn
 import reflex as rx
 
@@ -320,6 +322,28 @@ def remote_content_bar(state: type[MessageDetailState]) -> rx.Component:
     )
 
 
+SANDBOX_FRAME = {
+    **GROW,
+    "width": "100%",
+    "border": "0",
+    # The frame element is in *this* document, so a token resolves here
+    # normally. The document inside it is another matter — see
+    # `message_detail/model.py`'s FRAME_STYLE.
+    "background": "var(--ma-surface)",
+    "borderRadius": "var(--mantine-radius-sm)",
+}
+"""The frame a sandboxed document renders in, sized by its parent's layout.
+
+Both of them: the mail body in :func:`message_body` and an HTML attachment in
+:func:`_preview_html`. They were two identical literals under two names until
+the second was written, which is one edit away from a mail body and an
+attachment drawn on different grounds for no reason anyone chose.
+
+Same flex sizing and same reason as :data:`GROW` — a percentage height inside
+a drawer body resolves against nothing and collapses to 150 pixels.
+"""
+
+
 def message_body(state: type[MessageDetailState]) -> rx.Component:
     """The sender's HTML in a sandbox, or the text body when there is none."""
     return rx.cond(
@@ -329,16 +353,7 @@ def message_body(state: type[MessageDetailState]) -> rx.Component:
             sandbox="",
             referrer_policy="no-referrer",
             title="Message body",
-            style={
-                **GROW,
-                "width": "100%",
-                "border": "0",
-                # The frame element is in *this* document, so a token resolves
-                # here normally. The document inside it is another matter — see
-                # `message_detail/model.py`'s FRAME_STYLE.
-                "background": "var(--ma-surface)",
-                "borderRadius": "var(--mantine-radius-sm)",
-            },
+            style=SANDBOX_FRAME,
         ),
         mn.scroll_area(
             mn.text(
@@ -414,20 +429,6 @@ def _tab_panel(value: str, body: rx.Component) -> rx.Component:
     return mn.tabs.panel(body, value=value, pt="sm")
 
 
-PREVIEW_FRAME = {
-    **GROW,
-    "width": "100%",
-    "border": "0",
-    "background": "var(--ma-surface)",
-    "borderRadius": "var(--mantine-radius-sm)",
-}
-"""The frame an attachment renders in, sized by its parent's layout.
-
-Same flex sizing and same reason as :data:`GROW` — a percentage height inside
-a drawer body resolves against nothing and collapses to 150 pixels.
-"""
-
-
 def _preview_head(state: type[MessageDetailState]) -> rx.Component:
     """What the file is, over what it shows: the type and the size.
 
@@ -460,19 +461,8 @@ def _preview_body(state: type[MessageDetailState]) -> rx.Component:
     can read down, with ``NONE`` visibly at the end as the one that catches
     everything else.
     """
-    shapes = (
-        (PreviewKind.IMAGE, _preview_image),
-        (PreviewKind.PDF, _preview_pdf),
-        (PreviewKind.HTML, _preview_html),
-        (PreviewKind.TEXT, _preview_text),
-        (PreviewKind.CALENDAR, _preview_calendar),
-        (PreviewKind.CONTACT, _preview_contact),
-        (PreviewKind.SLIDES, _preview_slides),
-        (PreviewKind.DOCUMENT, _preview_document),
-        (PreviewKind.SPREADSHEET, _preview_spreadsheet),
-    )
     body = _preview_none(state)
-    for kind, build in reversed(shapes):
+    for kind, build in reversed(PREVIEW_SHAPES):
         body = rx.cond(state.preview.kind == kind.value, build(state), body)
     return body
 
@@ -494,26 +484,6 @@ def _preview_image(state: type[MessageDetailState]) -> rx.Component:
     )
 
 
-def _preview_pdf(state: type[MessageDetailState]) -> rx.Component:
-    """A PDF, drawn by pdfium in the page rather than by the browser.
-
-    This used to be an ``<iframe>`` pointed at a ``data:`` URI — the one frame
-    in the application without a ``sandbox`` attribute, because the browser's
-    PDF viewer is a plugin and ``sandbox=""`` blocks plugins. That worked. It
-    was replaced because it was the only one of the four document kinds with
-    no page rail and no shared header, so an invoice opened after a deck was a
-    different viewer.
-
-    The isolation the frame gave is not lost with it: the bytes now go to a
-    WebAssembly parser in this page rather than to a plugin, and nothing about
-    them is fetched or executed. See :mod:`mailarc_ui.kit.viewer_pdf`.
-    """
-    return pdf_viewer(
-        encoded=state.preview.encoded,
-        file_name=state.preview.filename,
-    )
-
-
 def _preview_html(state: type[MessageDetailState]) -> rx.Component:
     """A page of HTML in the same sandbox a mail body gets, under the same CSP."""
     return rx.el.iframe(
@@ -521,7 +491,7 @@ def _preview_html(state: type[MessageDetailState]) -> rx.Component:
         sandbox="",
         referrer_policy="no-referrer",
         title=state.preview.filename,
-        style=PREVIEW_FRAME,
+        style=SANDBOX_FRAME,
     )
 
 
@@ -549,25 +519,40 @@ def _preview_contact(state: type[MessageDetailState]) -> rx.Component:
     return contact_preview(state, style=GROW)
 
 
-def _preview_slides(state: type[MessageDetailState]) -> rx.Component:
-    """A slide deck, drawn from the bytes rather than described.
+def _bytes_viewer(
+    build: Callable[..., rx.Component],
+) -> Callable[[type[MessageDetailState]], rx.Component]:
+    """A shape drawn by handing a renderer the file's bytes and its name.
 
-    Each of these three renderers is a lazy chunk of about a megabyte, fetched
-    only when somebody opens a file of that kind — a reader who never gets a
-    deck never pays for one. See :mod:`mailarc_ui.kit.viewer`.
+    Three of the four document kinds were three functions with the same two
+    lines in them and a different builder on top — a PDF, a deck and a Word
+    document differ in which lazy chunk gets fetched and in nothing this module
+    decides. The spreadsheet is not on this path because it is genuinely
+    different: it has to be told which way round the colour scheme goes.
+
+    Each renderer is a lazy chunk of about a megabyte, fetched only when
+    somebody opens a file of that kind — a reader who never gets a deck never
+    pays for one. See :mod:`mailarc_ui.kit.viewer`, and the ``viewer_*.jsx``
+    files beside it for what each one does with the bytes.
+
+    A note worth keeping about the PDF in particular: it used to be an
+    ``<iframe>`` pointed at a ``data:`` URI — the one frame in the application
+    without a ``sandbox`` attribute, because the browser's PDF viewer is a
+    plugin and ``sandbox=""`` blocks plugins. That worked, and was replaced
+    because it was the only one of the four document kinds with no page rail
+    and no shared header, so an invoice opened after a deck was a different
+    viewer. The isolation the frame gave is not lost with it: the bytes go to a
+    WebAssembly parser in this page rather than to a plugin, and nothing about
+    them is fetched or executed.
     """
-    return pptx_viewer(
-        encoded=state.preview.encoded,
-        file_name=state.preview.filename,
-    )
 
+    def draw(state: type[MessageDetailState]) -> rx.Component:
+        return build(
+            encoded=state.preview.encoded,
+            file_name=state.preview.filename,
+        )
 
-def _preview_document(state: type[MessageDetailState]) -> rx.Component:
-    """A Word document, with a rail of page previews beside it."""
-    return docx_viewer(
-        encoded=state.preview.encoded,
-        file_name=state.preview.filename,
-    )
+    return draw
 
 
 def _preview_spreadsheet(state: type[MessageDetailState]) -> rx.Component:
@@ -593,6 +578,30 @@ def _preview_none(state: type[MessageDetailState]) -> rx.Component:
     )
 
 
+PREVIEW_SHAPES: tuple[
+    tuple[PreviewKind, Callable[[type[MessageDetailState]], rx.Component]], ...
+] = (
+    (PreviewKind.IMAGE, _preview_image),
+    (PreviewKind.PDF, _bytes_viewer(pdf_viewer)),
+    (PreviewKind.HTML, _preview_html),
+    (PreviewKind.TEXT, _preview_text),
+    (PreviewKind.CALENDAR, _preview_calendar),
+    (PreviewKind.CONTACT, _preview_contact),
+    (PreviewKind.SLIDES, _bytes_viewer(pptx_viewer)),
+    (PreviewKind.DOCUMENT, _bytes_viewer(docx_viewer)),
+    (PreviewKind.SPREADSHEET, _preview_spreadsheet),
+)
+"""Every shape there is to draw, and what draws it.
+
+Read down it: this is the whole of what the panel can do, with
+:attr:`~mailarc_ui.message_detail.preview.PreviewKind.NONE` deliberately absent
+because it is the floor :func:`_preview_body` folds the rest onto rather than a
+branch of its own. A member of ``PreviewKind`` left out of this table is a file
+that silently falls through to *No preview*, which is why
+``test_ui_message_preview.py`` walks the enum against a rendered pane.
+"""
+
+
 def attachment_panel(state: type[MessageDetailState]) -> rx.Component:
     """The slide-in panel one of the header's files opens into.
 
@@ -615,6 +624,10 @@ def attachment_panel(state: type[MessageDetailState]) -> rx.Component:
         ),
         opened=state.preview_open,
         on_close=state.close_attachment,
+        # Not `on_close`: closing starts an animation, and the panel is still
+        # on screen through all of it. Dropping the file here would blink it to
+        # *No preview* on the way out — see `release_attachment`.
+        on_exit_transition_end=state.release_attachment,
         title=state.preview.filename,
     )
 

@@ -26,7 +26,7 @@ import "@extend-ai/react-pptx/styles.css";
 import pptxWasmUrl from "@extend-ai/react-pptx/pptx_wasm_bg.wasm?url";
 
 import { useDecoded } from "./viewer_bytes.js";
-import { ViewerBoundary, ViewerShell } from "./viewer_shell.jsx";
+import { ViewerShell, withBoundary } from "./viewer_shell.jsx";
 
 setWasmSource(pptxWasmUrl);
 
@@ -145,10 +145,4 @@ function SlideThumb({ controller, index }) {
 /* Wrapped rather than exported bare: a parser that throws while rendering
  * would otherwise take the whole preview panel down with it. See
  * `ViewerBoundary` in `viewer_shell.jsx`. */
-export default function PptxViewer(props) {
-  return (
-    <ViewerBoundary fileName={props.fileName}>
-      <PptxDeck {...props} />
-    </ViewerBoundary>
-  );
-}
+export default withBoundary(PptxDeck);

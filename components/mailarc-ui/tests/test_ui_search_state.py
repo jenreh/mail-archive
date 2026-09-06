@@ -65,7 +65,7 @@ from mailarc_core.archive.search import (
 )
 from mailarc_core.database.entities import MailAccountEntity
 from mailarc_core.mail.model import LabelKind
-from mailarc_ui.message_detail import FileKind
+from mailarc_ui.message_detail.filetype import FileKind
 from mailarc_ui.search import memberships, reads
 from mailarc_ui.search.answers import PAGE_SIZE, SEMANTIC_HITS
 from mailarc_ui.search.model import (

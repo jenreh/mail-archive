@@ -27,7 +27,7 @@ arrives on mail turns out to be. Narrower and a PDF is a column of grey.
 
 Wider than Mantine's ``xl`` since the panel started opening documents rather
 than describing them. A Word document and a PDF each carry a rail of page
-previews, and :mod:`mailarc_ui.kit.viewer_shell` puts that rail beside the
+previews, and ``kit/viewer_shell.jsx`` puts that rail beside the
 page only above 768 pixels of *container*: at ``xl`` the panel was about 800
 pixels before its own padding, so every rail was an overlay and the reader had
 to ask for the thing they had just opened the file to see.

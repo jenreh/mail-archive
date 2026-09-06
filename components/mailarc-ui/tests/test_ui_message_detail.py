@@ -31,7 +31,15 @@ from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.archive.model import Address, BlobKind, TagSummary
 from mailarc_core.archive.reader import GraphSessionFactory
 from mailarc_core.mail.model import EmailAddress, LabelKind
-from mailarc_ui.message_detail import (
+from mailarc_ui.message_detail.components import (
+    message_body,
+    message_header,
+    message_tabs,
+    message_view,
+    raw_message_view,
+    remote_content_bar,
+)
+from mailarc_ui.message_detail.model import (
     CHIP_ICONS,
     CHIP_KINDS,
     DRAWABLE_CHIPS,
@@ -41,27 +49,21 @@ from mailarc_ui.message_detail import (
     TAB_MESSAGE,
     TAB_SOURCE,
     ChipKind,
-    MessageDetailState,
     address_label,
     address_suffix,
     chips_for,
-    chips_of,
     decode_raw,
     frame_document,
     group_chip,
     label_text,
     long_date_label,
-    message_body,
-    message_header,
-    message_tabs,
-    message_view,
-    raw_message_view,
-    remote_content_bar,
     sender_label,
     size_label,
     tag_chip,
     topic_chip,
 )
+from mailarc_ui.message_detail.reads import chips_of
+from mailarc_ui.message_detail.state import MessageDetailState
 
 RAW = (
     b"From: Jens <jens@example.com>\r\n"

@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 _NO_VIEW = MessageView()
 _NO_PREVIEW = AttachmentPreview()
+"""Nothing chosen yet. A sentinel keeps every component free of ``None``."""
 
 ATTACHMENT_CACHE_LIMIT = 16 * 1024 * 1024
 """How many bytes of one message's files are worth holding while it is open.
@@ -65,9 +66,6 @@ mistake.
 def _worth_keeping(attachments: Sequence[ParsedAttachment]) -> bool:
     """Whether this message's files are small enough to hold on to."""
     return sum(len(one.payload) for one in attachments) <= ATTACHMENT_CACHE_LIMIT
-
-
-"""Nothing chosen yet. A sentinel keeps every component free of `None`."""
 
 
 class MessageDetailState(rx.State, mixin=True):
@@ -242,18 +240,6 @@ class MessageDetailState(rx.State, mixin=True):
 
     @rx.event
     async def show_attachment(self, index: int) -> None:
-        """Open the file the strip's nth card names, in the panel beside it.
-
-        The panel goes up before the read, so a scanned invoice shows its own
-        name over a spinner rather than nothing at all: the reader has already
-        pressed and is owed the acknowledgement even while the bytes are still
-        coming off disk.
-
-        The index arrives over the socket and is therefore checked against what
-        is on screen rather than trusted — the same guard the list keeps for a
-        message id. Everything else that can go wrong ends as a sentence in
-        the panel, because a file that will not open is not a broken page.
-        """
         if not 0 <= index < len(self.view.attachments):
             return
         row = self.view.attachments[index]
@@ -270,44 +256,33 @@ class MessageDetailState(rx.State, mixin=True):
             logger.exception(
                 "Could not open attachment %d of %s", index, self.selected_id
             )
-            self.preview = self.preview.model_copy(update={"note": PREVIEW_FAILED})
+            self.preview = self.preview.with_note(PREVIEW_FAILED)
         finally:
             self.preview_loading = False
 
     def _read_attachment(self, index: int) -> AttachmentPreview:
-        """The nth file of the open message, off the event loop.
-
-        One function so that the read, the parse and the projection all happen
-        on the worker thread — reading a stored original and rendering it is
-        the same work opening the message was, and none of it belongs on the
-        loop.
-
-        The parse is kept for as long as the message stays open, because it is
-        the same parse :meth:`_open_message` already ran: without it, opening
-        three files on one message read the whole original from the blob store
-        three times and decoded *every* attachment's bytes each time, to keep
-        one. Held only under :data:`ATTACHMENT_CACHE_LIMIT` — a message whose
-        files are larger than that is exactly the one not worth carrying
-        around, so it pays the re-read instead — and dropped by
-        :meth:`_clear_views` the moment another message is selected.
-        """
         attachments = self._attachments
         if not attachments:
             data = archive_reader().raw_message(self.eml_sha256)
             if data is None:
-                return self.preview.model_copy(update={"note": PREVIEW_FAILED})
+                return self.preview.with_note(PREVIEW_FAILED)
             attachments = render_message(data).attachments
             if _worth_keeping(attachments):
                 self._attachments = list(attachments)
         if index >= len(attachments):
-            return self.preview.model_copy(update={"note": PREVIEW_FAILED})
+            return self.preview.with_note(PREVIEW_FAILED)
         return preview_of(attachments[index])
 
     @rx.event
     def close_attachment(self) -> None:
-        """Put the panel away. What it held stays until the next file opens,
-        so nothing blinks out from under the closing animation."""
         self.preview_open = False
+
+    @rx.event
+    def release_attachment(self) -> None:
+        """Drop the file the panel was showing, now that it is gone."""
+        if self.preview_open:
+            return
+        self.preview = self.preview.released()
 
     async def _open_message(self, message_id: str, eml_sha256: str) -> None:
         """Show one message — readable, and as it came off the wire.

@@ -33,7 +33,7 @@ import {
 import xlsxWasmUrl from "@extend-ai/react-xlsx/duke_sheets_wasm_bg.wasm?url";
 
 import { useBuffer } from "./viewer_bytes.js";
-import { ViewerBoundary, ViewerShell } from "./viewer_shell.jsx";
+import { ViewerShell, withBoundary } from "./viewer_shell.jsx";
 
 setWasmSource(xlsxWasmUrl);
 
@@ -71,10 +71,4 @@ function Sheet({ fileName }) {
 /* Wrapped rather than exported bare: a parser that throws while rendering
  * would otherwise take the whole preview panel down with it. See
  * `ViewerBoundary` in `viewer_shell.jsx`. */
-export default function XlsxViewer_(props) {
-  return (
-    <ViewerBoundary fileName={props.fileName}>
-      <XlsxWorkbook {...props} />
-    </ViewerBoundary>
-  );
-}
+export default withBoundary(XlsxWorkbook);

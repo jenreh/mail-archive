@@ -45,9 +45,9 @@ import { Viewport, ViewportPluginPackage } from "@embedpdf/plugin-viewport/react
 import { ZoomPluginPackage, useZoom } from "@embedpdf/plugin-zoom/react";
 
 import { useBuffer } from "./viewer_bytes.js";
-import { ViewerShell } from "./viewer_shell.jsx";
+import { ViewerShell, withBoundary } from "./viewer_shell.jsx";
 
-export default function PdfViewer({ encoded = "", fileName = "" }) {
+function PdfDocument({ encoded = "", fileName = "" }) {
   const buffer = useBuffer(encoded);
   const { engine, error: engineError } = usePdfiumEngine({
     wasmUrl: pdfiumWasmUrl,
@@ -125,6 +125,15 @@ export default function PdfViewer({ encoded = "", fileName = "" }) {
     </EmbedPDF>
   );
 }
+
+/* Wrapped rather than exported bare, like every viewer beside it.
+ *
+ * The `isError` branch in `Opened` below catches a PDF that pdfium *reports*
+ * it cannot parse. It does not catch pdfium throwing out of a render, which is
+ * a different failure with the same cause, and this viewer went without the
+ * boundary for as long as each viewer wrote its own wrapper by hand. See
+ * `ViewerBoundary` in `viewer_shell.jsx`. */
+export default withBoundary(PdfDocument);
 
 /* Every component and hook below takes an explicit `documentId`, and the
  * viewport refuses to register against a document that is not open yet —

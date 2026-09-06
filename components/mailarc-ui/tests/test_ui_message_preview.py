@@ -19,6 +19,7 @@ from typing import cast
 import pytest
 import reflex as rx
 from appkit_commons.registry import service_registry
+from pydantic import ValidationError
 
 from mailarc_core import ArchiveReader
 from mailarc_core.archive.blobs import BlobStore
@@ -26,38 +27,46 @@ from mailarc_core.archive.config import ArchiveConfig
 from mailarc_core.archive.model import BlobKind
 from mailarc_core.archive.reader import GraphSessionFactory
 from mailarc_core.mail.model import ParsedAttachment
-from mailarc_ui.message_detail import (
-    FILE_ICONS,
-    FRAME_CSP,
-    NO_FILENAME,
-    PREVIEW_LIMIT,
-    PREVIEW_OF_KIND,
-    TEXT_LIMIT,
-    AttachmentPreview,
-    FileKind,
-    MessageDetailState,
-    PreviewKind,
+from mailarc_ui.message_detail.components import (
+    PREVIEW_SHAPES,
     attachment_panel,
-    calendar_preview,
-    contact_preview,
-    data_uri,
     message_pane,
-    pretty_json,
-    preview_kind,
-    preview_of,
 )
-from mailarc_ui.message_detail.invite import EVENT_LIMIT
+from mailarc_ui.message_detail.filetype import (
+    FILE_ICONS,
+    FileKind,
+    file_facts,
+    file_kind,
+    is_ooxml,
+    type_label,
+)
+from mailarc_ui.message_detail.invite import EVENT_LIMIT, CalendarEvent
+from mailarc_ui.message_detail.model import FRAME_CSP, NO_FILENAME
 from mailarc_ui.message_detail.preview import (
     CARDS_CUT,
     EMPTY_PART,
     EVENTS_CUT,
     NOT_PREVIEWABLE,
+    OFFICE_KINDS,
     OLD_OFFICE,
     PREVIEW_FAILED,
+    PREVIEW_LIMIT,
+    PREVIEW_OF_KIND,
     TEXT_CUT,
+    TEXT_LIMIT,
     TOO_LARGE,
+    VIEWER_KINDS,
+    AttachmentPreview,
+    PreviewKind,
+    data_uri,
     encoded_bytes,
+    pretty_json,
+    preview_kind,
+    preview_kind_of,
+    preview_of,
 )
+from mailarc_ui.message_detail.records import calendar_preview, contact_preview
+from mailarc_ui.message_detail.state import MessageDetailState
 from mailarc_ui.message_detail.vcard import CARD_LIMIT
 
 PNG = (
@@ -93,6 +102,62 @@ VCF = "\r\n".join(
     ]
 )
 """One real contact card."""
+
+
+OOXML = {
+    PreviewKind.DOCUMENT: (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Vertrag.docx",
+    ),
+    PreviewKind.SPREADSHEET: (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Umsatz.xlsx",
+    ),
+    PreviewKind.SLIDES: (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "Pitch.pptx",
+    ),
+}
+"""One real content type and name per Office shape, so a test can say which
+renderer it means without repeating a forty-character MIME string."""
+
+ZIPPED = b"PK\x03\x04"
+"""The first four bytes of any OOXML file. Nothing parses it here — the
+projection only decides which renderer *would* be handed it."""
+
+SHAPE_EXAMPLES: dict[PreviewKind, tuple[str, str, bytes]] = {
+    PreviewKind.IMAGE: ("image/png", "bild.png", PNG),
+    PreviewKind.PDF: ("application/pdf", "Rechnung.pdf", b"%PDF-1.4"),
+    PreviewKind.HTML: ("text/html", "seite.html", b"<p>Guten Tag</p>"),
+    PreviewKind.TEXT: ("text/plain", "notiz.txt", b"Guten Tag"),
+    PreviewKind.CALENDAR: ("text/calendar", "Termin.ics", ICS.encode()),
+    PreviewKind.CONTACT: ("text/vcard", "Anna.vcf", VCF.encode()),
+    PreviewKind.DOCUMENT: (*OOXML[PreviewKind.DOCUMENT], ZIPPED),
+    PreviewKind.SPREADSHEET: (*OOXML[PreviewKind.SPREADSHEET], ZIPPED),
+    PreviewKind.SLIDES: (*OOXML[PreviewKind.SLIDES], ZIPPED),
+}
+"""One real file per drawable shape, so the enum can be walked rather than
+sampled. ``NONE`` is absent because it is the one member defined by having no
+content, and it has tests of its own."""
+
+FIELD_OF_KIND: dict[PreviewKind, str] = {
+    PreviewKind.IMAGE: "source",
+    PreviewKind.PDF: "encoded",
+    PreviewKind.HTML: "document",
+    PreviewKind.TEXT: "text",
+    PreviewKind.CALENDAR: "events",
+    PreviewKind.CONTACT: "contacts",
+    PreviewKind.DOCUMENT: "encoded",
+    PreviewKind.SPREADSHEET: "encoded",
+    PreviewKind.SLIDES: "encoded",
+}
+"""Which of the six content fields each shape is supposed to fill.
+
+The rule :class:`AttachmentPreview` states in prose, written down where a test
+can check it — an ``src``, an ``srcdoc``, a text node, a React prop and two
+lists are five different things to do with a file and the panel picks between
+them on ``kind`` alone.
+"""
 
 
 def attachment(**fields: object) -> ParsedAttachment:
@@ -163,24 +228,6 @@ class TestTurningBytesIntoSomethingAnAttributeCanHold:
     def test_what_is_not_json_is_left_exactly_as_it_arrived(self) -> None:
         """A broken export is still worth looking at, and often the reason."""
         assert pretty_json("id;total\n1;9,90") == "id;total\n1;9,90"
-
-
-OOXML = {
-    PreviewKind.DOCUMENT: (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Vertrag.docx",
-    ),
-    PreviewKind.SPREADSHEET: (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Umsatz.xlsx",
-    ),
-    PreviewKind.SLIDES: (
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "Pitch.pptx",
-    ),
-}
-"""One real content type and name per Office shape, so a test can say which
-renderer it means without repeating a forty-character MIME string."""
 
 
 class TestTheOfficeFormatsAViewerCanOpen:
@@ -784,6 +831,87 @@ class TestOpeningOneFile:
         assert not opened.preview_open
         assert opened.preview.filename == "posten.csv"
 
+    async def test_closing_lets_go_of_the_bytes(self, opened: OtherDetailState) -> None:
+        """What the heading needs survives the close; the payload does not.
+
+        The panel used to hold everything until *another message* was
+        selected, which is a gesture a reader may never make. A file at
+        ``PREVIEW_LIMIT`` is thirty megabytes, so the string that carried it is
+        forty of base64, sitting in this state and in the browser for as long
+        as the reader stayed on the message they had already closed it on.
+        """
+        await opened.show_attachment(0)
+        assert opened.preview.text
+
+        opened.close_attachment()
+        assert opened.preview.text, "the panel must not empty under its own animation"
+        opened.release_attachment()
+
+        assert opened.preview.text == ""
+        assert opened.preview.encoded == ""
+        assert opened.preview.source == ""
+        assert opened.preview.document == ""
+        assert opened.preview.events == []
+        assert opened.preview.contacts == []
+        assert (opened.preview.filename, opened.preview.size_label) == (
+            "posten.csv",
+            opened.preview.size_label,
+        )
+        assert opened.preview.content_type != ""
+
+    async def test_a_late_release_cannot_empty_a_panel_that_reopened(
+        self, opened: OtherDetailState
+    ) -> None:
+        """The race the drawer makes possible, and the guard that closes it.
+
+        Closing and opening another file inside the closing animation is an
+        ordinary gesture — the strip sits right behind the drawer — and it puts
+        a stale ``on_exit_transition_end`` in flight behind a panel that is
+        open again. Without the guard that callback empties the file the reader
+        just asked for, on the fast gesture only.
+        """
+        await opened.show_attachment(0)
+        opened.close_attachment()
+
+        await opened.show_attachment(1)
+        opened.release_attachment()
+
+        assert opened.preview_open
+        assert opened.preview.filename == "Rechnung.pdf"
+        assert opened.preview.encoded, "a late release emptied the reopened panel"
+
+    async def test_the_panel_is_told_to_let_go_when_the_drawer_is_gone(
+        self,
+    ) -> None:
+        """The release is wired to the animation's end, not to the press.
+
+        Two handlers and one of them has no button. What connects
+        ``release_attachment`` to anything is a prop on the drawer, so a
+        refactor that dropped it would leave a handler nothing ever calls and
+        a payload nothing ever frees — and every unit test above would still
+        pass, because each of them calls the handler by hand.
+        """
+        drawn = str(attachment_panel(OtherDetailState))
+
+        assert "onExitTransitionEnd" in drawn, "the drawer never says when it is gone"
+        assert "release_attachment" in drawn, "nothing is wired to let go"
+
+    async def test_reopening_after_a_close_reads_the_file_again(
+        self, opened: OtherDetailState
+    ) -> None:
+        """Letting go is only safe because opening puts it back — and it must
+        come back from the *cached parse*, not from a second trip to the blob
+        store, which is what ``_attachments`` is for."""
+        await opened.show_attachment(0)
+        first = opened.preview.text
+        opened.close_attachment()
+        opened.release_attachment()
+
+        await opened.show_attachment(0)
+
+        assert opened.preview.text == first
+        assert opened.preview_open
+
     async def test_opening_another_message_puts_the_panel_away(
         self, opened: OtherDetailState, blobs: BlobStore
     ) -> None:
@@ -845,3 +973,176 @@ class TestThePanelItself:
         self,
     ) -> None:
         assert attachment_panel(OtherDetailState).render() is not None
+
+
+class TestTheFileIsClassifiedOnce:
+    """:func:`~mailarc_ui.message_detail.filetype.file_facts` is the carrier.
+
+    The four questions this archive asks about an attachment — which family,
+    which glyph, which word, can a renderer open it — used to be four separate
+    calls, and the header strip made four of them per card while the panel made
+    three per file. They are one call now, and the only thing worth proving is
+    that the one call still answers exactly what the four did: a carrier that
+    quietly disagreed with :func:`file_kind` would put one glyph on a card and
+    a different shape in the panel, which is the failure the whole module
+    exists to prevent.
+    """
+
+    CASES = [
+        ("application/pdf", "Rechnung.pdf"),
+        ("application/octet-stream", "Rechnung.pdf"),
+        ("application/octet-stream", "Umsatz.xlsx"),
+        ("application/msword", "Vertrag.docx"),
+        ("text/csv", "zahlen.csv"),
+        ("text/calendar", "Termin.ics"),
+        ("application/zip", "Belege.zip"),
+        ("image/png", "bild.png"),
+        ("", ".pdf"),
+        ("", ""),
+        ("application/octet-stream", None),
+        ("APPLICATION/PDF; charset=utf-8", "Rechnung.PDF"),
+        ("application/octet-stream", "Re: Fwd. Notes"),
+    ]
+
+    @pytest.mark.parametrize(("content_type", "filename"), CASES)
+    def test_it_answers_what_the_four_functions_answered(
+        self, content_type: str, filename: str | None
+    ) -> None:
+        found = file_facts(content_type, filename)
+        assert found.family is file_kind(content_type, filename)
+        assert found.icon == FILE_ICONS[found.family]
+        assert found.label == type_label(content_type, filename)
+        assert found.ooxml is is_ooxml(content_type, filename)
+
+    @pytest.mark.parametrize(("content_type", "filename"), CASES)
+    def test_the_shape_agrees_whichever_way_it_is_asked(
+        self, content_type: str, filename: str | None
+    ) -> None:
+        """:func:`preview_kind` and :func:`preview_kind_of` are one answer.
+
+        The first is the convenience for a caller holding two strings and the
+        second is what :func:`preview_of` actually uses, so a divergence would
+        show up only in the panel and never in a unit test of the classifier.
+        """
+        assert preview_kind(content_type, filename) is preview_kind_of(
+            file_facts(content_type, filename)
+        )
+
+
+class TestTheModelRefusesWhatItCannotHold:
+    """``extra="forbid"`` — the guard this class went without.
+
+    :class:`AttachmentPreview` used to be assembled with
+    ``model_copy(update=…)``, which validates nothing at all: a key with a typo
+    in it became a phantom attribute and the panel drew an empty pane with no
+    error raised anywhere. Both halves of that are checked here, because the
+    fix is one line of configuration and a future edit could drop it without
+    any other test noticing.
+    """
+
+    def test_a_key_that_is_not_a_field_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            AttachmentPreview(contact=[])  # ty: ignore[unknown-argument]
+
+    def test_a_field_given_the_wrong_type_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            AttachmentPreview(events="one meeting")  # ty: ignore[invalid-argument-type]
+
+    def test_a_note_is_added_without_disturbing_anything_else(self) -> None:
+        found = preview_of(
+            attachment(filename="logo.png", content_type="image/png", payload=PNG)
+        )
+        noted = found.with_note(TEXT_CUT)
+        assert noted.note == TEXT_CUT
+        assert noted.source == found.source
+        assert noted.filename == found.filename
+        assert found.note == ""
+
+    def test_the_records_survive_a_note_as_records(self) -> None:
+        """``with_note`` rebuilds through the constructor, so the two list
+        fields go round a validator. A round trip through ``model_dump`` would
+        hand the panel dictionaries and ``rx.foreach`` would resolve nothing."""
+        found = preview_of(
+            attachment(
+                filename="Termin.ics",
+                content_type="text/calendar",
+                payload=ICS.encode(),
+            )
+        ).with_note(EVENTS_CUT)
+        assert found.events
+        assert all(isinstance(one, CalendarEvent) for one in found.events)
+
+
+class TestWhichShapesTakeTheirFileAsBytes:
+    """:data:`VIEWER_KINDS` against what :func:`preview_of` actually fills.
+
+    The set is derived from :data:`OFFICE_KINDS` now — it was a second literal
+    listing the same members plus the PDF, which is one forgetful edit away
+    from a viewer that is handed no bytes and draws nothing. Deriving it makes
+    the two agree by construction; this makes them agree with the *behaviour*,
+    which is the part derivation cannot promise.
+    """
+
+    def test_it_is_the_office_three_and_the_pdf(self) -> None:
+        assert VIEWER_KINDS == OFFICE_KINDS | {PreviewKind.PDF}
+
+    @pytest.mark.parametrize("kind", sorted(VIEWER_KINDS))
+    def test_every_one_of_them_is_handed_the_bytes(self, kind: PreviewKind) -> None:
+        content_type, filename = {
+            **OOXML,
+            PreviewKind.PDF: ("application/pdf", "R.pdf"),
+        }[kind]
+        found = preview_of(
+            attachment(
+                filename=filename, content_type=content_type, payload=b"PK\x03\x04"
+            )
+        )
+        assert found.kind == kind.value
+        assert found.encoded == encoded_bytes(b"PK\x03\x04")
+        assert found.source == ""
+
+    @pytest.mark.parametrize(
+        ("content_type", "filename"),
+        [("image/png", "bild.png"), ("text/html", "s.html"), ("text/plain", "n.txt")],
+    )
+    def test_nothing_else_is(self, content_type: str, filename: str) -> None:
+        found = preview_of(
+            attachment(filename=filename, content_type=content_type, payload=PNG)
+        )
+        assert PreviewKind(found.kind) not in VIEWER_KINDS
+        assert found.encoded == ""
+
+
+class TestEveryShapeIsAccountedFor:
+    """The two tables that decide what a reader sees, walked against the enum.
+
+    ``PREVIEW_SHAPES`` is the component side and ``_content`` is the projection
+    side, and a member added to :class:`PreviewKind` without an entry in both is
+    a file that silently draws *No preview*. The existing string check on a
+    rendered pane catches the first; this catches the second, and says which
+    member is missing rather than that a string was absent.
+    """
+
+    def test_every_kind_but_none_has_a_component(self) -> None:
+        drawn = {kind for kind, _ in PREVIEW_SHAPES}
+        assert drawn == set(PreviewKind) - {PreviewKind.NONE}
+
+    def test_no_shape_is_listed_twice(self) -> None:
+        drawn = [kind for kind, _ in PREVIEW_SHAPES]
+        assert len(drawn) == len(set(drawn))
+
+    @pytest.mark.parametrize("kind", sorted(set(PreviewKind) - {PreviewKind.NONE}))
+    def test_every_kind_fills_exactly_one_field(self, kind: PreviewKind) -> None:
+        """Exhaustive over the enum rather than over a list of examples, so a
+        tenth shape cannot be added without deciding which field carries it."""
+        content_type, filename, payload = SHAPE_EXAMPLES[kind]
+        found = preview_of(
+            attachment(filename=filename, content_type=content_type, payload=payload)
+        )
+        assert found.kind == kind.value, f"{filename} landed in {found.kind}"
+        filled = [
+            name
+            for name in TestExactlyOneWayOfHoldingContent.CONTENT
+            if getattr(found, name)
+        ]
+        assert filled == [FIELD_OF_KIND[kind]]

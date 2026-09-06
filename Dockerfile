@@ -24,6 +24,15 @@ ARG BACKEND_PORT=3030
 ARG API_URL
 ENV PORT=$PORT REFLEX_API_URL=${API_URL:-http://localhost:$PORT}
 
+# The one deployment that has to answer off-machine, said out loud. rxconfig.py
+# binds 127.0.0.1 because the desktop archive has no sign-in and a loopback
+# socket is what stands in for one; a container is unreachable on that, so it
+# widens the bind here rather than by leaving Reflex's 0.0.0.0 default in place
+# for every laptop as well. Reflex applies env overrides after rxconfig's
+# kwargs, so this wins. It presumes the usual thing about a container: that
+# something in front of it decides who gets to connect.
+ENV REFLEX_BACKEND_HOST=0.0.0.0
+
 ENV WORK=/reflexapp
 WORKDIR ${WORK}
 

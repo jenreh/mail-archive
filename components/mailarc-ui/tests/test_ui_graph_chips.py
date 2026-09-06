@@ -22,7 +22,7 @@ from mailarc_analytics import GraphEdge, GraphNode, NodeKind, Subgraph
 from mailarc_analytics.queries.graphs import GraphReader
 from mailarc_ui.graph import CHIP_LIMIT, NOTHING_TO_DRAW, ChipGraphState
 from mailarc_ui.graph.chips import _PICTURES, _READERS, chip_graph_panel
-from mailarc_ui.message_detail import DRAWABLE_CHIPS, TAB_GRAPH, ChipKind
+from mailarc_ui.message_detail.model import DRAWABLE_CHIPS, TAB_GRAPH, ChipKind
 from mailarc_ui.shell import routes
 
 

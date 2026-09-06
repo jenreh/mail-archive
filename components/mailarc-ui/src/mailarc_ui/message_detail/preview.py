@@ -59,15 +59,15 @@ import logging
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
+from typing import TypedDict
 
 from pydantic import BaseModel, ConfigDict
 
 from mailarc_core.mail.model import ParsedAttachment
 from mailarc_ui.message_detail.filetype import (
-    FILE_ICONS,
+    FileFacts,
     FileKind,
-    file_kind,
-    is_ooxml,
+    file_facts,
 )
 from mailarc_ui.message_detail.invite import CalendarEvent, read_invite
 from mailarc_ui.message_detail.model import (
@@ -178,11 +178,11 @@ nothing could parse than by an empty card saying a meeting has no title, no
 time and nobody on it.
 
 **This map is not the last word on the three Office families.** It says which
-renderer a ``DOCUMENT`` would go to; :func:`preview_kind` then asks
-:func:`~mailarc_ui.message_detail.filetype.is_ooxml` whether this particular
-file is one that renderer can parse, and sends a ``.doc`` or a ``.pages`` back
-to ``NONE``. Keeping the map total and the narrowing separate is what lets the
-map stay a table anyone can read.
+renderer a ``DOCUMENT`` would go to; :func:`preview_kind_of` then reads
+:attr:`~mailarc_ui.message_detail.filetype.FileFacts.ooxml` to find out whether
+this particular file is one that renderer can parse, and sends a ``.doc`` or a
+``.pages`` back to ``NONE``. Keeping the map total and the narrowing separate
+is what lets the map stay a table anyone can read.
 
 ``AUDIO`` and ``VIDEO`` are ``NONE`` on purpose rather than for want of a
 player. Every previewable kind here travels to the browser inline, and a media
@@ -211,9 +211,17 @@ class AttachmentPreview(BaseModel):
     :attr:`events` is a list something iterates. A single field would only push
     the distinction into an ``rx.cond`` anyway, and typing it away is what
     keeps the panel from putting a data URI in a paragraph.
+
+    ``extra="forbid"`` is the guard that makes that typing mean something.
+    This model used to be assembled with ``model_copy(update=…)``, which
+    validates *nothing*: a wrong type went through, and a key with a typo in it
+    — ``contact`` for ``contacts`` — became a phantom attribute and drew an
+    empty panel with no error raised anywhere. Every field is optional and the
+    six content fields are only ever set from one place, so a rejected key here
+    is always a mistake and never a caller being clever.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     filename: str = ""
     content_type: str = ""
@@ -259,11 +267,74 @@ class AttachmentPreview(BaseModel):
     """One quiet sentence about the file — why there is no preview, or that
     what is shown was cut. Never an error the page has to handle."""
 
+    def with_note(self, note: str) -> AttachmentPreview:
+        """The same file, with one sentence put under its heading.
+
+        A method rather than ``model_copy(update={"note": …})`` at four call
+        sites: ``model_copy`` skips validation entirely, so every one of those
+        was a place a typo could not be caught. This one spells the field name
+        once and goes through a validator.
+
+        ``dict(self)`` and not ``model_dump()``: iterating a model yields its
+        fields with the values still *as models*, where dumping would turn an
+        event into a dictionary and hand the panel something ``rx.foreach``
+        resolves nothing on. Validation puts them back either way; not taking
+        them apart is cheaper and says what is meant.
+        """
+        return AttachmentPreview.model_validate({**dict(self), "note": note})
+
+    def released(self) -> AttachmentPreview:
+        """The same file with its bytes dropped — see
+        :meth:`~mailarc_ui.message_detail.state.MessageDetailState.close_attachment`.
+
+        What is kept is what the panel still draws on its way out: the name,
+        the type, the size, the glyph. What goes is every field that can hold
+        megabytes.
+        """
+        return AttachmentPreview(
+            filename=self.filename,
+            content_type=self.content_type,
+            size_label=self.size_label,
+            icon=self.icon,
+            note=self.note,
+        )
+
 
 OFFICE_KINDS = frozenset(
     {PreviewKind.DOCUMENT, PreviewKind.SPREADSHEET, PreviewKind.SLIDES}
 )
 """The three shapes whose renderers read OOXML and nothing else."""
+
+VIEWER_KINDS = OFFICE_KINDS | {PreviewKind.PDF}
+"""The shapes drawn by a renderer that takes bytes rather than a URL.
+
+Derived rather than listed again, which it was until the two sets drifted
+apart by one edit's worth of forgetting. Every Office shape goes to a viewer
+that wants an ``ArrayBuffer``; the PDF is the one member that is here without
+being an OOXML question, and writing it as *the Office three plus the PDF* is
+the whole of the relationship.
+
+The PDF did not used to be on this list: it was an ``<iframe src>`` at a
+``data:`` URI, pointed at the browser's own plugin. The viewer that replaced
+that takes an ``ArrayBuffer``, so carrying the URI as well would put eight
+megabytes on the socket twice.
+"""
+
+
+def preview_kind_of(facts: FileFacts) -> PreviewKind:
+    """How this file should be shown, given what it already turned out to be.
+
+    The narrowing is the one step :data:`PREVIEW_OF_KIND` cannot express. It is
+    keyed by family, and a family is a coarser thing than a renderer can be:
+    ``SLIDES`` holds a ``.pptx`` and a ``.key``, and only the first of them is
+    a zip full of OOXML. So an Office shape is asked one more question —
+    :attr:`~mailarc_ui.message_detail.filetype.FileFacts.ooxml`, which the same
+    pass that settled the family already answered.
+    """
+    kind = PREVIEW_OF_KIND[facts.family]
+    if kind in OFFICE_KINDS and not facts.ooxml:
+        return PreviewKind.NONE
+    return kind
 
 
 def preview_kind(content_type: str, filename: str | None) -> PreviewKind:
@@ -272,18 +343,12 @@ def preview_kind(content_type: str, filename: str | None) -> PreviewKind:
 
     A thin call, and deliberately still a function: the panel asks *what can I
     draw*, and letting it walk the family table itself would be the second
-    classifier this module exists to not have.
-
-    The narrowing is the one step the table cannot express.
-    :data:`PREVIEW_OF_KIND` is keyed by family, and a family is a coarser thing
-    than a renderer can be: ``SLIDES`` holds a ``.pptx`` and a ``.key``, and
-    only the first of them is a zip full of OOXML. So an Office shape is asked
-    one more question before it is believed.
+    classifier this module exists to not have. A caller that also wants the
+    glyph or the word should ask
+    :func:`~mailarc_ui.message_detail.filetype.file_facts` once and go through
+    :func:`preview_kind_of` instead of classifying the same file twice.
     """
-    kind = PREVIEW_OF_KIND[file_kind(content_type, filename)]
-    if kind in OFFICE_KINDS and not is_ooxml(content_type, filename):
-        return PreviewKind.NONE
-    return kind
+    return preview_kind_of(file_facts(content_type, filename))
 
 
 def encoded_bytes(payload: bytes) -> str:
@@ -321,6 +386,27 @@ def pretty_json(text: str) -> str:
         return text
 
 
+class PreviewContent(TypedDict, total=False):
+    """The fields one shape fills — the return of :func:`_content`.
+
+    A ``TypedDict`` and not a plain ``dict[str, …]``, because this mapping is
+    unpacked straight into :class:`AttachmentPreview` and a plain dict made
+    that a place with no checking on either side: the key names went unchecked
+    statically and ``model_copy`` went on to skip validation at runtime too.
+    Every key here is optional — that is the whole point of the class, one
+    shape fills one field — which is what ``total=False`` says.
+    """
+
+    kind: str
+    source: str
+    encoded: str
+    document: str
+    text: str
+    events: list[CalendarEvent]
+    contacts: list[ContactCard]
+    note: str
+
+
 def preview_of(attachment: ParsedAttachment) -> AttachmentPreview:
     """One parsed attachment, ready for the panel.
 
@@ -328,40 +414,30 @@ def preview_of(attachment: ParsedAttachment) -> AttachmentPreview:
     that cannot be shown gets the sentence saying so. That is what lets the
     component be a plain ``rx.cond`` over :attr:`AttachmentPreview.kind`
     instead of a chain guarding against absence.
+
+    The file is classified exactly once, here, and the answer is carried down.
+    This used to ask :func:`~mailarc_ui.message_detail.filetype.file_kind`
+    three times for one attachment — once for the glyph, once inside
+    :func:`preview_kind`, once more inside :func:`_no_preview_note` — which is
+    two more opinions than a file should have about what it is.
     """
-    family = file_kind(attachment.content_type, attachment.filename)
-    kind = preview_kind(attachment.content_type, attachment.filename)
+    facts = file_facts(attachment.content_type, attachment.filename)
     header = AttachmentPreview(
         filename=attachment.filename or NO_FILENAME,
         content_type=attachment.content_type,
         size_label=size_label(attachment.size),
-        icon=FILE_ICONS[family],
+        icon=facts.icon,
     )
     if not attachment.payload:
-        return header.model_copy(update={"note": EMPTY_PART})
+        return header.with_note(EMPTY_PART)
     if len(attachment.payload) > PREVIEW_LIMIT:
-        return header.model_copy(update={"note": TOO_LARGE})
-    return header.model_copy(update=_content(kind, attachment))
+        return header.with_note(TOO_LARGE)
+    return AttachmentPreview.model_validate(
+        {**dict(header), **_content(preview_kind_of(facts), facts, attachment)}
+    )
 
 
-VIEWER_KINDS = frozenset(
-    {
-        PreviewKind.PDF,
-        PreviewKind.DOCUMENT,
-        PreviewKind.SPREADSHEET,
-        PreviewKind.SLIDES,
-    }
-)
-"""The shapes drawn by a renderer that takes bytes rather than a URL.
-
-A PDF is on this list and did not used to be: it was an ``<iframe src>`` at a
-``data:`` URI, pointed at the browser's own plugin. The viewer that replaced
-that takes an ``ArrayBuffer``, so carrying the URI as well would put eight
-megabytes on the socket twice.
-"""
-
-
-def _no_preview_note(attachment: ParsedAttachment) -> str:
+def _no_preview_note(facts: FileFacts) -> str:
     """Why there is no preview, said as precisely as the file allows.
 
     A reader holding a ``.doc`` is told the format is the problem and which
@@ -369,24 +445,24 @@ def _no_preview_note(attachment: ParsedAttachment) -> str:
     ask the sender. The generic sentence is kept for a zip or a video, where
     the format is not the point and there is nothing to do about it.
     """
-    family = file_kind(attachment.content_type, attachment.filename)
-    if PREVIEW_OF_KIND[family] in OFFICE_KINDS:
+    if PREVIEW_OF_KIND[facts.family] in OFFICE_KINDS:
         return OLD_OFFICE
     return NOT_PREVIEWABLE
 
 
 def _content(
-    kind: PreviewKind, attachment: ParsedAttachment
-) -> dict[str, str | list[CalendarEvent] | list[ContactCard]]:
+    kind: PreviewKind, facts: FileFacts, attachment: ParsedAttachment
+) -> PreviewContent:
     """The one field this kind fills, and the note that goes with it.
 
     Text is the floor rather than one branch among several: a calendar with no
     event and a contact file with no card both fall through to it, and the raw
     lines of a file this could not read are a better answer than a card with
-    nothing on it.
+    nothing on it. Note that the two record branches are ``if`` and not
+    ``elif`` on purpose: an unparseable one is *meant* to reach the bottom.
     """
     if kind is PreviewKind.NONE:
-        return {"note": _no_preview_note(attachment)}
+        return {"note": _no_preview_note(facts)}
     if kind is PreviewKind.IMAGE:
         return {
             "kind": kind.value,

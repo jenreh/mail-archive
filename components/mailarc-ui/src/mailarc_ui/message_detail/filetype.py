@@ -29,6 +29,8 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from types import MappingProxyType
 
+from pydantic import BaseModel, ConfigDict
+
 from mailarc_core.mail.model import UNTYPED_CONTENT_TYPES
 
 
@@ -299,6 +301,62 @@ neither is ``rfc822``. Past this the family word is the better answer.
 """
 
 
+class FileFacts(BaseModel):
+    """Everything this module knows about one file, decided in one pass.
+
+    A carrier rather than four functions each asked separately. Classifying is
+    cheap — it is dictionary lookups — so this is not about speed; it is that
+    the glyph, the word, the family and *can a renderer open it* are four
+    answers that have to agree, and four independent calls are four chances to
+    disagree after somebody edits one of the tables. The header strip asked
+    :func:`file_kind` four times per card and the panel three times per file,
+    which is three and two more opinions than a file should have.
+
+    Frozen, and a :class:`~pydantic.BaseModel` rather than a dataclass, because
+    that is what everything else in this package is.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    family: FileKind
+    """Which of the sixteen families — the answer :func:`file_kind` returns."""
+
+    icon: str
+    """The family's glyph, out of :data:`FILE_ICONS`."""
+
+    label: str
+    """The shortest true word for it — see :func:`type_label`."""
+
+    ooxml: bool
+    """Whether a browser-side renderer could parse it — see :func:`is_ooxml`.
+
+    Carried here rather than left to the panel because it is decided from the
+    same two strings and the same rule as everything else on this model, and
+    :func:`~mailarc_ui.message_detail.preview.preview_kind_of` needs it to
+    narrow an Office family down to a renderer that exists.
+    """
+
+
+def file_facts(content_type: str, filename: str | None = None) -> FileFacts:
+    """One file, classified once.
+
+    The entry point the rest of the archive should use. :func:`file_kind`,
+    :func:`type_label` and :func:`is_ooxml` remain, because a caller that wants
+    one answer should not have to take four — the search form's file filter
+    wants families and nothing else — but each of them is now this function
+    read through a single field.
+    """
+    normalised = _normalise(content_type)
+    suffix = _suffix(filename)
+    family = _family(normalised, suffix)
+    return FileFacts(
+        family=family,
+        icon=FILE_ICONS[family],
+        label=_label(normalised, suffix, family),
+        ooxml=_ooxml(normalised, suffix),
+    )
+
+
 def file_kind(content_type: str, filename: str | None = None) -> FileKind:
     """Which family this file belongs to.
 
@@ -306,13 +364,21 @@ def file_kind(content_type: str, filename: str | None = None) -> FileKind:
     :attr:`FileKind.OTHER`, which is a real answer with its own glyph and its
     own word.
     """
-    normalised = _normalise(content_type)
+    return _family(_normalise(content_type), _suffix(filename))
+
+
+def _family(normalised: str, suffix: str) -> FileKind:
+    """The family, from a type and a suffix that are already normalised.
+
+    Split from :func:`file_kind` so :func:`file_facts` can do the normalising
+    once and hand the result to all four decisions.
+    """
     found = _kind_of_type(normalised)
     if found is not FileKind.OTHER:
         return found
     if normalised not in GENERIC_TYPES:
         return FileKind.OTHER
-    return EXTENSION_KINDS.get(_suffix(filename), FileKind.OTHER)
+    return EXTENSION_KINDS.get(suffix, FileKind.OTHER)
 
 
 def is_ooxml(content_type: str, filename: str | None = None) -> bool:
@@ -327,12 +393,7 @@ def is_ooxml(content_type: str, filename: str | None = None) -> bool:
     Never raises. The panel asks this once, and a file it says no to gets the
     sentence about older formats rather than a viewer that would fail on it.
     """
-    normalised = _normalise(content_type)
-    if normalised in OOXML_TYPES:
-        return True
-    if normalised not in GENERIC_TYPES:
-        return False
-    return _suffix(filename) in OOXML_SUFFIXES
+    return _ooxml(_normalise(content_type), _suffix(filename))
 
 
 def type_label(content_type: str, filename: str | None = None) -> str:
@@ -350,25 +411,46 @@ def type_label(content_type: str, filename: str | None = None) -> str:
     one card saying two things about one file, which is the failure this
     module exists to prevent.
     """
-    extension = _suffix(filename).removeprefix(".")
-    if _is_label(extension) and _uncontradicted(content_type, filename):
+    normalised = _normalise(content_type)
+    suffix = _suffix(filename)
+    return _label(normalised, suffix, _family(normalised, suffix))
+
+
+def _ooxml(normalised: str, suffix: str) -> bool:
+    """:func:`is_ooxml`, from strings already normalised."""
+    if normalised in OOXML_TYPES:
+        return True
+    if normalised not in GENERIC_TYPES:
+        return False
+    return suffix in OOXML_SUFFIXES
+
+
+def _label(normalised: str, suffix: str, family: FileKind) -> str:
+    """:func:`type_label`, from strings already normalised and a settled family.
+
+    The family is passed in rather than looked up because the caller has it:
+    this used to end in a third :func:`file_kind` call after
+    :func:`_uncontradicted` had already made a second one.
+    """
+    extension = suffix.removeprefix(".")
+    if _is_label(extension) and _uncontradicted(suffix, family):
         return extension.upper()
-    subtype = _normalise(content_type).rpartition("/")[2]
+    subtype = normalised.rpartition("/")[2]
     if _is_label(subtype):
         return subtype.upper()
-    return FILE_LABELS[file_kind(content_type, filename)]
+    return FILE_LABELS[family]
 
 
-def _uncontradicted(content_type: str, filename: str | None) -> bool:
-    """Whether the filename's extension agrees with the sender's own type.
+def _uncontradicted(suffix: str, family: FileKind) -> bool:
+    """Whether the filename's extension agrees with the settled family.
 
     An extension naming no family it knows cannot contradict anything, so it
-    is free to supply the word. One naming a *different* family than
-    :func:`file_kind` settled on is the sender being overruled by a name, and
-    the module header rules that out by name.
+    is free to supply the word. One naming a *different* family than the type
+    settled on is the sender being overruled by a name, and the module header
+    rules that out by name.
     """
-    named = EXTENSION_KINDS.get(_suffix(filename), FileKind.OTHER)
-    return named is FileKind.OTHER or named is file_kind(content_type, filename)
+    named = EXTENSION_KINDS.get(suffix, FileKind.OTHER)
+    return named is FileKind.OTHER or named is family
 
 
 def _is_label(candidate: str) -> bool:

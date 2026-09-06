@@ -81,6 +81,26 @@ export class ViewerBoundary extends Component {
   }
 }
 
+/* The wrapper every viewer in this folder is exported through.
+ *
+ * A helper rather than four hand-written wrappers, because the wrapping is the
+ * kind of step that is only noticed when it is missing: `viewer_pdf.jsx` was
+ * exported bare for exactly as long as this was three copies of the same four
+ * lines. `test_ui_kit_components.py` asserts that every `viewer_*.jsx` calls
+ * this, so a fifth viewer cannot repeat that.
+ *
+ * The displayed name is kept so React's own stack traces still say which
+ * viewer failed rather than naming the wrapper four times. */
+export function withBoundary(Inner) {
+  const Wrapped = (props) => (
+    <ViewerBoundary fileName={props.fileName}>
+      <Inner {...props} />
+    </ViewerBoundary>
+  );
+  Wrapped.displayName = `WithBoundary(${Inner.displayName || Inner.name})`;
+  return Wrapped;
+}
+
 export function useContainerWidth() {
   const ref = useRef(null);
   const [width, setWidth] = useState(0);

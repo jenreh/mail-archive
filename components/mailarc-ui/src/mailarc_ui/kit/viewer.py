@@ -28,16 +28,7 @@ from reflex.components.component import NoSSRComponent
 from reflex.utils.imports import ImportDict
 from reflex.vars.base import Var
 
-from mailarc_ui.kit.viewer_assets import (
-    DOCX,
-    DOCX_LIBRARY,
-    PDF,
-    PDF_LIBRARY,
-    PPTX,
-    PPTX_LIBRARY,
-    XLSX,
-    XLSX_LIBRARY,
-)
+from mailarc_ui.kit.viewer_assets import VIEWER_LIBRARIES, VIEWER_PACKAGES
 
 VIEWER_HEIGHT = "var(--ma-viewer-height)"
 """The box's height, stated as the token the stylesheet defines it under.
@@ -49,10 +40,16 @@ its container's height once, when it is created.
 
 
 class _DocumentViewer(NoSSRComponent):
-    """What the three wrappers share: a file, a name, and lazy loading.
+    """What the four wrappers share: a file, a name, and lazy loading.
 
     Props are camelCased on their way out, so :attr:`file_name` reaches the
     JSX as ``fileName``.
+
+    What each subclass adds is three facts and no behaviour: which JSX module
+    it lives in, which tag that module exports, and which npm packages have to
+    be installed for it. All three come out of
+    :mod:`mailarc_ui.kit.viewer_assets` under one key, so a wrapper cannot name
+    a library that has no JSX or a JSX file that installs nothing.
     """
 
     is_default = True
@@ -77,33 +74,35 @@ class _DocumentViewer(NoSSRComponent):
 class _DocxViewer(_DocumentViewer):
     """A Word document, with the page rail from ``viewer_shell.jsx``."""
 
-    library = DOCX_LIBRARY
+    library = VIEWER_LIBRARIES["docx"]
     tag = "DocxViewer"
-    lib_dependencies: list[str] = [DOCX]
+    lib_dependencies: list[str] = list(VIEWER_PACKAGES["docx"])
 
 
 class _XlsxViewer(_DocumentViewer):
     """A workbook, read-only, navigated by its own sheet tabs."""
 
-    library = XLSX_LIBRARY
+    library = VIEWER_LIBRARIES["xlsx"]
     tag = "XlsxViewer_"
-    lib_dependencies: list[str] = [XLSX]
+    lib_dependencies: list[str] = list(VIEWER_PACKAGES["xlsx"])
 
     is_dark: Var[bool]
     """Which way round the workbook's palette goes.
 
-    The one viewer that has to be told: a spreadsheet paints its own grid and
-    its own cell fills, so left to a default it would be a white sheet in a
-    dark panel. The others draw a document, which is white paper in any theme.
+    The one viewer that has to be told, and the reason these stay four written
+    classes rather than one generated from the table: a spreadsheet paints its
+    own grid and its own cell fills, so left to a default it would be a white
+    sheet in a dark panel. The others draw a document, which is white paper in
+    any theme.
     """
 
 
 class _PptxViewer(_DocumentViewer):
     """A slide deck, with the library's own toolbar and slide rail."""
 
-    library = PPTX_LIBRARY
+    library = VIEWER_LIBRARIES["pptx"]
     tag = "PptxViewer"
-    lib_dependencies: list[str] = [PPTX]
+    lib_dependencies: list[str] = list(VIEWER_PACKAGES["pptx"])
 
 
 class _PdfViewer(_DocumentViewer):
@@ -115,9 +114,9 @@ class _PdfViewer(_DocumentViewer):
     so a reader who opened an invoice after a deck got a different viewer.
     """
 
-    library = PDF_LIBRARY
+    library = VIEWER_LIBRARIES["pdf"]
     tag = "PdfViewer"
-    lib_dependencies: list[str] = list(PDF)
+    lib_dependencies: list[str] = list(VIEWER_PACKAGES["pdf"])
 
 
 def _in_box(component: rx.Component) -> rx.Component:

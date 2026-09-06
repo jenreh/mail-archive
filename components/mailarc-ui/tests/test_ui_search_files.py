@@ -14,7 +14,7 @@ resulting filter actually narrows a real archive is
 
 import pytest
 
-from mailarc_ui.message_detail import FILE_LABELS, FileKind
+from mailarc_ui.message_detail.filetype import FILE_LABELS, FileKind
 from mailarc_ui.search.files import (
     KIND_LIMIT,
     families_of,

@@ -11,25 +11,23 @@ archive, no state, no component.
 import pytest
 
 from mailarc_core.mail.model import ParsedAttachment
-from mailarc_ui.message_detail import (
+from mailarc_ui.message_detail.filetype import (
+    DULL_SUBTYPES,
     EXTENSION_KINDS,
     FILE_ICONS,
     FILE_LABELS,
-    TYPE_KINDS,
-    AttachmentRow,
-    FileKind,
-    file_kind,
-    type_label,
-)
-from mailarc_ui.message_detail.filetype import (
-    DULL_SUBTYPES,
     GENERIC_TYPES,
     LABEL_LENGTH,
     OOXML_SUFFIXES,
     OOXML_TYPES,
+    TYPE_KINDS,
     TYPE_PREFIXES,
+    FileKind,
+    file_kind,
     is_ooxml,
+    type_label,
 )
+from mailarc_ui.message_detail.model import AttachmentRow
 
 
 class TestTheFamilyAFileFallsInto:

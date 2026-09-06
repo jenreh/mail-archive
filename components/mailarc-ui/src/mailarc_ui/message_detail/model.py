@@ -33,7 +33,7 @@ from mailarc_core.mail.model import (
     ParsedAttachment,
     RenderedMessage,
 )
-from mailarc_ui.message_detail.filetype import FILE_ICONS, file_kind, type_label
+from mailarc_ui.message_detail.filetype import file_facts
 
 logger = logging.getLogger(__name__)
 
@@ -280,12 +280,21 @@ class AttachmentRow(BaseModel):
 
     @classmethod
     def from_attachment(cls, attachment: ParsedAttachment) -> AttachmentRow:
+        """One card on the strip, from one parsed file.
+
+        Classified once. This asked
+        :func:`~mailarc_ui.message_detail.filetype.file_kind` four times per
+        card — twice inside :func:`~mailarc_ui.message_detail.filetype.type_label`,
+        once more for its fallback word and once for the glyph — which is four
+        chances for one card to say two things about one file.
+        """
+        facts = file_facts(attachment.content_type, attachment.filename)
         return cls(
             filename=attachment.filename or NO_FILENAME,
             content_type=attachment.content_type,
             size_label=size_label(attachment.size),
-            kind_label=type_label(attachment.content_type, attachment.filename),
-            icon=FILE_ICONS[file_kind(attachment.content_type, attachment.filename)],
+            kind_label=facts.label,
+            icon=facts.icon,
         )
 
 

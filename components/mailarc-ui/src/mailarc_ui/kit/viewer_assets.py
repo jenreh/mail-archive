@@ -24,45 +24,60 @@ failure and the same fix for maplibre.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 import reflex as rx
 
-DOCX = "@extend-ai/react-docx@0.9.1"
-"""Word documents. The viewer is an editor held read-only, because it is the
-half of the library that can paint page thumbnails."""
-
-XLSX = "@extend-ai/react-xlsx@0.16.3"
-"""Workbooks. Sheet tabs are the navigation; a spreadsheet's pages are its
-sheets and a picture of a grid says nothing a name does not."""
-
-PDF = (
-    "@embedpdf/core@2.15.0",
-    "@embedpdf/engines@2.15.0",
-    "@embedpdf/models@2.15.0",
-    "@embedpdf/pdfium@2.15.0",
-    "@embedpdf/plugin-document-manager@2.15.0",
-    "@embedpdf/plugin-interaction-manager@2.15.0",
-    "@embedpdf/plugin-render@2.15.0",
-    "@embedpdf/plugin-rotate@2.15.0",
-    "@embedpdf/plugin-scroll@2.15.0",
-    "@embedpdf/plugin-thumbnail@2.15.0",
-    "@embedpdf/plugin-viewport@2.15.0",
-    "@embedpdf/plugin-zoom@2.15.0",
+VIEWER_PACKAGES: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "docx": ("@extend-ai/react-docx@0.9.1",),
+        "xlsx": ("@extend-ai/react-xlsx@0.16.3",),
+        "pptx": ("@extend-ai/react-pptx@0.2.0",),
+        "pdf": (
+            "@embedpdf/core@2.15.0",
+            "@embedpdf/engines@2.15.0",
+            "@embedpdf/models@2.15.0",
+            "@embedpdf/pdfium@2.15.0",
+            "@embedpdf/plugin-document-manager@2.15.0",
+            "@embedpdf/plugin-interaction-manager@2.15.0",
+            "@embedpdf/plugin-render@2.15.0",
+            "@embedpdf/plugin-rotate@2.15.0",
+            "@embedpdf/plugin-scroll@2.15.0",
+            "@embedpdf/plugin-thumbnail@2.15.0",
+            "@embedpdf/plugin-viewport@2.15.0",
+            "@embedpdf/plugin-zoom@2.15.0",
+        ),
+    }
 )
-"""PDFs. Headless and one package per capability, so this is a list rather
-than a name: every entry is a plugin the header actually offers, and nothing
-is registered speculatively. It is what Extend UI's own PDF viewer is built
-on — that viewer is not an npm package but an 88k-character shadcn file, so
-the archive wraps the same libraries directly rather than porting it."""
+"""What each viewer installs, keyed by the name its ``.jsx`` file carries.
 
-PPTX = "@extend-ai/react-pptx@0.2.0"
-"""Slide decks. The one package that ships a toolbar and a thumbnail rail
-good enough to use as they are, which is why it does not reach for
-``viewer_shell.jsx``."""
+One table rather than four constants beside four classes. The keys are the
+whole vocabulary of this pair of modules — ``viewer_docx.jsx`` is the ``docx``
+entry's JSX and :class:`~mailarc_ui.kit.viewer._DocxViewer` is its wrapper —
+so a fifth viewer is one entry here and one class there, and the two cannot be
+added out of step without a test failing.
 
-_JSX = {
-    name: rx.asset(f"viewer_{name}.jsx", shared=True)
-    for name in ("docx", "xlsx", "pptx", "pdf")
-}
+A tuple per entry even where it holds one name. Three of these libraries are a
+single package and ``@embedpdf`` is twelve, and the difference is not one the
+caller should have to know: it is headless, one package per capability, and
+every entry is a plugin the header actually offers. Nothing is registered
+speculatively. It is what Extend UI's own PDF viewer is built on — that viewer
+is not an npm package but an 88k-character shadcn file, so the archive wraps
+the same libraries directly rather than porting it.
+
+Which files they read, for the record: Word documents through an editor held
+read-only, because that is the half of the library that can paint page
+thumbnails; workbooks navigated by their own sheet tabs, since a picture of a
+grid says nothing a name does not; slide decks, the one package that ships a
+toolbar and a rail good enough to use as they are.
+
+The versions are pinned exactly, for the reason :mod:`mailarc_ui.kit.graph`
+gives about cytoscape: a renderer's defaults *are* the design, and a minor
+release that re-tunes a layout would silently redraw every document.
+"""
+
+_JSX = {name: rx.asset(f"viewer_{name}.jsx", shared=True) for name in VIEWER_PACKAGES}
 
 _SHARED = (
     rx.asset("viewer_shell.jsx", shared=True),
@@ -76,11 +91,13 @@ reads these two names, and removing them breaks the build — which is what the
 docstring is for.
 """
 
-DOCX_LIBRARY = _JSX["docx"].importable_path
-XLSX_LIBRARY = _JSX["xlsx"].importable_path
-PPTX_LIBRARY = _JSX["pptx"].importable_path
-PDF_LIBRARY = _JSX["pdf"].importable_path
-"""``importable_path`` omits the ``?v=`` content hash, which Vite would treat
-as an optimised-dep URL and cache immutably — pinning a stale React instance.
-The same reason :mod:`mailarc_ui.kit.graph` and ``appkit_mantine.tiptap``
-both give."""
+VIEWER_LIBRARIES: Mapping[str, str] = MappingProxyType(
+    {name: asset.importable_path for name, asset in _JSX.items()}
+)
+"""Where each viewer's JSX is imported from, keyed the same way.
+
+``importable_path`` omits the ``?v=`` content hash, which Vite would treat as
+an optimised-dep URL and cache immutably — pinning a stale React instance. The
+same reason :mod:`mailarc_ui.kit.graph` and ``appkit_mantine.tiptap`` both
+give.
+"""

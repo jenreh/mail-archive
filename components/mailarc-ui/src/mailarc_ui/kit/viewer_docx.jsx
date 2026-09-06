@@ -27,7 +27,7 @@ import {
 import docxWasmUrl from "@extend-ai/react-docx/docx_wasm_bg.wasm?url";
 
 import { useDecoded } from "./viewer_bytes.js";
-import { ViewerBoundary, ViewerShell } from "./viewer_shell.jsx";
+import { ViewerShell, withBoundary } from "./viewer_shell.jsx";
 
 setWasmSource(docxWasmUrl);
 
@@ -128,10 +128,4 @@ function DocxDocument({ encoded = "", fileName = "" }) {
 /* Wrapped rather than exported bare: a parser that throws while rendering
  * would otherwise take the whole preview panel down with it. See
  * `ViewerBoundary` in `viewer_shell.jsx`. */
-export default function DocxViewer(props) {
-  return (
-    <ViewerBoundary fileName={props.fileName}>
-      <DocxDocument {...props} />
-    </ViewerBoundary>
-  );
-}
+export default withBoundary(DocxDocument);

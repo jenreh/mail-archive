@@ -63,6 +63,7 @@ from mailarc_ui.kit import (
     xlsx_viewer,
 )
 from mailarc_ui.kit.toast import DURATION_MS, LEVELS, POSITION
+from mailarc_ui.kit.viewer_assets import VIEWER_LIBRARIES, VIEWER_PACKAGES
 from mailarc_ui.search.state import MailSearchState
 
 TONES: tuple[MessageTone, ...] = ("failure", "warning", "success", "note")
@@ -893,6 +894,50 @@ class TestTheDocumentViewers:
         assert "wasmUrl: pdfiumWasmUrl" in source
         assert "fontFallback: null" in source
         assert 'from "@embedpdf/pdfium/pdfium.wasm?url"' in source
+
+    @pytest.mark.parametrize("name", sorted(VIEWERS))
+    def test_every_viewer_is_exported_through_the_error_boundary(
+        self, name: str
+    ) -> None:
+        """A parser that throws while rendering must not take the panel down.
+
+        Each of these hands a vendored WebAssembly parser a file a stranger
+        wrote, and a malformed ``.docx`` or ``.pptx`` — routine in a real
+        archive — makes several of them throw *synchronously during render*.
+        React answers a throw in render by unmounting the tree above it, so an
+        unwrapped viewer breaks ``preview.py``'s promise that every file gets a
+        panel, and breaks it for exactly the files that most need one.
+
+        Read as text and asserted per file because that is the only place the
+        fact lives: the boundary is a React class the Python wrapper cannot see.
+        ``viewer_pdf.jsx`` was the one export that went without it, for as long
+        as each viewer wrote the same four-line wrapper by hand — which is why
+        the wrapping is a helper now and why this walks all four.
+        """
+        source = (Path(viewer_assets.__file__).parent / f"viewer_{name}.jsx").read_text(
+            encoding="utf-8"
+        )
+
+        shell = (Path(viewer_assets.__file__).parent / "viewer_shell.jsx").read_text(
+            encoding="utf-8"
+        )
+
+        assert "export function withBoundary" in shell, "the helper is not exported"
+        assert "withBoundary" in source, f"viewer_{name}.jsx imports no boundary"
+        assert "export default withBoundary(" in source, (
+            f"viewer_{name}.jsx exports its component unwrapped"
+        )
+
+    def test_the_tables_and_the_wrappers_name_the_same_viewers(self) -> None:
+        """One key per viewer, across both halves of the pair.
+
+        ``viewer_assets.py`` holds the npm pins and the JSX paths and
+        ``viewer.py`` holds the wrapper classes, and a fifth viewer added to
+        one and not the other is a library installed for a component that does
+        not exist, or the reverse.
+        """
+        assert set(VIEWER_PACKAGES) == set(VIEWER_LIBRARIES)
+        assert set(VIEWER_PACKAGES) == set(self.VIEWERS)
 
     def test_no_viewer_reaches_for_a_cdn(self) -> None:
         """The archive's posture is that the browser never fetches anything.

@@ -16,7 +16,7 @@ authors = [{ name = "Jens Rehpöhler" }]
 dependencies = [
     "httpx>=0.28.1",
     "mailarc-core",
-    "msal>=1.37.0",
+    "msal>=1.38.0",
 ]
 
 [build-system]

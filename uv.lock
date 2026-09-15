@@ -1285,7 +1285,7 @@ requires-dist = [
     { name = "mailarc-analytics", editable = "components/mailarc-analytics" },
     { name = "mailarc-core", editable = "components/mailarc-core" },
     { name = "mailarc-sync", editable = "components/mailarc-sync" },
-    { name = "reflex", specifier = "==0.9.10" },
+    { name = "reflex", specifier = "==0.9.11" },
 ]
 
 [[package]]
@@ -1946,7 +1946,7 @@ wheels = [
 
 [[package]]
 name = "reflex"
-version = "0.9.10"
+version = "0.9.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -1976,14 +1976,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/85/39e426046dbf6ad2e54356d834a8093eb85a2ac17bb77dc3b3685574c4ab/reflex-0.9.10.tar.gz", hash = "sha256:a2c33e422c4bd399cf00faafe7201e0dc986b129cd7f2e04ff69d85f78e2bc2e", size = 237354, upload-time = "2026-09-01T18:21:06.229Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/32/2a/745f1a47575b930cf320154ef09a68e8782584fec73102a7d330c08ddce5/reflex-0.9.11.tar.gz", hash = "sha256:cb0ef4928f69376c4895b73c51defd637201f699db125a0da5ed600323fbcac7", size = 246715, upload-time = "2026-09-11T20:37:59.948Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/bc/af32a403a9203d8a1bb4c1ea4c36ae587f1e1637504436f6a80a0309c10d/reflex-0.9.10-py3-none-any.whl", hash = "sha256:8daaa6c176b2062f16c3ac3c2ba6263dcaa3a06f349d54e208eae01a3d7df357", size = 282234, upload-time = "2026-09-01T18:21:04.82Z" },
+    { url = "https://files.pythonhosted.org/packages/99/19/2a0176ab3be3c528a485369e3d3070e64604b3fe699b67367ea848f9ca7d/reflex-0.9.11-py3-none-any.whl", hash = "sha256:09fa719dd286b56a0377cf5864a8b2abc7c303d649b017de236daac60973c4a6", size = 290925, upload-time = "2026-09-11T20:37:58.429Z" },
 ]
 
 [[package]]
 name = "reflex-base"
-version = "0.9.10"
+version = "0.9.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
@@ -1991,9 +1991,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a3/45/a6326a4e07e92ed57b88ebe6b1833046946c4f38614a54dfa133b32e4e4d/reflex_base-0.9.10.tar.gz", hash = "sha256:83b073787644bafcc15b21732115f8d4a3e674970ee921729aac1330350aac77", size = 303875, upload-time = "2026-09-01T18:18:24.412Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/83/739b2bd818e7b9a851222116ad6c22dc7fdc0b26817eee3cdd9d2ac53b54/reflex_base-0.9.11.tar.gz", hash = "sha256:1c0f8f882134e86eeefdfe899580ccf51dbb34037076341417642f0116f1f3bf", size = 328337, upload-time = "2026-09-11T20:34:54.681Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cd/c4/9938d124c1ea6c2895671fc0c9290c151b57f177afce15b433bda2459616/reflex_base-0.9.10-py3-none-any.whl", hash = "sha256:85deb203aec6c0a6b2798ad0d6f9dbd800216ce8feeec060485011676f09d823", size = 340237, upload-time = "2026-09-01T18:18:23.043Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/23/66a09a98377fc6d2c95d75e41865b32f4e18088b5ec275b6179d7d4fc5a7/reflex_base-0.9.11-py3-none-any.whl", hash = "sha256:e70be0531af7bca8ebd5d8b18ab66c3670cdb87981f81db5951bcf9088144fd0", size = 363862, upload-time = "2026-09-11T20:34:53.47Z" },
 ]
 
 [[package]]
@@ -2082,14 +2082,14 @@ wheels = [
 
 [[package]]
 name = "reflex-components-moment"
-version = "0.9.3"
+version = "0.9.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "reflex-base" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/66/0d/65d07250c6a61a9f9c006cfc23b8b4fde4a70ef5f1270a53961ee467f691/reflex_components_moment-0.9.3.tar.gz", hash = "sha256:e470f3eed6905c15189215c11bee775ddbe58b943e4d1a5aebff9a2ca1ef5dae", size = 4224, upload-time = "2026-08-04T18:54:22.486Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/6f/d9a11d8c19375032c98a237b009c134eba3c94a7891e97435f3538f01a88/reflex_components_moment-0.9.4.tar.gz", hash = "sha256:9a50222f00acaa7bd038c32a1d4f23ce396a039a326be9171de4efa6cff828b0", size = 4820, upload-time = "2026-09-11T20:26:55.601Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/28/7477b9663118d9cf602a1393a182d4e02be85e60523dda4bd859e978e811/reflex_components_moment-0.9.3-py3-none-any.whl", hash = "sha256:1645b2c67f5d753508cf732a17c270ecd41464139c1acec04b3232c8f1d4f3f8", size = 5287, upload-time = "2026-08-04T18:54:23.206Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/64/d6e4ce96ee17e0c8600335570deefe15bd99a42eff3e8dc2bc18ed776c90/reflex_components_moment-0.9.4-py3-none-any.whl", hash = "sha256:d065ae841928104b02a5d02b98829da91c992a5da6ed5541cabc3d95e640a4e9", size = 5733, upload-time = "2026-09-11T20:26:54.852Z" },
 ]
 
 [[package]]
@@ -2107,16 +2107,16 @@ wheels = [
 
 [[package]]
 name = "reflex-components-radix"
-version = "0.9.7"
+version = "0.9.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "reflex-base" },
     { name = "reflex-components-core" },
     { name = "reflex-components-lucide" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/02/7b/8df7e7462e9837e1b11e1b73c34dcf1640b8b4a97ce37d7a609a31163961/reflex_components_radix-0.9.7.tar.gz", hash = "sha256:e50a5f71ac65c52a1868041225d5dc21c2d4276c036fc9b9d8685fb62bbd939a", size = 114585, upload-time = "2026-08-04T18:54:24.521Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/40/8537e9d7daca896a652ee0375e7bd6d78bf10836cba50c983e42c4fdd55e/reflex_components_radix-0.9.9.tar.gz", hash = "sha256:523eab86cfaea88dc80d67c38fde5563e337677d4b5d718fd989dc9f942ce05e", size = 114945, upload-time = "2026-09-11T20:26:57.025Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/8b/aea526621cb00ad861f2a9b57349807674d358d21c06678241af2376ce7e/reflex_components_radix-0.9.7-py3-none-any.whl", hash = "sha256:3e9b8215b9a5f2e219926362ed807030cbf82fecfcef83450232bddcb5553ec7", size = 271699, upload-time = "2026-08-04T18:54:23.034Z" },
+    { url = "https://files.pythonhosted.org/packages/75/d6/11207883f0e75ff24ff0971b12b466ed1891174bb97b1294f674248be0f1/reflex_components_radix-0.9.9-py3-none-any.whl", hash = "sha256:7f53c7237e98f2054d0cab2d990863770a501e0c9f98ebe0272960f02a333da7", size = 271769, upload-time = "2026-09-11T20:26:55.801Z" },
 ]
 
 [[package]]

@@ -10,7 +10,7 @@ authors = [{ name = "Jens Rehpöhler" }]
 # Deliberately free of Reflex and every appkit UI package: this component is
 # the part of the system a CLI, a worker or a test can use without a browser.
 dependencies = [
-    "appkit-commons>=1.14.0",
+    "appkit-commons>=1.16.1",
     "falkordb>=1.7.0",
     "pydantic>=2.13.4",
     "runic-py>=0.6.0",

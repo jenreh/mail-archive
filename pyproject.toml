@@ -43,16 +43,16 @@ mailarc-ui = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "bump-my-version>=1.3.0",
+    "bump-my-version>=1.6.0",
     "detect-secrets>=1.5.0",
     "pre-commit>=4.6.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
-    "pytest-httpserver>=1.1.5",
+    "pytest-httpserver>=1.2.0",
     "pytest-timeout>=2.4.0",
-    "ruff>=0.16.4",
-    "ty>=0.0.74",
+    "ruff>=0.17.0",
+    "ty>=0.0.86",
     "types-PyYAML>=6.0.12.20260510",
 ]
 
